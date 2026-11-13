@@ -32,6 +32,8 @@ interface DigestItem {
   isOutOfBubble: boolean;
   bannerImage?: string;
   avatar?: string;
+  publishedAt?: string;
+  quote?: string;
 }
 
 interface SourceItem {
@@ -45,8 +47,15 @@ interface SourceItem {
 
 export default function App() {
   // Navigation & View state
-  const [activeTab, setActiveTab] = useState<'today' | 'saved' | 'sources' | 'settings'>('today');
+  const [activeTab, setActiveTab] = useState<'today' | 'saved' | 'sources' | 'settings' | 'feeds'>('today');
   const [selectedArticle, setSelectedArticle] = useState<DigestItem | null>(null);
+  const [selectedFeedSource, setSelectedFeedSource] = useState<string | null>(null);
+  const [feedStreamArticles, setFeedStreamArticles] = useState<DigestItem[]>([]);
+  const [loadingFeedStream, setLoadingFeedStream] = useState<boolean>(false);
+  const [recentReadItem, setRecentReadItem] = useState<DigestItem | null>(null);
+  const [showKeepReading, setShowKeepReading] = useState<boolean>(true);
+  const [showQuickActions, setShowQuickActions] = useState<boolean>(false);
+  const [repostIds, setRepostIds] = useState<string[]>([]);
 
   // App data state with localStorage persistence
   const [sources, setSources] = useState<SourceItem[]>(() => {
@@ -55,6 +64,7 @@ export default function App() {
       try { return JSON.parse(saved); } catch (e) { /* ignore */ }
     }
     return [
+      { id: 'src_0', title: 'Nicole Williams', feedUrl: 'https://pmresearcher.substack.com/feed', folder: 'Strategy & Craft', status: 'active' },
       { id: 'src_1', title: 'The Anthropic Stack', feedUrl: 'https://anthropic.com/feed', folder: 'Tech & AI', status: 'active' },
       { id: 'src_2', title: 'World Politics & History', feedUrl: 'https://worldhistory.com/feed', folder: 'History', status: 'active' },
       { id: 'src_3', title: 'Prospect Magazine', feedUrl: 'https://prospectmagazine.co.uk/feed', folder: 'Culture', status: 'active' },
@@ -197,6 +207,37 @@ export default function App() {
     generateDigest();
   }, [itemCount, serendipityDial]);
 
+  useEffect(() => {
+    if (activeTab === 'feeds') {
+      fetchFeedStream(selectedFeedSource || 'all');
+    }
+  }, [activeTab, selectedFeedSource]);
+
+  const fetchFeedStream = async (sourceTitle?: string) => {
+    setLoadingFeedStream(true);
+    try {
+      const res = await fetch('/api/feed-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceTitle: sourceTitle || 'all' })
+      });
+      const data = await res.json();
+      if (data.articles) {
+        setFeedStreamArticles(data.articles);
+      }
+    } catch (e) {
+      // fallback
+    } finally {
+      setLoadingFeedStream(false);
+    }
+  };
+
+  const handleOpenFeedStream = (sourceTitle: string) => {
+    setSelectedFeedSource(sourceTitle);
+    setActiveTab('feeds');
+    fetchFeedStream(sourceTitle);
+  };
+
   const fetchStatus = async () => {
     try {
       const res = await fetch('/api/status');
@@ -227,6 +268,7 @@ export default function App() {
         // Attach realistic imagery matching the design aesthetic
         const enhanced = data.digest.map((item: DigestItem, idx: number) => {
           const banners = [
+            '/assets/aistudio/IMG_0653_a0a9ce59.png',
             'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80',
             'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
             'https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=1200&q=80',
@@ -462,6 +504,8 @@ export default function App() {
 
   const openArticle = (item: DigestItem) => {
     setSelectedArticle(item);
+    setRecentReadItem(item);
+    setShowKeepReading(true);
     setReadingStartTime(Date.now());
   };
 
@@ -597,27 +641,40 @@ export default function App() {
       )}
 
       {/* Main App Layout */}
-      <header className="sticky top-0 z-30 bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-6 py-4 flex items-center justify-between">
+      <header className="sticky top-0 z-30 bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-5 py-3.5 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500 to-rose-500 flex items-center justify-center text-slate-950 font-bold shadow-lg shadow-amber-500/10">
-            C
+          <div className="w-10 h-10 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-orange-500 shadow-sm">
+            <Bookmark className="w-5 h-5 fill-orange-500 text-orange-500" />
           </div>
           <div>
             <h1 className="text-base font-semibold tracking-tight text-slate-100 leading-none">Curator</h1>
-            <p className="text-xs text-slate-400 mt-0.5">Your morning reading editor</p>
+            <p className="text-xs text-slate-400 mt-1">Your morning reading editor</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <button 
+            type="button"
+            onClick={() => setActiveTab('sources')}
+            className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 transition"
+            title="Search and discover sources"
+          >
+            <Search className="w-4 h-4" />
+          </button>
+          <button 
+            type="button"
             onClick={generateDigest}
             disabled={loadingDigest}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-medium bg-slate-900 border border-slate-800 text-slate-300 hover:text-slate-100 transition disabled:opacity-50"
+            className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 transition disabled:opacity-50"
             title="Refresh today's digest"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loadingDigest ? 'animate-spin' : ''}`} />
-            <span className="hidden sm:inline">Refresh</span>
+            <RefreshCw className={`w-4 h-4 ${loadingDigest ? 'animate-spin' : ''}`} />
           </button>
+          <div className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 p-0.5 overflow-hidden flex items-center justify-center">
+            <div className="w-full h-full rounded-full bg-gradient-to-tr from-amber-500 to-rose-500 flex items-center justify-center text-[10px] font-bold text-slate-950">
+              ME
+            </div>
+          </div>
         </div>
       </header>
 
@@ -626,12 +683,18 @@ export default function App() {
         {/* TAB 1: TODAY */}
         {activeTab === 'today' && (
           <div className="space-y-6 animate-fade-in">
-            {/* Top Circular Source Stories Carousel (Borrowed from design element) */}
+            {/* Top Circular Source Stories Carousel (Links through to separate article stream) */}
             <div className="overflow-x-auto no-scrollbar py-2 -mx-6 px-6">
               <div className="flex items-center gap-4 min-w-max">
-                {sources.slice(0, 8).map((src, idx) => (
-                  <div key={src.id} className="flex flex-col items-center gap-2 group cursor-pointer">
-                    <div className="relative w-16 h-16 rounded-full p-0.5 bg-gradient-to-tr from-amber-500 to-rose-500 shadow-md">
+                {sources.slice(0, 10).map((src, idx) => (
+                  <button
+                    key={src.id}
+                    type="button"
+                    onClick={() => handleOpenFeedStream(src.title)}
+                    className="flex flex-col items-center gap-2 group cursor-pointer focus:outline-none"
+                    title={`Open ${src.title} article stream`}
+                  >
+                    <div className="relative w-16 h-16 rounded-full p-0.5 bg-gradient-to-tr from-amber-500 to-rose-500 shadow-md group-hover:scale-105 transition-transform">
                       <div className="w-full h-full rounded-full bg-slate-900 flex items-center justify-center overflow-hidden border-2 border-slate-950">
                         <span className="text-xs font-bold text-slate-200">
                           {src.title.slice(0, 2).toUpperCase()}
@@ -641,10 +704,10 @@ export default function App() {
                         <div className="absolute top-0 right-0 w-3.5 h-3.5 rounded-full bg-orange-500 border-2 border-slate-950" />
                       )}
                     </div>
-                    <span className="text-[11px] text-slate-300 font-medium max-w-[72px] truncate text-center">
+                    <span className="text-[11px] text-slate-300 font-medium max-w-[72px] truncate text-center group-hover:text-amber-300 transition-colors">
                       {src.title.split(' ')[0]}
                     </span>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
@@ -681,105 +744,168 @@ export default function App() {
             ) : (
               <div className="space-y-8">
                 {/* Normal Curated Cards */}
-                {normalDigest.map((item, idx) => (
+                {normalDigest.map((item) => (
                   <article 
                     key={item.id}
                     onClick={() => openArticle(item)}
-                    className="group rounded-3xl bg-slate-900/60 border border-slate-900 hover:border-slate-800 overflow-hidden transition cursor-pointer shadow-xl relative"
+                    className="group rounded-3xl bg-slate-900/60 border border-slate-900 hover:border-slate-800/80 overflow-hidden transition cursor-pointer shadow-xl relative"
                   >
-                    {/* Author sub-header */}
+                    {/* Author sub-header with Substack branding */}
                     <div className="p-5 pb-3 flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-amber-500/20 to-rose-500/20 border border-slate-800 flex items-center justify-center text-xs font-semibold text-amber-400">
+                        <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-amber-500/20 to-orange-500/20 border border-slate-800 flex items-center justify-center text-xs font-bold text-amber-400 shrink-0">
                           {item.source.slice(0, 2).toUpperCase()}
                         </div>
                         <div>
-                          <div className="text-xs font-semibold text-slate-200">{item.source}</div>
-                          <div className="text-[10px] text-slate-500">{item.folder} · {item.readTime}</div>
+                          <div className="text-xs font-bold text-slate-100 flex items-center gap-1.5">
+                            <span>{item.source}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            {item.publishedAt || '30m'} · {item.folder} · {item.readTime}
+                          </div>
                         </div>
                       </div>
-                      <span className="text-[10px] uppercase font-mono tracking-widest bg-slate-800/80 text-slate-400 px-2 py-0.5 rounded-full">
-                        substack
+                      <span className="text-orange-500 font-semibold text-xs flex items-center gap-1 font-mono tracking-wide">
+                        <span className="font-black text-sm">≡</span>substack
                       </span>
                     </div>
 
-                    {/* Banner Image with Overlay (Borrowed from screenshot aesthetic) */}
+                    {/* Author hook quote above card if available */}
+                    {item.quote && (
+                      <p className="px-5 pb-3 text-sm md:text-base text-slate-100 font-medium leading-snug">
+                        {item.quote}
+                      </p>
+                    )}
+
+                    {/* Billboard Hero Image Card with Bookmark Save Button right on image */}
                     {item.bannerImage && (
-                      <div className="relative h-56 md:h-64 w-full overflow-hidden">
+                      <div className="relative mx-3.5 rounded-2xl overflow-hidden h-60 md:h-72 shadow-lg border border-slate-800/40">
                         <img 
                           src={item.bannerImage} 
                           alt={item.title}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                         />
-                        <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent" />
-                        <div className="absolute bottom-4 left-6 right-6">
-                          <h3 className="text-xl md:text-2xl font-semibold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors leading-snug">
+                        <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/45 to-transparent" />
+                        
+                        {/* Bookmark button in bottom right corner of image */}
+                        <div className="absolute bottom-4 right-4 z-10">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleSave(item); }}
+                            className={`p-2.5 rounded-xl backdrop-blur-md border transition shadow-lg ${
+                              savedIds.includes(item.id)
+                                ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
+                                : 'bg-slate-950/70 border-slate-700/60 text-slate-200 hover:text-amber-400 hover:bg-slate-900/90'
+                            }`}
+                            title="Save for later"
+                          >
+                            <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
+                          </button>
+                        </div>
+
+                        {/* Title and summary overlay on bottom of image */}
+                        <div className="absolute bottom-4 left-4 right-16">
+                          <div className="text-[10px] uppercase font-bold tracking-wider text-amber-400/90 mb-1">
+                            {item.folder}
+                          </div>
+                          <h3 className="text-lg md:text-xl font-bold tracking-tight text-white leading-snug drop-shadow-sm group-hover:text-amber-300 transition-colors">
                             {item.title}
                           </h3>
+                          <p className="text-xs text-slate-300 mt-1 line-clamp-1">
+                            {item.summary}
+                          </p>
                         </div>
                       </div>
                     )}
 
-                    <div className="p-6 space-y-4 pt-4">
+                    <div className="p-5 space-y-4 pt-4">
                       {!item.bannerImage && (
-                        <h3 className="text-xl font-semibold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors">
-                          {item.title}
-                        </h3>
+                        <div>
+                          <h3 className="text-xl font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors">
+                            {item.title}
+                          </h3>
+                          <p className="text-sm text-slate-400 mt-1 line-clamp-2">
+                            {item.summary}
+                          </p>
+                        </div>
                       )}
 
-                      <p className="text-sm text-slate-400 line-clamp-2">
-                        {item.summary}
-                      </p>
-
                       {/* Why this is here note */}
-                      <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-900 text-xs text-slate-300 flex items-start gap-2.5">
+                      <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 flex items-start gap-2.5">
                         <Sparkles className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                         <div>
-                          <span className="text-[10px] uppercase tracking-wider text-slate-500 block mb-0.5">Why this was chosen for you</span>
+                          <span className="text-[10px] uppercase tracking-wider text-slate-400 block mb-0.5">Why this was chosen for you</span>
                           <span className="italic">{item.why}</span>
                         </div>
                       </div>
 
-                      {/* Card Action Footer */}
-                      <div className="pt-3 border-t border-slate-800/60 flex items-center justify-between gap-2 text-xs text-slate-400">
+                      {/* Social engagement row (heart, comments, repost, share) */}
+                      <div className="pt-2 flex items-center justify-between text-xs text-slate-400">
+                        <div className="flex items-center gap-5">
+                          <button 
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleLike(item); }}
+                            className="flex items-center gap-1.5 text-slate-400 hover:text-rose-400 transition"
+                          >
+                            <Heart className={`w-4 h-4 ${likedIds.includes(item.id) ? 'fill-rose-500 text-rose-500' : ''}`} />
+                            <span className="text-[11px]">{likedIds.includes(item.id) ? '2' : '1'}</span>
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                            className="flex items-center gap-1.5 text-slate-400 hover:text-slate-200 transition"
+                          >
+                            <MessageSquare className="w-4 h-4" />
+                            <span className="text-[11px]">1</span>
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={(e) => { 
+                              e.stopPropagation(); 
+                              setRepostIds(prev => prev.includes(item.id) ? prev.filter(x => x !== item.id) : [...prev, item.id]);
+                              showToast('Quoted in your daily notebook');
+                            }}
+                            className={`flex items-center gap-1.5 transition ${repostIds.includes(item.id) ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'}`}
+                          >
+                            <Repeat className="w-4 h-4" />
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigator.clipboard.writeText(item.url || window.location.href);
+                              showToast('Article link copied to clipboard');
+                            }}
+                            className="flex items-center gap-1.5 text-slate-400 hover:text-slate-200 transition"
+                            title="Share article link"
+                          >
+                            <Share2 className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        {/* Curation actions: More like this / Less like this */}
                         <div className="flex items-center gap-2">
                           <button 
                             type="button"
                             onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border transition ${
+                            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition ${
                               signals.moreIds?.includes(item.id) || signals.more.includes(item.source)
-                                ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                                ? 'bg-amber-500/15 border-amber-500/40 text-amber-300 font-medium'
                                 : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-slate-100 hover:bg-slate-800'
                             }`}
                             title="More like this"
                           >
-                            <ThumbsUp className="w-3.5 h-3.5" />
-                            <span>More</span>
+                            <ThumbsUp className="w-3 h-3" />
+                            <span>{signals.moreIds?.includes(item.id) ? 'More ✓' : 'More'}</span>
                           </button>
                           <button 
                             type="button"
                             onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-rose-300 hover:border-rose-500/30 hover:bg-rose-500/10 transition"
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-rose-300 hover:border-rose-500/30 hover:bg-rose-500/10 text-[11px] transition"
                             title="Less like this"
                           >
-                            <ThumbsDown className="w-3.5 h-3.5" />
+                            <ThumbsDown className="w-3 h-3" />
                             <span>Less</span>
-                          </button>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <button 
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border transition ${
-                              savedIds.includes(item.id)
-                                ? 'bg-amber-500/15 border-amber-500/40 text-amber-400'
-                                : 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
-                            }`}
-                            title="Save for later"
-                          >
-                            <Bookmark className="w-3.5 h-3.5" />
-                            <span>{savedIds.includes(item.id) ? 'Saved' : 'Save'}</span>
                           </button>
                         </div>
                       </div>
@@ -805,12 +931,12 @@ export default function App() {
                       >
                         <div className="p-5 pb-3 flex items-center justify-between">
                           <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-rose-500/25 border border-rose-900 flex items-center justify-center text-xs font-semibold text-rose-300">
+                            <div className="w-9 h-9 rounded-full bg-rose-500/25 border border-rose-900 flex items-center justify-center text-xs font-bold text-rose-300 shrink-0">
                               {item.source.slice(0, 2).toUpperCase()}
                             </div>
                             <div>
-                              <div className="text-xs font-semibold text-rose-200">{item.source}</div>
-                              <div className="text-[10px] text-rose-400/80">{item.folder} · {item.readTime}</div>
+                              <div className="text-xs font-bold text-rose-200">{item.source}</div>
+                              <div className="text-[11px] text-rose-400/80">{item.folder} · {item.readTime}</div>
                             </div>
                           </div>
                           <span className="text-[10px] uppercase font-mono tracking-wider bg-rose-900/30 text-rose-300 px-2.5 py-0.5 rounded-full border border-rose-800/40">
@@ -818,28 +944,63 @@ export default function App() {
                           </span>
                         </div>
 
+                        {item.quote && (
+                          <p className="px-5 pb-3 text-sm md:text-base text-rose-100 font-medium leading-snug">
+                            {item.quote}
+                          </p>
+                        )}
+
                         {item.bannerImage && (
-                          <div className="relative h-52 w-full overflow-hidden">
+                          <div className="relative mx-3.5 rounded-2xl overflow-hidden h-60 md:h-64 shadow-lg border border-rose-900/30">
                             <img 
                               src={item.bannerImage} 
                               alt={item.title}
                               className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                             />
-                            <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/30 to-transparent" />
-                            <div className="absolute bottom-4 left-6 right-6">
-                              <h3 className="text-xl font-semibold tracking-tight text-slate-100 group-hover:text-rose-300 transition-colors leading-snug">
+                            <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent" />
+                            
+                            <div className="absolute bottom-4 right-4 z-10">
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); handleSave(item); }}
+                                className={`p-2.5 rounded-xl backdrop-blur-md border transition shadow-lg ${
+                                  savedIds.includes(item.id)
+                                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
+                                    : 'bg-slate-950/70 border-rose-800/60 text-slate-200 hover:text-amber-400'
+                                }`}
+                                title="Save for later"
+                              >
+                                <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
+                              </button>
+                            </div>
+
+                            <div className="absolute bottom-4 left-4 right-16">
+                              <div className="text-[10px] uppercase font-bold tracking-wider text-rose-400/90 mb-1">
+                                Deliberate Stretch · {item.folder}
+                              </div>
+                              <h3 className="text-lg md:text-xl font-bold tracking-tight text-white leading-snug group-hover:text-rose-300 transition-colors">
                                 {item.title}
                               </h3>
+                              <p className="text-xs text-rose-200/80 mt-1 line-clamp-1">
+                                {item.summary}
+                              </p>
                             </div>
                           </div>
                         )}
 
-                        <div className="p-6 space-y-4 pt-4">
-                          <p className="text-sm text-slate-400 line-clamp-2">
-                            {item.summary}
-                          </p>
+                        <div className="p-5 space-y-4 pt-4">
+                          {!item.bannerImage && (
+                            <div>
+                              <h3 className="text-xl font-bold tracking-tight text-slate-100 group-hover:text-rose-300 transition-colors">
+                                {item.title}
+                              </h3>
+                              <p className="text-sm text-slate-400 mt-1 line-clamp-2">
+                                {item.summary}
+                              </p>
+                            </div>
+                          )}
 
-                          <div className="p-3.5 rounded-xl bg-slate-950/60 border border-rose-900/30 text-xs text-rose-200/90 flex items-start gap-2.5">
+                          <div className="p-3.5 rounded-xl bg-slate-950/70 border border-rose-900/30 text-xs text-rose-200/90 flex items-start gap-2.5">
                             <Sparkles className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
                             <div>
                               <span className="text-[10px] uppercase tracking-wider text-rose-400 block mb-0.5">Why this was chosen for you</span>
@@ -847,44 +1008,73 @@ export default function App() {
                             </div>
                           </div>
 
-                          <div className="pt-3 border-t border-rose-900/20 flex items-center justify-between gap-2 text-xs text-slate-400">
+                          <div className="pt-2 flex items-center justify-between text-xs text-slate-400">
+                            <div className="flex items-center gap-5">
+                              <button 
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); handleLike(item); }}
+                                className="flex items-center gap-1.5 text-slate-400 hover:text-rose-400 transition"
+                              >
+                                <Heart className={`w-4 h-4 ${likedIds.includes(item.id) ? 'fill-rose-500 text-rose-500' : ''}`} />
+                                <span className="text-[11px]">{likedIds.includes(item.id) ? '2' : '1'}</span>
+                              </button>
+                              <button 
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                                className="flex items-center gap-1.5 text-slate-400 hover:text-slate-200 transition"
+                              >
+                                <MessageSquare className="w-4 h-4" />
+                                <span className="text-[11px]">1</span>
+                              </button>
+                              <button 
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setRepostIds(prev => prev.includes(item.id) ? prev.filter(x => x !== item.id) : [...prev, item.id]);
+                                  showToast('Quoted in your daily notebook');
+                                }}
+                                className={`flex items-center gap-1.5 transition ${repostIds.includes(item.id) ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'}`}
+                              >
+                                <Repeat className="w-4 h-4" />
+                              </button>
+                              <button 
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigator.clipboard.writeText(item.url || window.location.href);
+                                  showToast('Article link copied to clipboard');
+                                }}
+                                className="flex items-center gap-1.5 text-slate-400 hover:text-slate-200 transition"
+                                title="Share article link"
+                              >
+                                <Share2 className="w-4 h-4" />
+                              </button>
+                            </div>
+
                             <div className="flex items-center gap-2">
                               <button 
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border transition ${
+                                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition ${
                                   signals.moreIds?.includes(item.id) || signals.more.includes(item.source)
-                                    ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                                    ? 'bg-amber-500/15 border-amber-500/40 text-amber-300 font-medium'
                                     : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-slate-100 hover:bg-slate-800'
                                 }`}
                                 title="More like this"
                               >
-                                <ThumbsUp className="w-3.5 h-3.5" />
-                                <span>More</span>
+                                <ThumbsUp className="w-3 h-3" />
+                                <span>{signals.moreIds?.includes(item.id) ? 'More ✓' : 'More'}</span>
                               </button>
                               <button 
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-rose-300 hover:border-rose-500/30 hover:bg-rose-500/10 transition"
+                                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-rose-300 hover:border-rose-500/30 hover:bg-rose-500/10 text-[11px] transition"
                                 title="Less like this"
                               >
-                                <ThumbsDown className="w-3.5 h-3.5" />
+                                <ThumbsDown className="w-3 h-3" />
                                 <span>Less</span>
                               </button>
                             </div>
-                            <button 
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border transition ${
-                                savedIds.includes(item.id)
-                                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-400'
-                                  : 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
-                              }`}
-                              title="Save for later"
-                            >
-                              <Bookmark className="w-3.5 h-3.5" />
-                              <span>{savedIds.includes(item.id) ? 'Saved' : 'Save'}</span>
-                            </button>
                           </div>
                         </div>
                       </article>
@@ -1507,14 +1697,368 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* TAB 5: FEEDS (Traditional Reading Stream) */}
+        {activeTab === 'feeds' && (
+          <div className="space-y-6 animate-fade-in">
+            {/* Top Circular Source Stories Carousel */}
+            <div className="overflow-x-auto no-scrollbar py-2 -mx-6 px-6">
+              <div className="flex items-center gap-4 min-w-max">
+                {/* "All" feeds circle */}
+                <button
+                  type="button"
+                  onClick={() => handleOpenFeedStream('all')}
+                  className="flex flex-col items-center gap-2 group cursor-pointer focus:outline-none"
+                >
+                  <div className={`relative w-16 h-16 rounded-full p-0.5 transition-transform group-hover:scale-105 ${
+                    !selectedFeedSource || selectedFeedSource === 'all'
+                      ? 'bg-amber-400 ring-2 ring-amber-400/50'
+                      : 'bg-slate-800'
+                  }`}>
+                    <div className="w-full h-full rounded-full bg-slate-900 flex items-center justify-center overflow-hidden border-2 border-slate-950">
+                      <span className="text-xs font-bold text-slate-200">ALL</span>
+                    </div>
+                  </div>
+                  <span className={`text-[11px] font-medium max-w-[72px] truncate text-center ${
+                    !selectedFeedSource || selectedFeedSource === 'all' ? 'text-amber-400 font-semibold' : 'text-slate-400'
+                  }`}>
+                    All Feeds
+                  </span>
+                </button>
+
+                {sources.map((src, idx) => {
+                  const isSelected = selectedFeedSource === src.title;
+                  return (
+                    <button
+                      key={src.id}
+                      type="button"
+                      onClick={() => handleOpenFeedStream(src.title)}
+                      className="flex flex-col items-center gap-2 group cursor-pointer focus:outline-none"
+                    >
+                      <div className={`relative w-16 h-16 rounded-full p-0.5 transition-transform group-hover:scale-105 ${
+                        isSelected
+                          ? 'bg-amber-400 ring-2 ring-amber-400/50'
+                          : 'bg-gradient-to-tr from-amber-500 to-rose-500 shadow-md'
+                      }`}>
+                        <div className="w-full h-full rounded-full bg-slate-900 flex items-center justify-center overflow-hidden border-2 border-slate-950">
+                          <span className="text-xs font-bold text-slate-200">
+                            {src.title.slice(0, 2).toUpperCase()}
+                          </span>
+                        </div>
+                        {idx % 2 === 0 && !isSelected && (
+                          <div className="absolute top-0 right-0 w-3.5 h-3.5 rounded-full bg-orange-500 border-2 border-slate-950" />
+                        )}
+                      </div>
+                      <span className={`text-[11px] font-medium max-w-[72px] truncate text-center group-hover:text-amber-300 transition-colors ${
+                        isSelected ? 'text-amber-300 font-semibold' : 'text-slate-300'
+                      }`}>
+                        {src.title.split(' ')[0]}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Stream Header */}
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-900 pb-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-xl font-semibold tracking-tight text-slate-100">
+                    {selectedFeedSource && selectedFeedSource !== 'all' ? selectedFeedSource : 'All Feeds Stream'}
+                  </h2>
+                  {selectedFeedSource && selectedFeedSource !== 'all' && (
+                    <span className="text-[10px] uppercase font-mono tracking-wider bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">
+                      Feed Stream
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Traditional chronological reading stream · {feedStreamArticles.length} entries
+                </p>
+              </div>
+
+              {selectedFeedSource && selectedFeedSource !== 'all' && (
+                <button
+                  type="button"
+                  onClick={() => handleOpenFeedStream('all')}
+                  className="px-3 py-1.5 text-xs font-medium rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-slate-100 transition"
+                >
+                  View all feeds
+                </button>
+              )}
+            </div>
+
+            {/* Article Stream */}
+            {loadingFeedStream ? (
+              <div className="py-20 text-center text-slate-500 space-y-3">
+                <RefreshCw className="w-6 h-6 animate-spin mx-auto text-amber-500" />
+                <p className="text-sm">Loading feed stream...</p>
+              </div>
+            ) : feedStreamArticles.length === 0 ? (
+              <div className="py-20 text-center text-slate-500 space-y-2">
+                <p className="text-sm">No entries found for this feed.</p>
+                <button
+                  type="button"
+                  onClick={() => handleOpenFeedStream('all')}
+                  className="text-xs text-amber-400 underline"
+                >
+                  Return to all feeds stream
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {feedStreamArticles.map((item) => (
+                  <article
+                    key={item.id}
+                    onClick={() => openArticle(item)}
+                    className="group rounded-3xl bg-slate-900/60 border border-slate-900 hover:border-slate-800/80 overflow-hidden transition cursor-pointer shadow-xl relative"
+                  >
+                    <div className="p-5 pb-3 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-amber-500/20 to-orange-500/20 border border-slate-800 flex items-center justify-center text-xs font-bold text-amber-400 shrink-0">
+                          {item.source.slice(0, 2).toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="text-xs font-bold text-slate-100 flex items-center gap-1.5">
+                            <span>{item.source}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            {item.publishedAt ? `${item.publishedAt} · ` : ''}{item.folder} · {item.readTime}
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-orange-500 font-semibold text-xs flex items-center gap-1 font-mono tracking-wide">
+                        <span className="font-black text-sm">≡</span>stream
+                      </span>
+                    </div>
+
+                    {item.quote && (
+                      <p className="px-5 pb-3 text-sm md:text-base text-slate-100 font-medium leading-snug">
+                        {item.quote}
+                      </p>
+                    )}
+
+                    {item.bannerImage && (
+                      <div className="relative mx-3.5 rounded-2xl overflow-hidden h-56 md:h-64 shadow-lg border border-slate-800/40">
+                        <img 
+                          src={item.bannerImage} 
+                          alt={item.title}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/45 to-transparent" />
+                        
+                        <div className="absolute bottom-4 right-4 z-10">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleSave(item); }}
+                            className={`p-2.5 rounded-xl backdrop-blur-md border transition shadow-lg ${
+                              savedIds.includes(item.id)
+                                ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
+                                : 'bg-slate-950/70 border-slate-700/60 text-slate-200 hover:text-amber-400 hover:bg-slate-900/90'
+                            }`}
+                            title="Save for later"
+                          >
+                            <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
+                          </button>
+                        </div>
+
+                        <div className="absolute bottom-4 left-4 right-16">
+                          <div className="text-[10px] uppercase font-bold tracking-wider text-amber-400/90 mb-1">
+                            {item.folder}
+                          </div>
+                          <h3 className="text-lg md:text-xl font-bold tracking-tight text-white leading-snug drop-shadow-sm group-hover:text-amber-300 transition-colors">
+                            {item.title}
+                          </h3>
+                          <p className="text-xs text-slate-300 mt-1 line-clamp-1">
+                            {item.summary}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="p-5 space-y-4 pt-4">
+                      {!item.bannerImage && (
+                        <div>
+                          <h3 className="text-xl font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors">
+                            {item.title}
+                          </h3>
+                          <p className="text-sm text-slate-400 mt-1 line-clamp-2">
+                            {item.summary}
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="pt-2 flex items-center justify-between text-xs text-slate-400">
+                        <div className="flex items-center gap-5">
+                          <button 
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleLike(item); }}
+                            className="flex items-center gap-1.5 text-slate-400 hover:text-rose-400 transition"
+                          >
+                            <Heart className={`w-4 h-4 ${likedIds.includes(item.id) ? 'fill-rose-500 text-rose-500' : ''}`} />
+                            <span className="text-[11px]">{likedIds.includes(item.id) ? '2' : '1'}</span>
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                            className="flex items-center gap-1.5 text-slate-400 hover:text-slate-200 transition"
+                          >
+                            <MessageSquare className="w-4 h-4" />
+                            <span className="text-[11px]">1</span>
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setRepostIds(prev => prev.includes(item.id) ? prev.filter(x => x !== item.id) : [...prev, item.id]);
+                              showToast('Quoted in your daily notebook');
+                            }}
+                            className={`flex items-center gap-1.5 transition ${repostIds.includes(item.id) ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'}`}
+                          >
+                            <Repeat className="w-4 h-4" />
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigator.clipboard.writeText(item.url || window.location.href);
+                              showToast('Article link copied to clipboard');
+                            }}
+                            className="flex items-center gap-1.5 text-slate-400 hover:text-slate-200 transition"
+                            title="Share article link"
+                          >
+                            <Share2 className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button 
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleMore(item); }}
+                            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition ${
+                              signals.moreIds?.includes(item.id) || signals.more.includes(item.source)
+                                ? 'bg-amber-500/15 border-amber-500/40 text-amber-300 font-medium'
+                                : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-slate-100 hover:bg-slate-800'
+                            }`}
+                            title="More like this"
+                          >
+                            <ThumbsUp className="w-3 h-3" />
+                            <span>{signals.moreIds?.includes(item.id) ? 'More ✓' : 'More'}</span>
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleLess(item); }}
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-rose-300 hover:border-rose-500/30 hover:bg-rose-500/10 text-[11px] transition"
+                            title="Less like this"
+                          >
+                            <ThumbsDown className="w-3 h-3" />
+                            <span>Less</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </main>
 
-      {/* Bottom Dock Navigation (Borrowed from design element: gorgeous rounded dock with Home, Read, Podcasts, Chat, Activity) */}
-      <nav className="fixed bottom-3 left-4 right-4 z-40 max-w-md mx-auto bg-slate-900/90 backdrop-blur-xl border border-slate-800/80 rounded-2xl py-2.5 px-4 shadow-2xl">
+      {/* Floating 'Keep reading' resume bar (borrowed from attached screenshot) */}
+      {recentReadItem && showKeepReading && !selectedArticle && (
+        <div className="fixed bottom-20 left-4 right-4 sm:left-auto sm:right-24 max-w-sm z-40 bg-slate-900/95 border border-slate-800 rounded-2xl p-2.5 flex items-center justify-between gap-3 shadow-2xl backdrop-blur-xl animate-fade-in">
+          <button 
+            type="button"
+            onClick={() => openArticle(recentReadItem)}
+            className="flex items-center gap-3 text-left overflow-hidden flex-1 cursor-pointer"
+          >
+            {recentReadItem.bannerImage ? (
+              <img 
+                src={recentReadItem.bannerImage} 
+                alt="" 
+                className="w-10 h-10 rounded-xl object-cover shrink-0 border border-slate-800" 
+              />
+            ) : (
+              <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-xs font-bold text-slate-300 shrink-0">
+                {recentReadItem.source.slice(0, 2).toUpperCase()}
+              </div>
+            )}
+            <div className="overflow-hidden">
+              <span className="text-[10px] text-slate-400 block font-medium">Keep reading</span>
+              <span className="text-xs font-semibold text-slate-200 truncate block">
+                {recentReadItem.title}
+              </span>
+            </div>
+          </button>
+          <button 
+            type="button"
+            onClick={() => setShowKeepReading(false)}
+            className="w-7 h-7 rounded-full bg-slate-800/80 hover:bg-slate-800 text-slate-400 hover:text-slate-200 flex items-center justify-center shrink-0 transition"
+            title="Dismiss"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Floating Orange '+' Action Button (borrowed from attached screenshot) */}
+      <div className="fixed bottom-20 right-5 z-40">
+        <button 
+          type="button"
+          onClick={() => setShowQuickActions(!showQuickActions)}
+          className="w-14 h-14 rounded-full bg-gradient-to-tr from-amber-500 to-orange-500 text-white shadow-xl shadow-orange-500/30 flex items-center justify-center hover:scale-105 active:scale-95 transition-transform"
+          title="Quick actions"
+        >
+          <Plus className={`w-6 h-6 transition-transform ${showQuickActions ? 'rotate-45' : ''}`} />
+        </button>
+
+        {showQuickActions && (
+          <div className="absolute bottom-16 right-0 w-64 rounded-2xl bg-slate-900 border border-slate-800 p-2 shadow-2xl space-y-1 animate-fade-in backdrop-blur-xl z-50">
+            <button
+              type="button"
+              onClick={() => {
+                setShowQuickActions(false);
+                setActiveTab('sources');
+              }}
+              className="w-full px-3.5 py-2.5 text-left text-xs text-slate-200 hover:bg-slate-800 rounded-xl flex items-center gap-2.5 transition"
+            >
+              <Search className="w-4 h-4 text-amber-400" />
+              <span>Discover Feeds (Google Search)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowQuickActions(false);
+                setShowAddSourceModal(true);
+              }}
+              className="w-full px-3.5 py-2.5 text-left text-xs text-slate-200 hover:bg-slate-800 rounded-xl flex items-center gap-2.5 transition"
+            >
+              <Plus className="w-4 h-4 text-amber-400" />
+              <span>Add Source by URL</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowQuickActions(false);
+                openImportModal();
+              }}
+              className="w-full px-3.5 py-2.5 text-left text-xs text-slate-200 hover:bg-slate-800 rounded-xl flex items-center gap-2.5 transition"
+            >
+              <FileUp className="w-4 h-4 text-amber-400" />
+              <span>Import OPML File</span>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Bottom Dock Navigation */}
+      <nav className="fixed bottom-3 left-4 right-4 z-40 max-w-lg mx-auto bg-slate-900/90 backdrop-blur-xl border border-slate-800/80 rounded-2xl py-2.5 px-3 shadow-2xl">
         <div className="flex items-center justify-around">
           <button 
             onClick={() => setActiveTab('today')}
-            className={`flex flex-col items-center gap-1 transition ${activeTab === 'today' ? 'text-amber-400' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'today' ? 'text-amber-400' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Home className="w-5 h-5" />
             <span className="text-[10px] font-medium tracking-tight">Home</span>
@@ -1522,15 +2066,20 @@ export default function App() {
 
           <button 
             onClick={() => setActiveTab('saved')}
-            className={`flex flex-col items-center gap-1 transition ${activeTab === 'saved' ? 'text-amber-400' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'saved' ? 'text-amber-400' : 'text-slate-400 hover:text-slate-200'}`}
           >
-            <Bookmark className="w-5 h-5" />
+            <div className="relative">
+              <Bookmark className="w-5 h-5" />
+              {savedIds.length > 0 && (
+                <div className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-orange-500 border border-slate-950" />
+              )}
+            </div>
             <span className="text-[10px] font-medium tracking-tight">Saved</span>
           </button>
 
           <button 
             onClick={() => setActiveTab('sources')}
-            className={`flex flex-col items-center gap-1 transition ${activeTab === 'sources' ? 'text-amber-400' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'sources' ? 'text-amber-400' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Headphones className="w-5 h-5" />
             <span className="text-[10px] font-medium tracking-tight">Sources</span>
@@ -1538,10 +2087,23 @@ export default function App() {
 
           <button 
             onClick={() => setActiveTab('settings')}
-            className={`flex flex-col items-center gap-1 transition ${activeTab === 'settings' ? 'text-amber-400' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'settings' ? 'text-amber-400' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Activity className="w-5 h-5" />
             <span className="text-[10px] font-medium tracking-tight">Settings</span>
+          </button>
+
+          <button 
+            onClick={() => {
+              setActiveTab('feeds');
+            }}
+            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'feeds' ? 'text-amber-400' : 'text-slate-400 hover:text-slate-200'}`}
+          >
+            <div className="relative">
+              <Rss className="w-5 h-5" />
+              <div className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-orange-500 border border-slate-950" />
+            </div>
+            <span className="text-[10px] font-medium tracking-tight">Feeds</span>
           </button>
         </div>
       </nav>

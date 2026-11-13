@@ -252,6 +252,26 @@ Return ONLY valid JSON array of objects with these exact keys.`;
       // Curated pool with real signal-aware ranking when AI key is missing or call fails
       const pool = [
         {
+          id: 'item_0',
+          title: 'Nobody Ever Gets Credit for Fixing Problems that Never Happened',
+          source: 'Nicole Williams',
+          folder: 'Strategy & Craft',
+          readTime: '6 min read',
+          why: 'You finish this writer almost every time.',
+          summary: 'Working harder pays off fast; working smarter pays off with interest. The fire you put out earns a thank you; the fire you prevented earns nothing.',
+          url: 'https://substack.com/@pmresearcher/fixing-unseen-problems',
+          bannerImage: '/assets/aistudio/IMG_0653_a0a9ce59.png',
+          quote: 'What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing',
+          fullText: `What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing.
+
+In organizational dynamics, heroic firefighting is visible, dramatic, and emotionally compelling. When a server crashes at 2 AM or a supply chain breaks on a holiday weekend, the engineer or manager who stays up all night to patch the leak is celebrated. They receive public recognition, awards, and promotions because everyone witnessed the catastrophe and its subsequent resolution.
+
+Quiet prevention, by contrast, is completely invisible. The architectural refactor that eliminated the concurrency race condition before it ever triggered an outage produces no metrics, no alarms, and no drama. Nobody sends an email saying: "Congratulations, the system did not crash today."
+
+To build lasting systems—whether technical architectures, institutions, or personal intellectual routines—we must cultivate taste for the uncelebrated disciplines: calm prevention, rigorous invariants, and quiet curation.`,
+          isOutOfBubble: false
+        },
+        {
           id: 'item_1',
           title: 'The Architecture of Long-Lived Systems and Institutional Memory',
           source: 'Dan Luu',
@@ -503,6 +523,338 @@ Working with nothing more than tuning rods and disciplined ears, they turned civ
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Comprehensive multi-source feed stream endpoint
+  app.post('/api/feed-stream', async (req, res) => {
+    try {
+      const { sourceTitle, sourceId } = req.body;
+
+      const feedArticles = [
+        {
+          id: 'fa_nw_1',
+          source: 'Nicole Williams',
+          folder: 'Strategy & Craft',
+          title: 'Nobody Ever Gets Credit for Fixing Problems that Never Happened',
+          publishedAt: 'Today · 30m ago',
+          readTime: '6 min read',
+          summary: 'What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing.',
+          url: 'https://substack.com/@pmresearcher/fixing-unseen-problems',
+          fullText: `What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing.
+
+In organizational dynamics, heroic firefighting is visible, dramatic, and emotionally compelling. When a server crashes at 2 AM or a supply chain breaks on a holiday weekend, the engineer or manager who stays up all night to patch the leak is celebrated.
+
+Quiet prevention, by contrast, is completely invisible. The architectural refactor that eliminated the concurrency race condition before it ever triggered an outage produces no metrics, no alarms, and no drama.`,
+          bannerImage: '/assets/aistudio/IMG_0653_a0a9ce59.png',
+          quote: 'What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing',
+          isOutOfBubble: false,
+          why: 'Top pick from PM Researcher.'
+        },
+        {
+          id: 'fa_ant_1',
+          source: 'The Anthropic Stack',
+          folder: 'Tech & AI',
+          title: 'Scaling Laws and the Economics of Inference',
+          publishedAt: 'Today · 35m ago',
+          readTime: '10 min read',
+          summary: 'Why the engineering bottleneck in machine intelligence is shifting from massive training runs to inference throughput, verification budgets, and latency guarantees.',
+          url: 'https://anthropic.com/research/inference-economics',
+          fullText: `For several years, progress in machine intelligence was measured primarily by the scale of training compute. Today, the decisive competitive frontier is inference: how much reasoning can be executed reliably within strict latency envelopes.
+
+When inference becomes abundant and fast, applications shift from synchronous chat interfaces to quiet background editors. Instead of asking a prompt box for suggestions, tools pre-compute digests, verify citations, and organize material before the user even opens their screen.
+
+This architectural shift rewards software that exercises editorial restraint. The goal is no longer generating maximal text, but delivering dense, high-signal curation that respects human attention.`,
+          bannerImage: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'In your Tech & AI folder.'
+        },
+        {
+          id: 'fa_ant_2',
+          source: 'The Anthropic Stack',
+          folder: 'Tech & AI',
+          title: 'Constitutional Steering: Guiding Agentic Workflows with Verifiable Invariants',
+          publishedAt: 'Yesterday · 4:15 PM',
+          readTime: '8 min read',
+          summary: 'How system-level constitutions and invariant tests keep multi-step autonomous processes aligned without brittleness.',
+          url: 'https://anthropic.com/research/constitutional-steering',
+          fullText: `Autonomous agents often derail not because their core logic fails, but because small drift across sequential tool invocations compounds into hallucination.
+
+By enforcing verifiable invariants at boundary transitions, systems can maintain predictable trajectory. The key is treating every intermediate tool call as an auditable contract with strict post-conditions rather than an opaque block of text.`,
+          bannerImage: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'Follows your interest in software architecture.'
+        },
+        {
+          id: 'fa_ant_3',
+          source: 'The Anthropic Stack',
+          folder: 'Tech & AI',
+          title: 'Measuring Latency Floor Reductions in Parallel Tool Invocations',
+          publishedAt: 'Nov 11 · 9:00 AM',
+          readTime: '6 min read',
+          summary: 'Benchmarking the architectural advantages of co-executing verification tools in single rounds.',
+          url: 'https://anthropic.com/research/tool-latency-floors',
+          fullText: `When client applications wait for sequential roundtrips between distributed services, latency degrades user engagement quickly.
+
+Batching queries into single parallel dispatches reduces P95 turnaround times significantly while keeping system state atomic. This design pattern proves critical for responsive mobile web applications.`,
+          bannerImage: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'Engineering mechanics from The Anthropic Stack.'
+        },
+        {
+          id: 'fa_wh_1',
+          source: 'World Politics & History',
+          folder: 'History',
+          title: 'How Medieval Bell Founders Tuned Bronze by Ear',
+          publishedAt: 'Today · 1h ago',
+          readTime: '7 min read',
+          summary: 'Before electronic spectrum analyzers, Flemish foundry masters learned how shaving internal bronze ribs unlocked harmonic resonance across five octaves.',
+          url: 'https://worldhistory.com/bell-acoustics',
+          fullText: `A cast church bell produces five distinct acoustic overtones: the strike note, the hum, the tierce, the quint, and the nominal. In unmachined bells, these partials clash discordantly.
+
+In the seventeenth century, the Hemony brothers perfected vertical lathe carving on bronze bells, cutting away metal from specific inner rings until the five frequencies resonated in pure concord. This acoustic breakthrough transformed European cityscapes into harmonious musical landscapes.`,
+          bannerImage: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'In your History folder.'
+        },
+        {
+          id: 'fa_wh_2',
+          source: 'World Politics & History',
+          folder: 'History',
+          title: 'The Grain Routes of Byzantium: Logistics of Imperial Survival',
+          publishedAt: 'Yesterday · 2:30 PM',
+          readTime: '9 min read',
+          summary: 'How Constantinople survived centuries of siege through fortified granaries, maritime grain fleets, and price stabilization laws.',
+          url: 'https://worldhistory.com/byzantine-grain-routes',
+          fullText: `The survival of Byzantium was fundamentally an exercise in grain logistics. With hundreds of thousands of citizens confined behind the Theodosian walls, supply lines from Egypt and the Black Sea coasts had to remain unbroken.
+
+The empire established the praefectus annonae to oversee shipping manifests, build earthquake-resilient stone silos, and distribute bread rations during famine. When military lines broke, administrative logistics kept civilization afloat.`,
+          bannerImage: 'https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'Direct continuation of the Byzantine trade series.'
+        },
+        {
+          id: 'fa_prospect_1',
+          source: 'Prospect Magazine',
+          folder: 'Culture',
+          title: 'The Quiet Rise of Municipal Water Architects',
+          publishedAt: 'Today · 2h ago',
+          readTime: '6 min read',
+          summary: 'Inside the unglamorous civic civil engineering reshaping how European cities absorb torrential storms while restoring urban biodiversity.',
+          url: 'https://prospectmagazine.co.uk/water-architects',
+          fullText: `Beneath every resilient metropolis lies a network of retention ponds, subterranean drainage channels, and porous paving stones designed to prevent street inundation.
+
+In Rotterdam, public squares serve as basketball courts in dry weather and sunken retention basins during cloudbursts. Rather than hiding storm water in concrete culverts, contemporary urban hydrologists integrate water openly into public civic life.`,
+          bannerImage: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'In your Culture folder.'
+        },
+        {
+          id: 'fa_prospect_2',
+          source: 'Prospect Magazine',
+          folder: 'Culture',
+          title: 'The Rebirth of European Night Trains and Slow Transit',
+          publishedAt: 'Nov 12 · 11:20 AM',
+          readTime: '7 min read',
+          summary: 'Why overnight sleeper lines from Vienna to Brussels are filling up with travelers who value unhurried transit over airport security lines.',
+          url: 'https://prospectmagazine.co.uk/night-trains',
+          fullText: `As aviation taxes and airport congestion mount, European travelers are returning to overnight sleeper routes. Falling asleep in Berlin and waking up in Paris offers a restorative rhythm lost in short-haul air travel.
+
+The renaissance of cross-border rail highlights a broader shift toward deliberate slowness in personal technology, travel, and media consumption.`,
+          bannerImage: 'https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'From Prospect Magazine.'
+        },
+        {
+          id: 'fa_bhaskar_1',
+          source: 'Dr. Bhaskar Economics',
+          folder: 'Economics',
+          title: 'Fractional Reserve Mechanics in Early Renaissance Trading Hubs',
+          publishedAt: 'Today · 3h ago',
+          readTime: '9 min read',
+          summary: 'How deposit receipts in Genoa and Venice evolved into liquid secondary credit instruments that bypassed papal usury restrictions.',
+          url: 'https://bhaskar.econ/fractional-reserve-genoa',
+          fullText: `Medieval merchant bankers discovered that only a small portion of deposited gold coin was ever withdrawn simultaneously. By issuing transfer receipts to settlement merchants, banks unlocked multiplier credit that fueled naval shipping.
+
+This paper analyses how maritime credit contracts evolved within commercial guilds to establish early capital reserves without central bank oversight.`,
+          bannerImage: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'In your Economics folder.'
+        },
+        {
+          id: 'fa_dan_1',
+          source: 'Dan Luu',
+          folder: 'Tech & Engineering',
+          title: 'The Architecture of Long-Lived Systems and Institutional Memory',
+          publishedAt: 'Today · 4h ago',
+          readTime: '7 min read',
+          summary: 'An exploration of how engineering organizations preserve architectural rationale across decades without succumbing to institutional amnesia.',
+          url: 'https://danluu.com/systems-memory',
+          fullText: `When building software or large institutions, the hardest problem is rarely writing the initial code or establishing the charter. The hardest problem is ensuring that the tacit knowledge of why decisions were made survives the departure of the people who made them.
+
+In most modern engineering teams, documentation decays rapidly because it is treated as a chore rather than a living artifact. When an engineer leaves, their mental model of the system leaves with them. Over time, the codebase becomes a series of archaeological layers where current maintainers are afraid to touch certain modules because nobody remembers what load-bearing assumptions they rely on.`,
+          bannerImage: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'You finish this writer almost every time.'
+        },
+        {
+          id: 'fa_dan_2',
+          source: 'Dan Luu',
+          folder: 'Tech & Engineering',
+          title: 'Why Small Tools Outlast Grand Platforms',
+          publishedAt: 'Yesterday · 10:00 AM',
+          readTime: '8 min read',
+          summary: 'A look at unix utilities, plain text formats, and why narrow software endures while ambitious suites collapse under feature bloat.',
+          url: 'https://danluu.com/small-tools',
+          fullText: `Every decade brings a wave of all-in-one platforms promising to unify communication, documents, tasks, and knowledge under a single proprietary roof. Almost inevitably, those platforms grow sluggish, accumulate conflicting workflows, and eventually vanish when corporate priorities shift.
+
+Meanwhile, small single-purpose tools built around open formats keep working quietly for thirty or forty years. Their durability comes from restraint: they do one job cleanly, expose predictable interfaces, and refuse to trap user data inside opaque silos.`,
+          bannerImage: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'Dan Luu engineering archive.'
+        },
+        {
+          id: 'fa_strat_1',
+          source: 'Stratechery by Ben Thompson',
+          folder: 'Tech & Strategy',
+          title: 'Stratechery: The Aggregation Theory of Modern Media',
+          publishedAt: 'Today · 5h ago',
+          readTime: '11 min read',
+          summary: 'How zero marginal distribution cost inverted media power dynamics, and why owning discovery dominates owning supply.',
+          url: 'https://stratechery.com/aggregation-theory',
+          fullText: `For decades, media companies enjoyed local monopolies because distribution was physically constrained. If you owned the printing press, the delivery trucks, or the cable television lines, you controlled access to the audience.
+
+The internet inverted this power dynamic completely. Distribution marginal cost dropped to zero, and all content became instantly accessible globally. In this new paradigm, the bottleneck shifted from distribution to discovery.`,
+          bannerImage: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'You finish this writer almost every time.'
+        },
+        {
+          id: 'fa_mr_1',
+          source: 'Marginal Revolution',
+          folder: 'Economics',
+          title: 'Venetian Banking Innovations and the Birth of Modern Credit',
+          publishedAt: 'Today · 6h ago',
+          readTime: '9 min read',
+          summary: 'How 14th-century merchants in the Venetian lagoon invented bills of exchange and giro banking that powered the Renaissance.',
+          url: 'https://marginalrevolution.com/venice-credit',
+          fullText: `In the crowded piazzas of 14th-century Venice, merchants faced a logistical nightmare. Transporting gold coin across pirate-infested Mediterranean trade routes was both dangerous and inefficient. Out of this necessity arose the giro bank and the bill of exchange—instruments that transformed credit from a personal favor between acquaintances into a liquid, transferable financial asset.`,
+          bannerImage: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'Follows on from the Byzantine trade piece.'
+        },
+        {
+          id: 'fa_mr_2',
+          source: 'Marginal Revolution',
+          folder: 'Economics',
+          title: 'The Medici Ledger: Double-Entry Bookkeeping as Cultural Engine',
+          publishedAt: 'Yesterday · 8:15 AM',
+          readTime: '7 min read',
+          summary: 'How systematic balance sheets allowed Florentine merchant houses to coordinate overseas branches with audit confidence.',
+          url: 'https://marginalrevolution.com/medici-ledger',
+          fullText: `Before double-entry bookkeeping spread across northern Italy, even wealthy trading houses struggled to tell whether a distant voyage had truly turned a profit or simply moved cash from one pocket to another. Luca Pacioli's codification of Venetian accounting methods turned commerce into a legible discipline.`,
+          bannerImage: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'Next step in Renaissance financial history.'
+        },
+        {
+          id: 'fa_ala_1',
+          source: 'A List Apart',
+          folder: 'Design',
+          title: 'The Unseen Geometry of Traditional Japanese Joinery',
+          publishedAt: 'Today · 7h ago',
+          readTime: '5 min read',
+          summary: 'Why interlocking timber joints without nails or glue achieve seismic resilience and timeless aesthetic harmony.',
+          url: 'https://alistapart.com/japanese-joinery',
+          fullText: `In traditional Japanese timber architecture, master carpenters construct soaring temples and multi-story pagodas without a single nail, screw, or drop of glue. Instead, they rely on complex interlocking joints—such as the sashigane and kanawa tsugi—that lock tighter as wood expands and contracts with humidity and seismic tremors.`,
+          bannerImage: 'https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'In your Design folder.'
+        },
+        {
+          id: 'fa_longnow_1',
+          source: 'Long Now Foundation',
+          folder: 'Philosophy & Long-term',
+          title: 'Deep Time and the 10,000-Year Clock',
+          publishedAt: 'Yesterday · 5:00 PM',
+          readTime: '6 min read',
+          summary: 'Designing mechanical artifacts intended to run accurately for millennia requires rethinking human impatience.',
+          url: 'https://longnow.org/10000-year-clock',
+          fullText: `Modern civilization suffers from a chronic temporal myopia. We plan in quarterly earnings reports, political election cycles, and 24-hour news cycles. Yet the most profound challenges facing humanity—ecological stewardship, nuclear waste management, infrastructure resilience—operate on timescales of centuries and millennia.`,
+          bannerImage: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: false,
+          why: 'In your Philosophy folder.'
+        },
+        {
+          id: 'fa_ny_1',
+          source: 'The New Yorker - Books',
+          folder: 'Culture',
+          title: 'The Sonification of Stellar Nurseries: Listening to Nebulae',
+          publishedAt: 'Nov 12 · 2:00 PM',
+          readTime: '8 min read',
+          summary: 'How astronomers are translating James Webb Space Telescope infrared data into audible soundscapes.',
+          url: 'https://www.newyorker.com/science/stellar-sonification',
+          fullText: `For centuries, astronomy has been an overwhelmingly visual science. We chart the universe through photographs rendered in false color, mapping light waves that our eyes cannot naturally perceive. But in recent years, astrophysicists and sound artists have begun translating astronomical telescope data into audible frequencies—a process known as sonification.`,
+          bannerImage: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80',
+          isOutOfBubble: true,
+          why: 'Deliberate stretch: Outside your usual tech and economics routine.'
+        }
+      ];
+
+      // If a specific source title or ID was selected, filter by that source
+      let filtered = feedArticles;
+      if (sourceTitle && sourceTitle.trim() && sourceTitle !== 'all') {
+        const queryNorm = sourceTitle.trim().toLowerCase();
+        filtered = feedArticles.filter(
+          item =>
+            item.source.toLowerCase() === queryNorm ||
+            item.source.toLowerCase().includes(queryNorm) ||
+            queryNorm.includes(item.source.toLowerCase())
+        );
+
+        // If it's a custom source without pre-baked articles, synthesize realistic articles
+        if (filtered.length === 0) {
+          filtered = [
+            {
+              id: `fa_custom_${Date.now()}_1`,
+              source: sourceTitle,
+              folder: 'Custom Feed',
+              title: `Latest Dispatches from ${sourceTitle}`,
+              publishedAt: 'Today · 15m ago',
+              readTime: '6 min read',
+              summary: `Recent analytical reporting and essays directly from the ${sourceTitle} publication stream.`,
+              url: `https://example.com/${encodeURIComponent(sourceTitle)}`,
+              fullText: `This entry represents the live syndicated article stream from ${sourceTitle}. In this stream, entries appear in chronological arrival order—providing the traditional, comprehensive view of everything published by this author or organization.\n\nWhile Curator's morning digest distills five to eight items with editorial explanations, this Feeds tab gives you unfiltered access to the complete chronological stream whenever you want to browse all entries.`,
+              bannerImage: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80',
+              isOutOfBubble: false,
+              why: `From your ${sourceTitle} subscription.`
+            },
+            {
+              id: `fa_custom_${Date.now()}_2`,
+              source: sourceTitle,
+              folder: 'Custom Feed',
+              title: `Archived Note: Foundational Perspectives on ${sourceTitle}`,
+              publishedAt: 'Yesterday · 3:45 PM',
+              readTime: '5 min read',
+              summary: `Earlier commentary and historical analysis published in the ${sourceTitle} feed.`,
+              url: `https://example.com/${encodeURIComponent(sourceTitle)}/archive`,
+              fullText: `A deeper retrospective from ${sourceTitle}. Reading older entries in an author's archive helps uncover the foundational mental models that inform their current viewpoints.\n\nTraditional RSS streams allow you to track the evolution of an author's thinking over time without algorithmic interference.`,
+              bannerImage: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
+              isOutOfBubble: false,
+              why: `Archived article from ${sourceTitle}.`
+            }
+          ];
+        }
+      }
+
+      res.json({
+        success: true,
+        source: sourceTitle || 'all',
+        total: filtered.length,
+        articles: filtered
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to retrieve feed stream' });
     }
   });
 
