@@ -120,20 +120,39 @@ export default function App() {
     return [];
   });
 
-  const [signals, setSignals] = useState<{ more: string[]; less: string[]; moreIds?: string[]; lessIds?: string[] }>(() => {
+  const [signals, setSignals] = useState<{
+    moreTopics: string[];
+    lessTopics: string[];
+    moreIds: string[];
+    lessIds: string[];
+    more: string[];
+    less: string[];
+  }>(() => {
     const saved = localStorage.getItem('curator_signals');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
+        const moreTopics = Array.isArray(parsed.moreTopics)
+          ? parsed.moreTopics
+          : Array.isArray(parsed.more)
+            ? parsed.more.filter((m: string) => !sources.some(s => s.title.toLowerCase() === m.toLowerCase()))
+            : [];
+        const lessTopics = Array.isArray(parsed.lessTopics)
+          ? parsed.lessTopics
+          : Array.isArray(parsed.less)
+            ? parsed.less.filter((l: string) => !sources.some(s => s.title.toLowerCase() === l.toLowerCase()))
+            : [];
         return {
-          more: Array.isArray(parsed.more) ? parsed.more : [],
-          less: Array.isArray(parsed.less) ? parsed.less : [],
+          moreTopics,
+          lessTopics,
           moreIds: Array.isArray(parsed.moreIds) ? parsed.moreIds : [],
           lessIds: Array.isArray(parsed.lessIds) ? parsed.lessIds : [],
+          more: moreTopics,
+          less: lessTopics,
         };
       } catch (e) { /* ignore */ }
     }
-    return { more: [], less: [], moreIds: [], lessIds: [] };
+    return { moreTopics: [], lessTopics: [], moreIds: [], lessIds: [], more: [], less: [] };
   });
 
   // Settings
@@ -378,40 +397,65 @@ export default function App() {
   };
 
   const handleMore = (item: DigestItem) => {
-    const alreadyMore = signals.moreIds?.includes(item.id);
+    const topic = item.folder || 'this topic';
+    const alreadyMore = (signals.moreIds || []).includes(item.id);
     if (alreadyMore) {
-      setSignals(prev => ({
-        ...prev,
-        more: prev.more.filter(s => s !== item.source),
-        moreIds: (prev.moreIds || []).filter(id => id !== item.id),
-      }));
-      showToast(`Cleared preference for "${item.source}"`);
+      setSignals(prev => {
+        const nextIds = (prev.moreIds || []).filter(id => id !== item.id);
+        const hasOtherWithSameTopic = digest.some(d => d.id !== item.id && d.folder === item.folder && nextIds.includes(d.id));
+        const nextTopics = hasOtherWithSameTopic ? (prev.moreTopics || []) : (prev.moreTopics || []).filter(t => t !== item.folder);
+        return {
+          ...prev,
+          moreIds: nextIds,
+          moreTopics: nextTopics,
+          more: nextTopics,
+        };
+      });
+      showToast(`Removed preference for "${topic}"`);
       return;
     }
 
-    setSignals(prev => ({
-      more: Array.from(new Set([...prev.more, item.source])),
-      less: prev.less.filter(s => s !== item.source),
-      moreIds: Array.from(new Set([...(prev.moreIds || []), item.id])),
-      lessIds: (prev.lessIds || []).filter(id => id !== item.id),
-    }));
-    showToast(`Noted: More like "${item.source}"`);
+    setSignals(prev => {
+      const nextMoreIds = Array.from(new Set([...(prev.moreIds || []), item.id]));
+      const nextLessIds = (prev.lessIds || []).filter(id => id !== item.id);
+      const nextMoreTopics = item.folder ? Array.from(new Set([...(prev.moreTopics || []), item.folder])) : (prev.moreTopics || []);
+      const nextLessTopics = (prev.lessTopics || []).filter(t => t !== item.folder);
+      return {
+        ...prev,
+        moreIds: nextMoreIds,
+        lessIds: nextLessIds,
+        moreTopics: nextMoreTopics,
+        lessTopics: nextLessTopics,
+        more: nextMoreTopics,
+        less: nextLessTopics,
+      };
+    });
+    showToast(`Learned reading preference: More on ${topic}`);
   };
 
   const handleLess = (item: DigestItem) => {
-    // If already voted less, clicking toggles it off (acts as undo)
-    const isAlreadyLess = signals.lessIds?.includes(item.id) || signals.less.includes(item.source);
+    const topic = item.folder || 'this topic';
+    const isAlreadyLess = (signals.lessIds || []).includes(item.id);
     if (isAlreadyLess && !mutedCards[item.id]) {
       undoHandleLess(item.id);
       return;
     }
 
-    setSignals(prev => ({
-      more: prev.more.filter(s => s !== item.source),
-      less: Array.from(new Set([...prev.less, item.source])),
-      moreIds: (prev.moreIds || []).filter(id => id !== item.id),
-      lessIds: Array.from(new Set([...(prev.lessIds || []), item.id])),
-    }));
+    setSignals(prev => {
+      const nextLessIds = Array.from(new Set([...(prev.lessIds || []), item.id]));
+      const nextMoreIds = (prev.moreIds || []).filter(id => id !== item.id);
+      const nextLessTopics = item.folder ? Array.from(new Set([...(prev.lessTopics || []), item.folder])) : (prev.lessTopics || []);
+      const nextMoreTopics = (prev.moreTopics || []).filter(t => t !== item.folder);
+      return {
+        ...prev,
+        lessIds: nextLessIds,
+        moreIds: nextMoreIds,
+        lessTopics: nextLessTopics,
+        moreTopics: nextMoreTopics,
+        less: nextLessTopics,
+        more: nextMoreTopics,
+      };
+    });
 
     // Retain in mutedCards so the card slot shows an inline "Undo / Redo" fallback
     setMutedCards(prev => ({
@@ -419,12 +463,12 @@ export default function App() {
       [item.id]: item
     }));
 
-    showToast(`Quietened: Fewer like "${item.source}"`, 'Undo / Redo', () => undoHandleLess(item.id));
+    showToast(`Learned reading preference: Fewer on ${topic}`, 'Undo', () => undoHandleLess(item.id));
   };
 
   const undoHandleLess = (itemId: string) => {
     const item = mutedCards[itemId] || digest.find(d => d.id === itemId) || feedStreamArticles.find(d => d.id === itemId);
-    const sourceName = item?.source;
+    const topic = item?.folder;
 
     setMutedCards(prev => {
       const next = { ...prev };
@@ -432,13 +476,19 @@ export default function App() {
       return next;
     });
 
-    setSignals(prev => ({
-      ...prev,
-      lessIds: (prev.lessIds || []).filter(id => id !== itemId),
-      less: sourceName ? prev.less.filter(s => s !== sourceName) : prev.less
-    }));
+    setSignals(prev => {
+      const nextLessIds = (prev.lessIds || []).filter(id => id !== itemId);
+      const hasOtherWithSameTopic = digest.some(d => d.id !== itemId && d.folder === topic && nextLessIds.includes(d.id));
+      const nextLessTopics = hasOtherWithSameTopic ? (prev.lessTopics || []) : (prev.lessTopics || []).filter(t => t !== topic);
+      return {
+        ...prev,
+        lessIds: nextLessIds,
+        lessTopics: nextLessTopics,
+        less: nextLessTopics,
+      };
+    });
 
-    showToast(sourceName ? `Restored "${sourceName}" to feed` : 'Restored article to feed');
+    showToast(topic ? `Restored reading topic "${topic}"` : 'Restored article to feed');
   };
 
   const permanentlyDismissMuted = (itemId: string) => {
@@ -1114,19 +1164,19 @@ export default function App() {
                     type="button"
                     onClick={() => handleMore(selectedArticle)}
                     className={`p-2 rounded-xl transition cursor-pointer ${
-                      signals.moreIds?.includes(selectedArticle.id) || signals.more.includes(selectedArticle.source)
+                      signals.moreIds?.includes(selectedArticle.id)
                         ? 'text-amber-400 bg-amber-500/15 border border-amber-500/40 shadow-sm'
                         : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-transparent'
                     }`}
                     title={
-                      signals.moreIds?.includes(selectedArticle.id) || signals.more.includes(selectedArticle.source)
-                        ? 'More like this (active)'
-                        : 'More like this'
+                      signals.moreIds?.includes(selectedArticle.id)
+                        ? 'More on this topic (active)'
+                        : 'More on this topic'
                     }
-                    aria-label="More like this"
+                    aria-label="More on this topic"
                   >
                     <ThumbsUp className={`w-4 h-4 ${
-                      signals.moreIds?.includes(selectedArticle.id) || signals.more.includes(selectedArticle.source)
+                      signals.moreIds?.includes(selectedArticle.id)
                         ? 'fill-amber-400/30'
                         : ''
                     }`} />
@@ -1136,30 +1186,30 @@ export default function App() {
                     type="button"
                     onClick={() => handleLess(selectedArticle)}
                     className={`p-2 rounded-xl transition cursor-pointer ${
-                      signals.lessIds?.includes(selectedArticle.id) || signals.less.includes(selectedArticle.source)
+                      signals.lessIds?.includes(selectedArticle.id)
                         ? 'text-rose-400 bg-rose-500/15 border border-rose-500/40 shadow-sm'
                         : 'text-slate-400 hover:text-rose-400 hover:bg-slate-900 border border-transparent'
                     }`}
                     title={
-                      signals.lessIds?.includes(selectedArticle.id) || signals.less.includes(selectedArticle.source)
-                        ? 'Fewer like this (active)'
-                        : 'Fewer like this'
+                      signals.lessIds?.includes(selectedArticle.id)
+                        ? 'Fewer on this topic (active)'
+                        : 'Fewer on this topic'
                     }
-                    aria-label="Fewer like this"
+                    aria-label="Fewer on this topic"
                   >
                     <ThumbsDown className={`w-4 h-4 ${
-                      signals.lessIds?.includes(selectedArticle.id) || signals.less.includes(selectedArticle.source)
+                      signals.lessIds?.includes(selectedArticle.id)
                         ? 'fill-rose-400/30'
                         : ''
                     }`} />
                   </button>
 
-                  {(signals.lessIds?.includes(selectedArticle.id) || signals.less.includes(selectedArticle.source)) && (
+                  {signals.lessIds?.includes(selectedArticle.id) && (
                     <button
                       type="button"
                       onClick={() => undoHandleLess(selectedArticle.id)}
                       className="p-1.5 text-xs text-amber-400 hover:text-amber-300 transition-colors"
-                      title="Undo fewer like this"
+                      title="Undo fewer on this topic"
                       aria-label="Undo"
                     >
                       <RotateCcw className="w-3.5 h-3.5" />
@@ -1447,36 +1497,36 @@ export default function App() {
                             <ExternalLink className="w-3 h-3 text-slate-500" />
                           </a>
 
-                          {/* Curation actions: More, Less (icon-only) */}
+                          {/* Curation actions: More, Less (icon-only, reading preferences) */}
                           <div className="flex items-center gap-1.5">
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleMore(item); }}
                               className={`p-2 rounded-xl border transition ${
-                                actions.isVotedMore || signals.more.includes(item.source)
+                                actions.isVotedMore
                                   ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
                                   : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
                               }`}
-                              title={actions.isVotedMore || signals.more.includes(item.source) ? "More like this (voted)" : "More like this"}
-                              aria-label="More like this"
+                              title={actions.isVotedMore ? `More on ${item.folder || 'this topic'} (voted)` : `More on ${item.folder || 'this topic'}`}
+                              aria-label={`More on ${item.folder || 'this topic'}`}
                             >
                               <ThumbsUp className={`w-3.5 h-3.5 ${
-                                actions.isVotedMore || signals.more.includes(item.source) ? 'fill-amber-400/30' : ''
+                                actions.isVotedMore ? 'fill-amber-400/30' : ''
                               }`} />
                             </button>
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleLess(item); }}
                               className={`p-2 rounded-xl border transition ${
-                                actions.isVotedLess || signals.lessIds?.includes(item.id) || signals.less.includes(item.source)
+                                actions.isVotedLess
                                   ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
                                   : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
                               }`}
-                              title={actions.isVotedLess || signals.lessIds?.includes(item.id) || signals.less.includes(item.source) ? "Fewer like this (voted)" : "Fewer like this"}
-                              aria-label="Fewer like this"
+                              title={actions.isVotedLess ? `Fewer on ${item.folder || 'this topic'} (voted)` : `Fewer on ${item.folder || 'this topic'}`}
+                              aria-label={`Fewer on ${item.folder || 'this topic'}`}
                             >
                               <ThumbsDown className={`w-3.5 h-3.5 ${
-                                actions.isVotedLess || signals.lessIds?.includes(item.id) || signals.less.includes(item.source) ? 'fill-rose-400/30' : ''
+                                actions.isVotedLess ? 'fill-rose-400/30' : ''
                               }`} />
                             </button>
                           </div>
@@ -1688,30 +1738,30 @@ export default function App() {
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); handleMore(item); }}
                                   className={`p-2 rounded-xl border transition ${
-                                    signals.moreIds?.includes(item.id) || signals.more.includes(item.source)
+                                    signals.moreIds?.includes(item.id)
                                       ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
                                       : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
                                   }`}
-                                  title={signals.moreIds?.includes(item.id) || signals.more.includes(item.source) ? "More like this (voted)" : "More like this"}
-                                  aria-label="More like this"
+                                  title={signals.moreIds?.includes(item.id) ? `More on ${item.folder || 'this topic'} (voted)` : `More on ${item.folder || 'this topic'}`}
+                                  aria-label={`More on ${item.folder || 'this topic'}`}
                                 >
                                   <ThumbsUp className={`w-3.5 h-3.5 ${
-                                    signals.moreIds?.includes(item.id) || signals.more.includes(item.source) ? 'fill-amber-400/30' : ''
+                                    signals.moreIds?.includes(item.id) ? 'fill-amber-400/30' : ''
                                   }`} />
                                 </button>
                                 <button 
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); handleLess(item); }}
                                   className={`p-2 rounded-xl border transition ${
-                                    signals.lessIds?.includes(item.id) || signals.less.includes(item.source)
+                                    signals.lessIds?.includes(item.id)
                                       ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
                                       : 'bg-slate-900 border border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
                                   }`}
-                                  title={signals.lessIds?.includes(item.id) || signals.less.includes(item.source) ? "Fewer like this (voted)" : "Fewer like this"}
-                                  aria-label="Fewer like this"
+                                  title={signals.lessIds?.includes(item.id) ? `Fewer on ${item.folder || 'this topic'} (voted)` : `Fewer on ${item.folder || 'this topic'}`}
+                                  aria-label={`Fewer on ${item.folder || 'this topic'}`}
                                 >
                                   <ThumbsDown className={`w-3.5 h-3.5 ${
-                                    signals.lessIds?.includes(item.id) || signals.less.includes(item.source) ? 'fill-rose-400/30' : ''
+                                    signals.lessIds?.includes(item.id) ? 'fill-rose-400/30' : ''
                                   }`} />
                                 </button>
                               </div>
@@ -2392,6 +2442,68 @@ export default function App() {
               </div>
             </div>
 
+            {/* Reading Preferences (Topics & Themes) */}
+            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-200">Reading Preferences (Topics & Depth)</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Curator learns your reading tastes from Thumbs Up / Down. Your feed and author subscriptions in Sources remain untouched.
+                  </p>
+                </div>
+                {((signals.moreTopics && signals.moreTopics.length > 0) || (signals.lessTopics && signals.lessTopics.length > 0) || (signals.moreIds && signals.moreIds.length > 0) || (signals.lessIds && signals.lessIds.length > 0)) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSignals({ moreTopics: [], lessTopics: [], moreIds: [], lessIds: [], more: [], less: [] });
+                      showToast('Reading preferences reset to neutral');
+                    }}
+                    className="text-xs text-slate-400 hover:text-rose-400 transition"
+                  >
+                    Reset preferences
+                  </button>
+                )}
+              </div>
+
+              <div className="space-y-3 pt-1">
+                <div>
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">
+                    Prioritized Reading Topics ({signals.moreTopics?.length || 0})
+                  </span>
+                  {signals.moreTopics && signals.moreTopics.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {signals.moreTopics.map(topic => (
+                        <span key={topic} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/15 border border-amber-500/30 text-amber-300">
+                          <ThumbsUp className="w-3 h-3 fill-amber-400/40" />
+                          <span>{topic}</span>
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 italic">No topic boosts yet. Tap thumbs-up on articles you enjoy to prioritize similar themes.</p>
+                  )}
+                </div>
+
+                <div className="pt-2 border-t border-slate-900/80">
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">
+                    De-emphasized Reading Topics ({signals.lessTopics?.length || 0})
+                  </span>
+                  {signals.lessTopics && signals.lessTopics.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {signals.lessTopics.map(topic => (
+                        <span key={topic} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-rose-500/15 border border-rose-500/30 text-rose-300">
+                          <ThumbsDown className="w-3 h-3 fill-rose-400/40" />
+                          <span>{topic}</span>
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 italic">No muted topics. Tap thumbs-down to quietly de-prioritize specific subjects without removing any author or feed.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {/* Subscription Export */}
             <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
               <div>
@@ -2710,36 +2822,36 @@ export default function App() {
                             <ExternalLink className="w-3 h-3 text-slate-500" />
                           </a>
 
-                          {/* Curation actions: More, Less (icon-only) */}
+                          {/* Curation actions: More, Less (icon-only, reading preferences) */}
                           <div className="flex items-center gap-1.5">
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleMore(item); }}
                               className={`p-2 rounded-xl border transition ${
-                                actions.isVotedMore || signals.more.includes(item.source)
+                                actions.isVotedMore
                                   ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
                                   : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
                               }`}
-                              title={actions.isVotedMore || signals.more.includes(item.source) ? "More like this (voted)" : "More like this"}
-                              aria-label="More like this"
+                              title={actions.isVotedMore ? `More on ${item.folder || 'this topic'} (voted)` : `More on ${item.folder || 'this topic'}`}
+                              aria-label={`More on ${item.folder || 'this topic'}`}
                             >
                               <ThumbsUp className={`w-3.5 h-3.5 ${
-                                actions.isVotedMore || signals.more.includes(item.source) ? 'fill-amber-400/30' : ''
+                                actions.isVotedMore ? 'fill-amber-400/30' : ''
                               }`} />
                             </button>
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleLess(item); }}
                               className={`p-2 rounded-xl border transition ${
-                                actions.isVotedLess || signals.lessIds?.includes(item.id) || signals.less.includes(item.source)
+                                actions.isVotedLess
                                   ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
                                   : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
                               }`}
-                              title={actions.isVotedLess || signals.lessIds?.includes(item.id) || signals.less.includes(item.source) ? "Fewer like this (voted)" : "Fewer like this"}
-                              aria-label="Fewer like this"
+                              title={actions.isVotedLess ? `Fewer on ${item.folder || 'this topic'} (voted)` : `Fewer on ${item.folder || 'this topic'}`}
+                              aria-label={`Fewer on ${item.folder || 'this topic'}`}
                             >
                               <ThumbsDown className={`w-3.5 h-3.5 ${
-                                actions.isVotedLess || signals.lessIds?.includes(item.id) || signals.less.includes(item.source) ? 'fill-rose-400/30' : ''
+                                actions.isVotedLess ? 'fill-rose-400/30' : ''
                               }`} />
                             </button>
                           </div>

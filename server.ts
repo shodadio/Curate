@@ -345,8 +345,13 @@ async function startServer() {
     try {
       const { sources, signals, readingStats, serendipityDial, itemCount = 6 } = req.body;
 
-      const moreSignals: string[] = Array.isArray(signals?.more) ? signals.more : [];
-      const lessSignals: string[] = Array.isArray(signals?.less) ? signals.less : [];
+      const moreTopics: string[] = Array.isArray(signals?.moreTopics)
+        ? signals.moreTopics
+        : Array.isArray(signals?.more) ? signals.more : [];
+      const lessTopics: string[] = Array.isArray(signals?.lessTopics)
+        ? signals.lessTopics
+        : Array.isArray(signals?.less) ? signals.less : [];
+      const moreIds: string[] = Array.isArray(signals?.moreIds) ? signals.moreIds : [];
       const lessIds: string[] = Array.isArray(signals?.lessIds) ? signals.lessIds : [];
 
       // If Gemini API is available, use it to generate highly tailored editorial digest items and why-reasons
@@ -355,24 +360,28 @@ async function startServer() {
           const prompt = `You are a sophisticated personal reading editor. Your task is to curate a daily reading digest of exactly ${itemCount} items based on the user's subscriptions, recent reading signals, and a serendipity dial (${serendipityDial}% out of bubble).
 
 Subscriptions available: ${JSON.stringify(sources?.slice(0, 30) || [])}
-User explicit signals:
-- MORE like this (prioritize these sources, writers, folders, and adjacent ideas): ${JSON.stringify(moreSignals)}
-- LESS like this (exclude or strongly avoid these sources, topics, and articles): ${JSON.stringify(lessSignals)}
-Implicit reading completion stats (articles/sources finished): ${JSON.stringify(readingStats || {})}
+User explicit READING PREFERENCES:
+- Prioritized Reading Topics & Themes (MORE): ${JSON.stringify(moreTopics)}
+- De-emphasized Reading Topics & Themes (LESS): ${JSON.stringify(lessTopics)}
+- Specific article IDs voted thumbs-up: ${JSON.stringify(moreIds)}
+- Specific article IDs voted thumbs-down: ${JSON.stringify(lessIds)}
+Implicit reading completion stats (articles/topics finished): ${JSON.stringify(readingStats || {})}
 Serendipity Dial setting: ${serendipityDial}% (0% = stay close to established interests; 100% = strong stretch into new intellectual territories).
 
-Rules:
-1. Generate ${itemCount} articles.
-2. Strictly respect LESS signals: do not include items from sources or topics in LESS.
-3. Prioritize MORE signals: include follow-ups or deeper cuts from sources/topics in MORE and reflect that in the "why" note.
-4. At least 1 (or 2 if serendipity dial is >= 40) must be an "isOutOfBubble": true stretch item from outside standard interests, clearly labelled as a stretch.
-5. Each item needs:
+CRITICAL CURATION PRINCIPLES (READING PREFERENCES VS. AUTHOR/FEED PREFERENCES):
+1. The user's thumbs-up and thumbs-down signals represent topical READING PREFERENCES (intellectual domains, formats, and themes such as economic history, institutional design, philosophy, or architectural craft), NOT author or feed subscription preferences.
+2. DO NOT exclude, unsubscribe, or mute entire feeds/authors when a topic is marked LESS. All subscribed feeds remain active and eligible; simply surface articles from those feeds that match the user's preferred reading topics, and avoid the de-emphasized topics.
+3. Prioritize topics in MORE across all the user's subscribed feeds and writers.
+4. Editorial "why" rationale: Explain why the piece was selected based on topical curiosity, intellectual depth, or category relevance (e.g., "In your Strategy & Craft reading queue", "Follows your interest in economic history", "A deliberate stretch into architectural history"). Never state "More from this author/feed".
+5. Generate exactly ${itemCount} articles.
+6. At least 1 (or 2 if serendipity dial is >= 40) must be an "isOutOfBubble": true stretch item from outside standard interests, clearly labelled as a stretch.
+7. Each item needs:
    - id: unique string
    - title: compelling article title
-   - source: source publication name
-   - folder: category folder
+   - source: source publication or author name
+   - folder: category folder/topic
    - readTime: estimated reading time (e.g. "6 min read")
-   - why: ONE short sentence of plain English explaining why it was chosen (e.g., "In your economics folder", "Follows on from the Byzantine trade piece you read last week", "You asked for more from this writer", "A deliberate stretch into architectural history").
+   - why: ONE short sentence of plain English explaining the reading rationale
    - summary: 2-3 sentence teaser
    - url: simulated article url
    - fullText: full article text (400-600 words of rich, thoughtful essay or long-form prose suitable for a clean reading view).
@@ -598,13 +607,14 @@ Working with nothing more than tuning rods and disciplined ears, they turned civ
         }
       ];
 
-      const matchesSignal = (item: typeof pool[0], list: string[]) =>
-        list.some(sig => {
-          const s = sig.toLowerCase();
+      const matchesTopicSignal = (item: typeof pool[0], topicList: string[]) =>
+        topicList.some(sig => {
+          const s = sig.toLowerCase().trim();
+          if (!s) return false;
           return (
-            item.source.toLowerCase() === s ||
             item.folder.toLowerCase() === s ||
-            item.title.toLowerCase().includes(s)
+            item.title.toLowerCase().includes(s) ||
+            item.summary.toLowerCase().includes(s)
           );
         });
 
@@ -615,7 +625,7 @@ Working with nothing more than tuning rods and disciplined ears, they turned civ
       );
 
       const scored = pool
-        .filter(item => !lessIds.includes(item.id) && !matchesSignal(item, lessSignals))
+        .filter(item => !lessIds.includes(item.id) && !matchesTopicSignal(item, lessTopics))
         .map((item, idx) => {
           let score = 100 - idx;
           let why = item.why;
@@ -623,9 +633,9 @@ Working with nothing more than tuning rods and disciplined ears, they turned civ
           if (activeSourceNames.has(item.source.toLowerCase())) {
             score += 10;
           }
-          if (matchesSignal(item, moreSignals)) {
+          if (moreIds.includes(item.id) || matchesTopicSignal(item, moreTopics)) {
             score += 35;
-            why = `More from ${item.source}, as you asked.`;
+            why = `Selected for your reading interest in ${item.folder}.`;
           }
           if (readingStats && readingStats[item.id]?.finished) {
             score += 5;
