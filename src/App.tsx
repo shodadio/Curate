@@ -962,13 +962,16 @@ export default function App() {
               const progress = Math.min(100, Math.round((target.scrollTop / scrollHeight) * 100));
               const current = readingStats[selectedArticle.id] || { maxDepth: 0, finished: false };
               const newMax = Math.max(current.maxDepth || 0, progress);
-              const finished = newMax >= 85 || Boolean(current.finished);
+              const finished = newMax >= 80 || Boolean(current.finished);
               const updated = {
                 ...readingStats,
                 [selectedArticle.id]: { maxDepth: newMax, finished, lastRead: Date.now() }
               };
               setReadingStats(updated);
               localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
+              if (finished) {
+                setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
+              }
             }
           }}
         >
@@ -1077,109 +1080,92 @@ export default function App() {
             </div>
 
             {/* Minimalist Editorial Completion & Tuning Footer */}
-            <footer className="pt-6 pb-24 border-t border-slate-900 space-y-6">
-              {/* Read-through trigger & external source link */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const currentStats = readingStats[selectedArticle.id] || {};
-                      const isNowFinished = !currentStats.finished;
-                      const updated = {
-                        ...readingStats,
-                        [selectedArticle.id]: {
-                          maxDepth: isNowFinished ? 100 : 0,
-                          finished: isNowFinished,
-                          lastRead: Date.now()
-                        }
-                      };
-                      setReadingStats(updated);
-                      localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
-                      if (isNowFinished) {
-                        setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
-                        showToast('Marked as read through');
-                      } else {
-                        showToast('Marked as unread');
-                      }
-                    }}
-                    className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition ${
-                      readingStats[selectedArticle.id]?.finished
-                        ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-900/50'
-                        : 'bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 hover:border-slate-700'
-                    }`}
-                  >
-                    <Check className={`w-3.5 h-3.5 ${readingStats[selectedArticle.id]?.finished ? 'text-emerald-400 stroke-[3]' : 'text-slate-400'}`} />
-                    <span>{readingStats[selectedArticle.id]?.finished ? 'Read through ✓' : 'Mark as read'}</span>
-                  </button>
-                  {readingStats[selectedArticle.id]?.finished && (
-                    <span className="text-[11px] text-slate-500">Recorded on feed</span>
-                  )}
-                </div>
-
+            <footer className="pt-10 pb-24">
+              {/* Primary Outbound Action & Feedback Row */}
+              <div className="flex items-center justify-between gap-4">
                 <a
                   href={selectedArticle.url || '#'}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={() => {
+                    const currentStats = readingStats[selectedArticle.id] || { maxDepth: 100, finished: true };
+                    const updated = {
+                      ...readingStats,
+                      [selectedArticle.id]: {
+                        maxDepth: Math.max(currentStats.maxDepth || 0, 100),
+                        finished: true,
+                        lastRead: Date.now()
+                      }
+                    };
+                    setReadingStats(updated);
+                    localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
                     setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
                     showToast(`Opening original on ${selectedArticle.source}`);
                   }}
-                  className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-amber-300 transition-colors"
+                  className="inline-flex items-center gap-1.5 text-sm font-medium text-amber-400 hover:text-amber-300 underline underline-offset-4 decoration-amber-500/40 hover:decoration-amber-300 transition-colors group cursor-pointer"
                 >
-                  <span>Read original on {selectedArticle.source}</span>
-                  <ExternalLink className="w-3 h-3 text-slate-500" />
+                  <span>Read original</span>
+                  <ExternalLink className="w-4 h-4 text-amber-400/80 group-hover:text-amber-300 group-hover:translate-x-0.5 transition-transform shrink-0" />
                 </a>
-              </div>
 
-              {/* Tuning actions & back link */}
-              <div className="flex items-center justify-between pt-6 border-t border-slate-900 text-xs text-slate-400">
-                <div className="flex items-center gap-3">
-                  <span className="text-slate-500 text-[11px]">Feedback:</span>
+                {/* Feedback Icons Aligned to Right */}
+                <div className="flex items-center gap-1.5 ml-auto">
                   <button
                     type="button"
                     onClick={() => handleMore(selectedArticle)}
-                    className={`transition-colors ${
+                    className={`p-2 rounded-xl transition cursor-pointer ${
                       signals.moreIds?.includes(selectedArticle.id) || signals.more.includes(selectedArticle.source)
-                        ? 'text-amber-400 font-semibold'
-                        : 'text-slate-400 hover:text-slate-200'
+                        ? 'text-amber-400 bg-amber-500/15 border border-amber-500/40 shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-transparent'
                     }`}
+                    title={
+                      signals.moreIds?.includes(selectedArticle.id) || signals.more.includes(selectedArticle.source)
+                        ? 'More like this (active)'
+                        : 'More like this'
+                    }
+                    aria-label="More like this"
                   >
-                    {signals.moreIds?.includes(selectedArticle.id) ? '✓ More like this' : '+ More like this'}
+                    <ThumbsUp className={`w-4 h-4 ${
+                      signals.moreIds?.includes(selectedArticle.id) || signals.more.includes(selectedArticle.source)
+                        ? 'fill-amber-400/30'
+                        : ''
+                    }`} />
                   </button>
-                  <span className="text-slate-700" aria-hidden="true">·</span>
+
                   <button
                     type="button"
                     onClick={() => handleLess(selectedArticle)}
-                    className={`transition-colors ${
+                    className={`p-2 rounded-xl transition cursor-pointer ${
                       signals.lessIds?.includes(selectedArticle.id) || signals.less.includes(selectedArticle.source)
-                        ? 'text-rose-400 font-semibold'
-                        : 'text-slate-400 hover:text-rose-400'
+                        ? 'text-rose-400 bg-rose-500/15 border border-rose-500/40 shadow-sm'
+                        : 'text-slate-400 hover:text-rose-400 hover:bg-slate-900 border border-transparent'
                     }`}
+                    title={
+                      signals.lessIds?.includes(selectedArticle.id) || signals.less.includes(selectedArticle.source)
+                        ? 'Fewer like this (active)'
+                        : 'Fewer like this'
+                    }
+                    aria-label="Fewer like this"
                   >
-                    {signals.lessIds?.includes(selectedArticle.id) ? '✓ Fewer like this' : 'Fewer'}
+                    <ThumbsDown className={`w-4 h-4 ${
+                      signals.lessIds?.includes(selectedArticle.id) || signals.less.includes(selectedArticle.source)
+                        ? 'fill-rose-400/30'
+                        : ''
+                    }`} />
                   </button>
+
                   {(signals.lessIds?.includes(selectedArticle.id) || signals.less.includes(selectedArticle.source)) && (
                     <button
                       type="button"
                       onClick={() => undoHandleLess(selectedArticle.id)}
-                      className="text-xs text-amber-400 hover:text-amber-300 underline underline-offset-2 flex items-center gap-1 ml-1"
-                      title="Undo: Restore preference"
+                      className="p-1.5 text-xs text-amber-400 hover:text-amber-300 transition-colors"
+                      title="Undo fewer like this"
+                      aria-label="Undo"
                     >
-                      <RotateCcw className="w-3 h-3" />
-                      <span>Undo</span>
+                      <RotateCcw className="w-3.5 h-3.5" />
                     </button>
                   )}
                 </div>
-
-                <button
-                  type="button"
-                  onClick={closeArticle}
-                  className="text-xs text-slate-400 hover:text-slate-100 transition-colors flex items-center gap-1.5"
-                >
-                  <ArrowLeft className="w-3.5 h-3.5" />
-                  <span>Back to Digest</span>
-                </button>
               </div>
             </footer>
           </main>
@@ -1461,29 +1447,37 @@ export default function App() {
                             <ExternalLink className="w-3 h-3 text-slate-500" />
                           </a>
 
-                          {/* Curation actions: More, Less */}
-                          <div className="flex items-center gap-2">
+                          {/* Curation actions: More, Less (icon-only) */}
+                          <div className="flex items-center gap-1.5">
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition ${
+                              className={`p-2 rounded-xl border transition ${
                                 actions.isVotedMore || signals.more.includes(item.source)
-                                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 font-semibold'
-                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-300 hover:text-amber-300 hover:border-amber-500/40'
+                                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
+                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
                               }`}
-                              title="Vote: More like this"
+                              title={actions.isVotedMore || signals.more.includes(item.source) ? "More like this (voted)" : "More like this"}
+                              aria-label="More like this"
                             >
-                              <ThumbsUp className="w-3.5 h-3.5" />
-                              <span>{actions.isVotedMore ? 'More ✓' : 'More'}</span>
+                              <ThumbsUp className={`w-3.5 h-3.5 ${
+                                actions.isVotedMore || signals.more.includes(item.source) ? 'fill-amber-400/30' : ''
+                              }`} />
                             </button>
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-950/80 border border-slate-700/80 text-slate-300 hover:text-rose-300 hover:border-rose-500/40 text-xs font-medium transition"
-                              title="Vote: Less like this"
+                              className={`p-2 rounded-xl border transition ${
+                                actions.isVotedLess || signals.lessIds?.includes(item.id) || signals.less.includes(item.source)
+                                  ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
+                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
+                              }`}
+                              title={actions.isVotedLess || signals.lessIds?.includes(item.id) || signals.less.includes(item.source) ? "Fewer like this (voted)" : "Fewer like this"}
+                              aria-label="Fewer like this"
                             >
-                              <ThumbsDown className="w-3.5 h-3.5" />
-                              <span>Less</span>
+                              <ThumbsDown className={`w-3.5 h-3.5 ${
+                                actions.isVotedLess || signals.lessIds?.includes(item.id) || signals.less.includes(item.source) ? 'fill-rose-400/30' : ''
+                              }`} />
                             </button>
                           </div>
                         </div>
@@ -1688,28 +1682,37 @@ export default function App() {
                                 <ExternalLink className="w-3 h-3 text-rose-500/70" />
                               </a>
 
-                              <div className="flex items-center gap-2">
+                              {/* Curation actions: More, Less (icon-only) */}
+                              <div className="flex items-center gap-1.5">
                                 <button 
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition ${
+                                  className={`p-2 rounded-xl border transition ${
                                     signals.moreIds?.includes(item.id) || signals.more.includes(item.source)
-                                      ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 font-semibold'
-                                      : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-slate-100 hover:bg-slate-800'
+                                      ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
+                                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
                                   }`}
-                                  title="More like this"
+                                  title={signals.moreIds?.includes(item.id) || signals.more.includes(item.source) ? "More like this (voted)" : "More like this"}
+                                  aria-label="More like this"
                                 >
-                                  <ThumbsUp className="w-3.5 h-3.5" />
-                                  <span>{signals.moreIds?.includes(item.id) ? 'More ✓' : 'More'}</span>
+                                  <ThumbsUp className={`w-3.5 h-3.5 ${
+                                    signals.moreIds?.includes(item.id) || signals.more.includes(item.source) ? 'fill-amber-400/30' : ''
+                                  }`} />
                                 </button>
                                 <button 
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700/80 text-slate-300 hover:text-rose-300 hover:border-rose-500/40 text-xs font-medium transition"
-                                  title="Less like this"
+                                  className={`p-2 rounded-xl border transition ${
+                                    signals.lessIds?.includes(item.id) || signals.less.includes(item.source)
+                                      ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
+                                      : 'bg-slate-900 border border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
+                                  }`}
+                                  title={signals.lessIds?.includes(item.id) || signals.less.includes(item.source) ? "Fewer like this (voted)" : "Fewer like this"}
+                                  aria-label="Fewer like this"
                                 >
-                                  <ThumbsDown className="w-3.5 h-3.5" />
-                                  <span>Less</span>
+                                  <ThumbsDown className={`w-3.5 h-3.5 ${
+                                    signals.lessIds?.includes(item.id) || signals.less.includes(item.source) ? 'fill-rose-400/30' : ''
+                                  }`} />
                                 </button>
                               </div>
                             </div>
@@ -2707,28 +2710,37 @@ export default function App() {
                             <ExternalLink className="w-3 h-3 text-slate-500" />
                           </a>
 
-                          <div className="flex items-center gap-2">
+                          {/* Curation actions: More, Less (icon-only) */}
+                          <div className="flex items-center gap-1.5">
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition ${
+                              className={`p-2 rounded-xl border transition ${
                                 actions.isVotedMore || signals.more.includes(item.source)
-                                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 font-semibold'
-                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-300 hover:text-amber-300 hover:border-amber-500/40'
+                                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
+                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
                               }`}
-                              title="Vote: More like this"
+                              title={actions.isVotedMore || signals.more.includes(item.source) ? "More like this (voted)" : "More like this"}
+                              aria-label="More like this"
                             >
-                              <ThumbsUp className="w-3.5 h-3.5" />
-                              <span>{actions.isVotedMore ? 'More ✓' : 'More'}</span>
+                              <ThumbsUp className={`w-3.5 h-3.5 ${
+                                actions.isVotedMore || signals.more.includes(item.source) ? 'fill-amber-400/30' : ''
+                              }`} />
                             </button>
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-950/80 border border-slate-700/80 text-slate-300 hover:text-rose-300 hover:border-rose-500/40 text-xs font-medium transition"
-                              title="Vote: Less like this"
+                              className={`p-2 rounded-xl border transition ${
+                                actions.isVotedLess || signals.lessIds?.includes(item.id) || signals.less.includes(item.source)
+                                  ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
+                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
+                              }`}
+                              title={actions.isVotedLess || signals.lessIds?.includes(item.id) || signals.less.includes(item.source) ? "Fewer like this (voted)" : "Fewer like this"}
+                              aria-label="Fewer like this"
                             >
-                              <ThumbsDown className="w-3.5 h-3.5" />
-                              <span>Less</span>
+                              <ThumbsDown className={`w-3.5 h-3.5 ${
+                                actions.isVotedLess || signals.lessIds?.includes(item.id) || signals.less.includes(item.source) ? 'fill-rose-400/30' : ''
+                              }`} />
                             </button>
                           </div>
                         </div>

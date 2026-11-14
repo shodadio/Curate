@@ -69,8 +69,9 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - Pulls from foundational domains such as long-term thinking, political philosophy, urbanism, and deep history to challenge assumptions and spark creative cross-pollination.
 
 ### 3. Signal Tuning with Undo / Redo Safeguards
-- **More Like This**: Boosts weights for related topics and source categories.
-- **Fewer Like This**: Deprioritizes recurring themes without abrupt card deletion.
+- **Streamlined Icon-Only Controls**: Clean, minimalist thumbs-up and thumbs-down icon buttons on cards keep the layout uncluttered without extraneous "More" or "Less" text labels.
+- **More Like This**: Boosts weights for related topics and source categories (amber highlight on activation).
+- **Fewer Like This**: Deprioritizes recurring themes without abrupt card deletion (rose highlight on activation).
 - **Undo / Redo Fallback**:
   - When clicking "Fewer", the card morphs into an inline placeholder with `[ ⟲ Undo / Redo ]` and a dismiss option.
   - An interactive toast notification persists for 7 seconds with a direct one-click `Undo / Redo` action.
