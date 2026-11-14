@@ -4,32 +4,8 @@ import {
   Download, Upload, Bell, Sliders, ExternalLink, ArrowLeft, Heart, Eye, Sparkles, 
   AlertCircle, ShieldCheck, HelpCircle, X, Edit2, MessageSquare, Repeat, Share2, Home, BookOpen, Compass, Headphones, MessageCircle, Activity,
   ThumbsUp, ThumbsDown, FileUp, Search, Globe, CheckCircle2, Volume2, VolumeX, Play, Pause, Square,
-  Terminal, Clock, Gauge, Zap, DollarSign, CornerDownLeft, Info, RotateCcw, EyeOff, Undo2
+  RotateCcw, EyeOff
 } from 'lucide-react';
-
-interface CostStatus {
-  tier: string;
-  limitDaily: number;
-  usedDaily: number;
-  remainingDaily: number;
-  percentRemaining: number;
-  limitPerMinute: number;
-  usedThisMinute: number;
-  remainingThisMinute: number;
-  resetsAtUtc: string;
-  resetsInSeconds: number;
-  resetsInFormatted: string;
-  minuteResetsInSeconds: number;
-  aiQuotaDepleted: boolean;
-  depletedReason: string;
-  costSoFar: string;
-  currency: string;
-  status: 'active' | 'depleted' | 'fallback';
-  engine: string;
-  totalRequestsAllTime: number;
-  hasApiKey: boolean;
-  lastChecked: string;
-}
 
 interface DiscoveredSource {
   title: string;
@@ -188,14 +164,6 @@ export default function App() {
     return saved ? Number(saved) : 6;
   });
 
-  // Free tier & status
-  const [freeTierInfo, setFreeTierInfo] = useState<{ limit: number; used: number; remaining: number; percentRemaining: number }>({
-    limit: 10000,
-    used: 156,
-    remaining: 9844,
-    percentRemaining: 98.4
-  });
-
   const [loadingDigest, setLoadingDigest] = useState<boolean>(false);
   const [activeToast, setActiveToast] = useState<{
     id: string;
@@ -207,29 +175,6 @@ export default function App() {
 
   // Muted cards state for immediate inline Undo / Redo when user clicks "Fewer"
   const [mutedCards, setMutedCards] = useState<Record<string, DigestItem>>({});
-
-  // Live /cost and quota diagnostics state
-  const [costData, setCostData] = useState<CostStatus | null>(null);
-  const [showCostModal, setShowCostModal] = useState<boolean>(false);
-  const [loadingCost, setLoadingCost] = useState<boolean>(false);
-  const [testingGemini, setTestingGemini] = useState<boolean>(false);
-  const [costTerminalInput, setCostTerminalInput] = useState<string>('');
-  const [costTerminalLog, setCostTerminalLog] = useState<Array<{
-    id: string;
-    cmd: string;
-    result: string;
-    time: string;
-    level?: 'success' | 'warn' | 'info';
-  }>>([
-    {
-      id: 'init_1',
-      cmd: '/cost',
-      result: 'Curator diagnostics online. Type /cost to query live free tier quota & reset countdown.',
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      level: 'info'
-    }
-  ]);
-  const terminalInputRef = React.useRef<HTMLInputElement | null>(null);
 
   // Add source modal state
   const [showAddSourceModal, setShowAddSourceModal] = useState<boolean>(false);
@@ -334,58 +279,8 @@ export default function App() {
   }, [readArticleIds]);
 
   useEffect(() => {
-    fetchStatus();
     generateDigest();
   }, [itemCount, serendipityDial]);
-
-  useEffect(() => {
-    fetchCostStatus();
-    const poll = setInterval(fetchCostStatus, 30000);
-    return () => clearInterval(poll);
-  }, []);
-
-  useEffect(() => {
-    if (!showCostModal) return;
-    const tick = setInterval(() => {
-      setCostData(prev => {
-        if (!prev) return prev;
-        const nextSec = Math.max(0, prev.resetsInSeconds - 1);
-        const h = Math.floor(nextSec / 3600);
-        const m = Math.floor((nextSec % 3600) / 60);
-        const s = nextSec % 60;
-        const formatted = `${h.toString().padStart(2, '0')}h ${m.toString().padStart(2, '0')}m ${s.toString().padStart(2, '0')}s`;
-        const nextMinuteSec = prev.minuteResetsInSeconds > 1 ? prev.minuteResetsInSeconds - 1 : 60;
-        return {
-          ...prev,
-          resetsInSeconds: nextSec,
-          resetsInFormatted: formatted,
-          minuteResetsInSeconds: nextMinuteSec
-        };
-      });
-    }, 1000);
-    return () => clearInterval(tick);
-  }, [showCostModal]);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        openCostModal('/cost');
-        return;
-      }
-      const target = e.target as HTMLElement | null;
-      const isTyping = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
-      if (!isTyping && e.key === '/') {
-        e.preventDefault();
-        openCostModal('/cost');
-      }
-      if (e.key === 'Escape' && showCostModal) {
-        setShowCostModal(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showCostModal]);
 
   useEffect(() => {
     if (activeTab === 'feeds') {
@@ -452,18 +347,6 @@ export default function App() {
     );
   };
 
-  const fetchStatus = async () => {
-    try {
-      const res = await fetch('/api/status');
-      const data = await res.json();
-      if (data.freeTier) {
-        setFreeTierInfo(data.freeTier);
-      }
-    } catch (e) {
-      // offline
-    }
-  };
-
   const generateDigest = async () => {
     setLoadingDigest(true);
     try {
@@ -497,7 +380,6 @@ export default function App() {
         });
         setDigest(enhanced);
       }
-      fetchStatus();
     } catch (e) {
       // fallback
     } finally {
@@ -590,167 +472,6 @@ export default function App() {
       return next;
     });
     setDigest(prev => prev.filter(d => d.id !== itemId));
-  };
-
-  const fetchCostStatus = async () => {
-    try {
-      const res = await fetch('/api/cost');
-      if (res.ok) {
-        const data: CostStatus = await res.json();
-        setCostData(data);
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  const openCostModal = (initialCmd?: string) => {
-    setShowCostModal(true);
-    fetchCostStatus();
-    if (initialCmd) {
-      runTerminalCommand(initialCmd);
-    }
-    setTimeout(() => {
-      terminalInputRef.current?.focus();
-    }, 150);
-  };
-
-  const runTerminalCommand = async (cmdStr: string) => {
-    const cleanCmd = cmdStr.trim();
-    if (!cleanCmd) return;
-    const cmd = cleanCmd.toLowerCase();
-
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-    if (cmd === '/clear' || cmd === 'clear') {
-      setCostTerminalLog([]);
-      setCostTerminalInput('');
-      return;
-    }
-
-    if (cmd === '/cost' || cmd === 'cost' || cmd === '/quota' || cmd === 'quota' || cmd === '/status' || cmd === 'status') {
-      setLoadingCost(true);
-      try {
-        const res = await fetch('/api/cost');
-        const data: CostStatus = await res.json();
-        setCostData(data);
-        const output = [
-          `STATUS: ${data.aiQuotaDepleted ? 'PREPAYMENT BALANCE DEPLETED ($0.00)' : 'OPERATIONAL (FREE TIER)'}`,
-          `REMAINING: ${data.percentRemaining}% (${data.remainingDaily} / ${data.limitDaily} daily requests left)`,
-          `DAILY RESET IN: ${data.resetsInFormatted} (Midnight UTC / 16:00 PST)`,
-          `RATE LIMIT: ${data.remainingThisMinute}/${data.limitPerMinute} RPM (resets in ${data.minuteResetsInSeconds}s)`,
-          `ESTIMATED SPEND: ${data.costSoFar} USD`,
-          `ACTIVE ENGINE: ${data.engine}`
-        ].join('\n');
-        setCostTerminalLog(prev => [
-          ...prev,
-          { id: Math.random().toString(), cmd: cleanCmd, result: output, time: timeStr, level: data.aiQuotaDepleted ? 'warn' : 'success' }
-        ]);
-      } catch (err: any) {
-        setCostTerminalLog(prev => [
-          ...prev,
-          { id: Math.random().toString(), cmd: cleanCmd, result: `Failed to fetch /cost: ${err.message}`, time: timeStr, level: 'warn' }
-        ]);
-      } finally {
-        setLoadingCost(false);
-        setCostTerminalInput('');
-      }
-      return;
-    }
-
-    if (cmd === '/test' || cmd === 'test' || cmd === '/ping' || cmd === 'ping') {
-      setTestingGemini(true);
-      setCostTerminalLog(prev => [
-        ...prev,
-        { id: Math.random().toString(), cmd: cleanCmd, result: 'Pinging Google Gemini API...', time: timeStr, level: 'info' }
-      ]);
-      try {
-        const res = await fetch('/api/cost/test', { method: 'POST' });
-        const testResult = await res.json();
-        if (testResult.data) {
-          setCostData(testResult.data);
-        }
-        const output = testResult.success
-          ? `SUCCESS: ${testResult.message} (Echo: "${testResult.response || 'OK'}")\nFree tier quota is ready and active.`
-          : `TEST NOTICE: ${testResult.message}\nNote: Curator automatically routes requests to the offline deterministic editorial engine so reading is uninterrupted.`;
-        setCostTerminalLog(prev => [
-          ...prev,
-          { id: Math.random().toString(), cmd: cleanCmd, result: output, time: timeStr, level: testResult.success ? 'success' : 'warn' }
-        ]);
-      } catch (err: any) {
-        setCostTerminalLog(prev => [
-          ...prev,
-          { id: Math.random().toString(), cmd: cleanCmd, result: `Ping error: ${err.message}`, time: timeStr, level: 'warn' }
-        ]);
-      } finally {
-        setTestingGemini(false);
-        setCostTerminalInput('');
-      }
-      return;
-    }
-
-    if (cmd === '/reset' || cmd === 'reset') {
-      try {
-        const res = await fetch('/api/cost/reset', { method: 'POST' });
-        const resetData = await res.json();
-        if (resetData.data) {
-          setCostData(resetData.data);
-        }
-        setCostTerminalLog(prev => [
-          ...prev,
-          { id: Math.random().toString(), cmd: cleanCmd, result: 'Request counters and depletion flag reset to 0.', time: timeStr, level: 'success' }
-        ]);
-      } catch (err: any) {
-        setCostTerminalLog(prev => [
-          ...prev,
-          { id: Math.random().toString(), cmd: cleanCmd, result: `Reset failed: ${err.message}`, time: timeStr, level: 'warn' }
-        ]);
-      }
-      setCostTerminalInput('');
-      return;
-    }
-
-    if (cmd === '/stats' || cmd === 'stats') {
-      const finishedCount = Object.keys(readingStats || {}).length;
-      const output = [
-        `READING ENGINE STATS:`,
-        `• Articles finished: ${finishedCount}`,
-        `• Subscribed feeds: ${sources.length}`,
-        `• Liked signals: ${signals.more.length} sources/topics`,
-        `• Disliked signals: ${signals.less.length} sources/topics`,
-        `• Saved articles: ${savedArticles.length}`
-      ].join('\n');
-      setCostTerminalLog(prev => [
-        ...prev,
-        { id: Math.random().toString(), cmd: cleanCmd, result: output, time: timeStr, level: 'info' }
-      ]);
-      setCostTerminalInput('');
-      return;
-    }
-
-    if (cmd === '/help' || cmd === 'help') {
-      const helpText = [
-        `CURATOR COMMAND PALETTE:`,
-        `• /cost   - View live free tier remaining percentage and reset countdown`,
-        `• /test   - Ping Gemini API connection & recheck quota`,
-        `• /reset  - Reset request counters & clear status flags`,
-        `• /stats  - View reading statistics, signals, and feed counts`,
-        `• /clear  - Clear terminal log`
-      ].join('\n');
-      setCostTerminalLog(prev => [
-        ...prev,
-        { id: Math.random().toString(), cmd: cleanCmd, result: helpText, time: timeStr, level: 'info' }
-      ]);
-      setCostTerminalInput('');
-      return;
-    }
-
-    setCostTerminalLog(prev => [
-      ...prev,
-      { id: Math.random().toString(), cmd: cleanCmd, result: `Unknown command "${cleanCmd}". Type /cost or /help to see available commands.`, time: timeStr, level: 'warn' }
-    ]);
-    setCostTerminalInput('');
   };
 
   const handleSave = (item: DigestItem) => {
@@ -858,11 +579,6 @@ export default function App() {
     const q = discoverQuery.trim();
     if (!q) return;
 
-    if (['/cost', 'cost', '/quota', 'quota', '/status', 'status'].includes(q.toLowerCase())) {
-      openCostModal(q);
-      return;
-    }
-
     setIsDiscovering(true);
     setDiscoverError(null);
     setHasSearchedSources(true);
@@ -881,7 +597,6 @@ export default function App() {
       }
       setDiscoverResults(Array.isArray(data.results) ? data.results : []);
       setDiscoverGroundingLinks(Array.isArray(data.groundingLinks) ? data.groundingLinks : []);
-      fetchStatus();
     } catch (err) {
       setDiscoverError('Could not reach the search service.');
       setDiscoverResults([]);
@@ -1592,7 +1307,7 @@ export default function App() {
                   ? 'ring-2 ring-amber-400 bg-gradient-to-tr from-amber-500 to-orange-500 text-slate-950 border-amber-400'
                   : 'bg-gradient-to-tr from-amber-500 to-orange-500 text-slate-950 border-orange-400/80 hover:scale-105'
               }`}
-              title="Profile & Settings (/cost quota)"
+              title="Profile & Settings"
             >
               ME
             </button>
@@ -2809,155 +2524,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Live /cost Command & Free Tier Quota Inspector */}
-            <div className="p-6 rounded-3xl bg-slate-900/60 border border-slate-800 space-y-5 shadow-lg">
-              <div className="flex items-start justify-between gap-4">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-                      <Terminal className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
-                        <span>API Free Tier Quota &amp; Spend</span>
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-normal">
-                          /cost
-                        </span>
-                      </h3>
-                      <p className="text-xs text-slate-400">Official Google Gemini Flash free tier allowance</p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="text-right shrink-0">
-                  <span className={`text-2xl font-mono font-bold tracking-tight ${
-                    costData?.aiQuotaDepleted
-                      ? 'text-rose-400'
-                      : (costData?.percentRemaining ?? 100) > 30
-                      ? 'text-emerald-400'
-                      : 'text-amber-400'
-                  }`}>
-                    {costData ? `${costData.percentRemaining}%` : '100%'}
-                  </span>
-                  <div className="text-[10px] font-mono text-slate-400">
-                    Remaining Quota
-                  </div>
-                </div>
-              </div>
-
-              {/* Progress Meter */}
-              <div className="space-y-1.5">
-                <div className="w-full h-2.5 rounded-full bg-slate-950 border border-slate-800 overflow-hidden p-0.5">
-                  <div 
-                    className={`h-full rounded-full transition-all duration-500 ${
-                      costData?.aiQuotaDepleted ? 'bg-rose-500 w-1' : (costData?.percentRemaining ?? 100) > 30 ? 'bg-emerald-500' : 'bg-amber-500'
-                    }`}
-                    style={{ width: `${Math.max(2, costData?.percentRemaining ?? 100)}%` }}
-                  />
-                </div>
-                <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
-                  <span>{costData?.remainingDaily ?? 1500} / {costData?.limitDaily ?? 1500} requests remaining</span>
-                  <span>Used today: <strong className="text-slate-300">{costData?.usedDaily ?? 0}</strong></span>
-                </div>
-              </div>
-
-              {/* Reset Timing & Rate Limits Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800/80 space-y-1">
-                  <div className="flex items-center gap-1.5 text-xs text-amber-400 font-mono font-semibold">
-                    <Clock className="w-3.5 h-3.5" />
-                    <span>Daily Reset Countdown</span>
-                  </div>
-                  <div className="text-lg font-mono font-bold text-slate-100">
-                    {costData?.resetsInFormatted || '23h 59m 59s'}
-                  </div>
-                  <p className="text-[10px] text-slate-400">
-                    Resets at 00:00 UTC (16:00 PST / 08:00 SGT)
-                  </p>
-                </div>
-
-                <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800/80 space-y-1">
-                  <div className="flex items-center gap-1.5 text-xs text-sky-400 font-mono font-semibold">
-                    <Gauge className="w-3.5 h-3.5" />
-                    <span>Rate Limit (RPM)</span>
-                  </div>
-                  <div className="text-lg font-mono font-bold text-slate-100">
-                    {costData?.remainingThisMinute ?? 15} / {costData?.limitPerMinute ?? 15} RPM
-                  </div>
-                  <p className="text-[10px] text-slate-400">
-                    Resets in {costData?.minuteResetsInSeconds ?? 60}s · Spend: $0.00
-                  </p>
-                </div>
-              </div>
-
-              {/* Engine Status Callout */}
-              {costData?.aiQuotaDepleted ? (
-                <div className="p-3.5 rounded-2xl bg-rose-950/30 border border-rose-800/50 text-xs space-y-1.5">
-                  <div className="flex items-center gap-2 text-rose-300 font-semibold text-xs">
-                    <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                    <span>Prepayment Balance Depleted (HTTP 402)</span>
-                  </div>
-                  <p className="text-slate-300 text-[11px] leading-relaxed">
-                    Google returned a 402 notice: prepaid wallet balance is $0.00. Recharge credits at{' '}
-                    <a 
-                      href="https://ai.studio/projects" 
-                      target="_blank" 
-                      rel="noopener noreferrer" 
-                      className="text-amber-400 underline font-mono inline-flex items-center gap-0.5"
-                    >
-                      ai.studio/projects <ExternalLink className="w-2.5 h-2.5" />
-                    </a>.
-                  </p>
-                  <p className="text-[10px] text-emerald-400 flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                    Curator is running on its deterministic editorial engine with zero downtime.
-                  </p>
-                </div>
-              ) : (
-                <div className="p-3 rounded-2xl bg-emerald-950/20 border border-emerald-800/30 text-xs flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-emerald-300 font-medium text-xs">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                    <span>Gemini AI Model Operational</span>
-                  </div>
-                  <span className="text-[11px] font-mono text-slate-400">1,500 daily requests included</span>
-                </div>
-              )}
-
-              {/* Action Buttons */}
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/60">
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => runTerminalCommand('/test')}
-                    disabled={testingGemini}
-                    className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-200 text-xs font-mono font-medium transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
-                    title="Ping Gemini connection"
-                  >
-                    <Zap className={`w-3.5 h-3.5 text-amber-400 ${testingGemini ? 'animate-pulse' : ''}`} />
-                    <span>{testingGemini ? 'Testing...' : 'Ping API (/test)'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => runTerminalCommand('/reset')}
-                    className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-300 text-xs font-mono font-medium transition flex items-center gap-1.5 cursor-pointer"
-                    title="Reset request counter"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
-                    <span>Reset</span>
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => openCostModal('/cost')}
-                  className="px-4 py-2 text-xs font-semibold rounded-xl bg-amber-500 text-slate-950 hover:bg-amber-400 transition flex items-center gap-1.5 cursor-pointer shadow-sm ml-auto"
-                >
-                  <Terminal className="w-3.5 h-3.5" />
-                  <span>Open /cost Terminal</span>
-                </button>
-              </div>
-            </div>
-
             {/* Subscription Export */}
             <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
               <div>
@@ -3372,273 +2938,6 @@ export default function App() {
         </div>
       </nav>
 
-      {/* /cost Command & Quota Inspector Modal */}
-      {showCostModal && (
-        <div 
-          className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in"
-          onClick={() => setShowCostModal(false)}
-        >
-          <div 
-            className="w-full max-w-xl rounded-3xl bg-slate-900 border border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Modal Header */}
-            <div className="p-5 border-b border-slate-800/80 flex items-center justify-between bg-slate-950/60">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-                  <Terminal className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-bold font-mono text-slate-100">Curator /cost</h3>
-                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">
-                      Gemini Flash Free Tier
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-400">Live API quota diagnostics &amp; reset schedule</p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => runTerminalCommand('/cost')}
-                  disabled={loadingCost}
-                  className="p-2 rounded-xl text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition disabled:opacity-50"
-                  title="Refresh status"
-                >
-                  <RefreshCw className={`w-4 h-4 ${loadingCost ? 'animate-spin' : ''}`} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowCostModal(false)}
-                  className="p-2 rounded-xl text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition"
-                  title="Close (Esc)"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Modal Body */}
-            <div className="p-6 overflow-y-auto space-y-6">
-              {/* Primary Percentage Hero */}
-              <div className="p-5 rounded-2xl bg-slate-950/70 border border-slate-800/90 space-y-4">
-                <div className="flex items-baseline justify-between">
-                  <div>
-                    <div className="text-[11px] font-mono uppercase tracking-wider text-slate-400">
-                      Free Tier Quota Remaining
-                    </div>
-                    <div className="flex items-baseline gap-2 mt-1">
-                      <span className={`text-4xl font-mono font-bold tracking-tight ${
-                        costData?.aiQuotaDepleted
-                          ? 'text-rose-400'
-                          : (costData?.percentRemaining ?? 100) > 30
-                          ? 'text-emerald-400'
-                          : 'text-amber-400'
-                      }`}>
-                        {costData ? `${costData.percentRemaining}%` : '100%'}
-                      </span>
-                      <span className="text-xs text-slate-400 font-mono">
-                        ({costData?.remainingDaily ?? 1500} / {costData?.limitDaily ?? 1500} requests)
-                      </span>
-                    </div>
-                  </div>
-
-                  <span className={`text-[11px] font-mono px-2.5 py-1 rounded-full font-semibold border ${
-                    costData?.aiQuotaDepleted
-                      ? 'bg-rose-950/60 border-rose-800/80 text-rose-300'
-                      : 'bg-emerald-950/60 border-emerald-800/80 text-emerald-300'
-                  }`}>
-                    {costData?.aiQuotaDepleted ? '0% Available' : 'Normal Allowance'}
-                  </span>
-                </div>
-
-                {/* Meter */}
-                <div className="w-full h-2.5 rounded-full bg-slate-900 border border-slate-800 overflow-hidden p-0.5">
-                  <div
-                    className={`h-full rounded-full transition-all duration-500 ${
-                      costData?.aiQuotaDepleted
-                        ? 'bg-rose-500 w-1'
-                        : (costData?.percentRemaining ?? 100) > 30
-                        ? 'bg-emerald-500'
-                        : 'bg-amber-500'
-                    }`}
-                    style={{ width: `${Math.max(2, costData?.percentRemaining ?? 100)}%` }}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 pt-1 border-t border-slate-900">
-                  <span>Used today: <strong className="text-slate-200">{costData?.usedDaily ?? 0} requests</strong></span>
-                  <span>Estimated spend: <strong className="text-slate-200">{costData?.costSoFar ?? '$0.00'}</strong></span>
-                </div>
-              </div>
-
-              {/* Reset Timing Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* Daily Reset Countdown */}
-                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-1.5">
-                  <div className="flex items-center gap-1.5 text-xs text-amber-400 font-mono">
-                    <Clock className="w-3.5 h-3.5" />
-                    <span className="font-semibold">Daily Quota Reset</span>
-                  </div>
-                  <div className="text-2xl font-mono font-bold text-slate-100 tracking-tight">
-                    {costData?.resetsInFormatted || '23h 59m 59s'}
-                  </div>
-                  <p className="text-[11px] text-slate-400">
-                    Resets automatically at 00:00 UTC (16:00 PST / 08:00 SGT)
-                  </p>
-                </div>
-
-                {/* Minute Rate Window */}
-                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-1.5">
-                  <div className="flex items-center gap-1.5 text-xs text-sky-400 font-mono">
-                    <Gauge className="w-3.5 h-3.5" />
-                    <span className="font-semibold">Rate Limit (RPM)</span>
-                  </div>
-                  <div className="text-2xl font-mono font-bold text-slate-100 tracking-tight">
-                    {costData?.remainingThisMinute ?? 15} / {costData?.limitPerMinute ?? 15} RPM
-                  </div>
-                  <p className="text-[11px] text-slate-400">
-                    Rolling window resets in {costData?.minuteResetsInSeconds ?? 60}s
-                  </p>
-                </div>
-              </div>
-
-              {/* Engine Status Callout */}
-              {costData?.aiQuotaDepleted ? (
-                <div className="p-4 rounded-2xl bg-rose-950/30 border border-rose-800/60 text-xs space-y-2">
-                  <div className="flex items-center gap-2 text-rose-300 font-semibold">
-                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                    <span>Prepayment Balance Depleted (HTTP 402)</span>
-                  </div>
-                  <p className="text-slate-300 text-[11px] leading-relaxed">
-                    Google returned a 402 notice: your linked project is set to prepayment with a $0.00 credit balance.
-                    To top up or switch projects, visit{' '}
-                    <a 
-                      href="https://ai.studio/projects" 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="text-amber-400 underline font-mono inline-flex items-center gap-0.5 hover:text-amber-300"
-                    >
-                      <span>ai.studio/projects</span>
-                      <ExternalLink className="w-2.5 h-2.5" />
-                    </a>.
-                  </p>
-                  <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800/80 text-[11px] text-slate-300 flex items-center justify-between">
-                    <span className="flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                      <span>Deterministic Editorial Engine Active</span>
-                    </span>
-                    <span className="text-slate-400 font-mono text-[10px]">Zero downtime</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="p-3.5 rounded-2xl bg-emerald-950/30 border border-emerald-800/40 text-xs flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-emerald-300 font-medium">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                    <span>Gemini AI Connection Active</span>
-                  </div>
-                  <span className="text-[11px] font-mono text-slate-400">1,500 daily requests included</span>
-                </div>
-              )}
-
-              {/* Action Toolbar */}
-              <div className="flex flex-wrap items-center gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => runTerminalCommand('/test')}
-                  disabled={testingGemini}
-                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-mono font-medium transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
-                  title="Test Gemini API connection"
-                >
-                  <Zap className={`w-3.5 h-3.5 text-amber-400 ${testingGemini ? 'animate-pulse' : ''}`} />
-                  <span>{testingGemini ? 'Testing connection...' : 'Ping Gemini API (/test)'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => runTerminalCommand('/reset')}
-                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono font-medium transition flex items-center gap-1.5 cursor-pointer"
-                  title="Reset counters"
-                >
-                  <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Reset Counters (/reset)</span>
-                </button>
-              </div>
-
-              {/* Terminal Output Log */}
-              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800/90 font-mono text-xs space-y-3 max-h-44 overflow-y-auto">
-                <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold border-b border-slate-900 pb-1">
-                  Terminal Session Log
-                </div>
-                {costTerminalLog.map((log) => (
-                  <div key={log.id} className="space-y-1">
-                    <div className="flex items-center gap-2 text-slate-400 text-[11px]">
-                      <span className="text-amber-500 font-bold">curator:~$</span>
-                      <span className="text-slate-200 font-semibold">{log.cmd}</span>
-                      <span className="text-slate-600 text-[10px] ml-auto">{log.time}</span>
-                    </div>
-                    <pre className={`whitespace-pre-wrap font-mono text-[11px] leading-relaxed pl-3 border-l-2 ${
-                      log.level === 'warn'
-                        ? 'border-rose-500/60 text-rose-300'
-                        : log.level === 'success'
-                        ? 'border-emerald-500/60 text-emerald-300'
-                        : 'border-slate-700 text-slate-300'
-                    }`}>
-                      {log.result}
-                    </pre>
-                  </div>
-                ))}
-              </div>
-
-              {/* Interactive Command Prompt */}
-              <div className="space-y-2">
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    runTerminalCommand(costTerminalInput);
-                  }}
-                  className="relative flex items-center"
-                >
-                  <div className="absolute left-3 font-mono text-amber-500 font-bold text-xs select-none">
-                    &gt;
-                  </div>
-                  <input
-                    ref={terminalInputRef}
-                    type="text"
-                    value={costTerminalInput}
-                    onChange={(e) => setCostTerminalInput(e.target.value)}
-                    placeholder="Type command (/cost, /test, /stats, /reset, /help)..."
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-20 py-2.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-amber-500"
-                  />
-                  <button
-                    type="submit"
-                    disabled={!costTerminalInput.trim()}
-                    className="absolute right-2 px-2.5 py-1 rounded-lg bg-amber-500 text-slate-950 font-mono font-bold text-xs hover:bg-amber-400 transition disabled:opacity-30 cursor-pointer"
-                  >
-                    Run
-                  </button>
-                </form>
-
-                {/* Quick Chips */}
-                <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono text-slate-400">
-                  <span>Quick commands:</span>
-                  {['/cost', '/test', '/stats', '/reset', '/help'].map((cmd) => (
-                    <button
-                      key={cmd}
-                      type="button"
-                      onClick={() => runTerminalCommand(cmd)}
-                      className="px-2 py-0.5 rounded-md bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition cursor-pointer"
-                    >
-                      {cmd}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

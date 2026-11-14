@@ -9,92 +9,6 @@ dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Track free tier usage & quota resets for Gemini API
-const FREE_TIER_DAILY_LIMIT = 1500; // Gemini Flash standard daily free-tier requests
-const FREE_TIER_RPM_LIMIT = 15;     // Gemini Flash standard requests per minute
-let aiDailyRequests = 0;
-let aiMinuteRequests = 0;
-let aiTotalRequests = 0;
-let aiQuotaDepleted = false;
-let depletedReason = '';
-let currentUtcDay = new Date().toISOString().slice(0, 10);
-let currentMinuteWindow = Math.floor(Date.now() / 60000);
-
-function syncQuotaWindows() {
-  const now = new Date();
-  const todayUtc = now.toISOString().slice(0, 10);
-  if (todayUtc !== currentUtcDay) {
-    currentUtcDay = todayUtc;
-    aiDailyRequests = 0;
-    if (aiQuotaDepleted && depletedReason.toLowerCase().includes('daily')) {
-      aiQuotaDepleted = false;
-      depletedReason = '';
-    }
-  }
-
-  const minuteWindow = Math.floor(Date.now() / 60000);
-  if (minuteWindow !== currentMinuteWindow) {
-    currentMinuteWindow = minuteWindow;
-    aiMinuteRequests = 0;
-  }
-}
-
-function recordAiRequest() {
-  syncQuotaWindows();
-  aiDailyRequests++;
-  aiMinuteRequests++;
-  aiTotalRequests++;
-}
-
-function getQuotaStatus(apiKeyPresent: boolean) {
-  syncQuotaWindows();
-  const now = new Date();
-
-  // Milliseconds until midnight UTC (standard Google Generative Language API daily quota reset)
-  const tomorrowUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0));
-  const msUntilMidnightUtc = tomorrowUtc.getTime() - now.getTime();
-  const secondsUntilMidnightUtc = Math.max(0, Math.floor(msUntilMidnightUtc / 1000));
-
-  const hours = Math.floor(secondsUntilMidnightUtc / 3600);
-  const minutes = Math.floor((secondsUntilMidnightUtc % 3600) / 60);
-  const seconds = secondsUntilMidnightUtc % 60;
-  const resetsInFormatted = `${hours.toString().padStart(2, '0')}h ${minutes.toString().padStart(2, '0')}m ${seconds.toString().padStart(2, '0')}s`;
-
-  // Seconds until rolling minute window resets
-  const secondsUntilNextMinute = 60 - now.getUTCSeconds();
-
-  const remainingDaily = Math.max(0, FREE_TIER_DAILY_LIMIT - aiDailyRequests);
-  const rawDailyPercent = ((remainingDaily / FREE_TIER_DAILY_LIMIT) * 100);
-  const remainingMinute = Math.max(0, FREE_TIER_RPM_LIMIT - aiMinuteRequests);
-
-  // If prepayment is depleted (HTTP 402 from Google), effective available quota is 0%
-  const percentRemaining = aiQuotaDepleted ? 0 : parseFloat(rawDailyPercent.toFixed(1));
-
-  return {
-    tier: 'Gemini Flash Free Tier (1,500 RPD / 15 RPM)',
-    limitDaily: FREE_TIER_DAILY_LIMIT,
-    usedDaily: aiDailyRequests,
-    remainingDaily: aiQuotaDepleted ? 0 : remainingDaily,
-    percentRemaining,
-    limitPerMinute: FREE_TIER_RPM_LIMIT,
-    usedThisMinute: aiMinuteRequests,
-    remainingThisMinute: remainingMinute,
-    resetsAtUtc: tomorrowUtc.toISOString(),
-    resetsInSeconds: secondsUntilMidnightUtc,
-    resetsInFormatted,
-    minuteResetsInSeconds: secondsUntilNextMinute,
-    aiQuotaDepleted,
-    depletedReason: depletedReason || (aiQuotaDepleted ? 'Prepayment balance depleted ($0.00) — recharge at ai.studio/projects' : ''),
-    costSoFar: '$0.00',
-    currency: 'USD',
-    status: aiQuotaDepleted ? 'depleted' : 'active',
-    engine: aiQuotaDepleted ? 'Deterministic Editorial Signal Engine (Fallback)' : 'Gemini 2.5 / Flash AI Model',
-    totalRequestsAllTime: aiTotalRequests,
-    hasApiKey: apiKeyPresent,
-    lastChecked: now.toISOString(),
-  };
-}
-
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
@@ -115,85 +29,6 @@ async function startServer() {
     : null;
 
   // API Routes
-  // Live /cost and quota diagnostics endpoint
-  app.get('/api/cost', (req, res) => {
-    res.json(getQuotaStatus(!!apiKey));
-  });
-
-  // Test / Ping Gemini API connection & recheck quota
-  app.post('/api/cost/test', async (req, res) => {
-    if (!ai) {
-      return res.json({
-        success: false,
-        status: 'no_key',
-        message: 'No GEMINI_API_KEY detected in environment.',
-        data: getQuotaStatus(false)
-      });
-    }
-
-    try {
-      recordAiRequest();
-      const testResponse = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: 'Respond with the single word OK',
-        config: {
-          maxOutputTokens: 5,
-        }
-      });
-
-      aiQuotaDepleted = false;
-      depletedReason = '';
-
-      return res.json({
-        success: true,
-        status: 'active',
-        message: 'Gemini connection tested successfully! Free tier quota active.',
-        response: testResponse.text?.trim() || 'OK',
-        data: getQuotaStatus(true)
-      });
-    } catch (err: any) {
-      const errMsg = String(err?.message || err?.status || err || '');
-      if (errMsg.includes('402') || errMsg.includes('depleted') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('prepayment')) {
-        aiQuotaDepleted = true;
-        depletedReason = 'Prepayment balance depleted ($0.00) — recharge at ai.studio/projects or switch project key';
-      }
-      return res.json({
-        success: false,
-        status: 'depleted',
-        message: errMsg,
-        data: getQuotaStatus(true)
-      });
-    }
-  });
-
-  // Reset counters & flags
-  app.post('/api/cost/reset', (req, res) => {
-    aiDailyRequests = 0;
-    aiMinuteRequests = 0;
-    aiQuotaDepleted = false;
-    depletedReason = '';
-    res.json({
-      success: true,
-      message: 'Daily counters and status flag reset successfully.',
-      data: getQuotaStatus(!!apiKey)
-    });
-  });
-
-  // Backward compatible /api/status endpoint
-  app.get('/api/status', (req, res) => {
-    const cost = getQuotaStatus(!!apiKey);
-    res.json({
-      status: 'ok',
-      freeTier: {
-        limit: cost.limitDaily,
-        used: cost.usedDaily,
-        remaining: cost.remainingDaily,
-        percentRemaining: cost.percentRemaining
-      },
-      cost
-    });
-  });
-
   // OPML Parser endpoint
   app.post('/api/parse-opml', (req, res) => {
     try {
@@ -340,14 +175,13 @@ async function startServer() {
   app.post('/api/curate', async (req, res) => {
     try {
       const { sources, signals, readingStats, serendipityDial, itemCount = 6 } = req.body;
-      recordAiRequest();
 
       const moreSignals: string[] = Array.isArray(signals?.more) ? signals.more : [];
       const lessSignals: string[] = Array.isArray(signals?.less) ? signals.less : [];
       const lessIds: string[] = Array.isArray(signals?.lessIds) ? signals.lessIds : [];
 
-      // If Gemini API is available and not quota-depleted, attempt AI curation
-      if (ai && !aiQuotaDepleted) {
+      // If Gemini API is available, use it to generate highly tailored editorial digest items and why-reasons
+      if (ai) {
         try {
           const prompt = `You are a sophisticated personal reading editor. Your task is to curate a daily reading digest of exactly ${itemCount} items based on the user's subscriptions, recent reading signals, and a serendipity dial (${serendipityDial}% out of bubble).
 
@@ -391,13 +225,7 @@ Return ONLY valid JSON array of objects with these exact keys.`;
               return res.json({ digest: data, generatedByAI: true });
             }
           }
-        } catch (aiErr: any) {
-          const errMsg = String(aiErr?.message || aiErr?.status || aiErr || '');
-          if (errMsg.includes('402') || errMsg.includes('depleted') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('prepayment')) {
-            aiQuotaDepleted = true;
-            depletedReason = 'Prepayment balance depleted ($0.00) — recharge at ai.studio/projects or switch project key';
-          }
-          console.warn('[Curator] AI generation unavailable, serving high-signal editorial curation algorithm.');
+        } catch (aiErr: any) {          console.warn('[Curator] AI generation unavailable, serving high-signal editorial curation algorithm.');
         }
       }
 
@@ -1351,7 +1179,6 @@ The internet inverted this power dynamic completely. Distribution marginal cost 
         });
       }
 
-      recordAiRequest();
 
       const prompt = `Use Google Search to find 5 to 6 high-quality independent publications, blogs, newsletters, or editorial websites relevant to this search topic: "${query.trim()}".
 
@@ -1375,7 +1202,7 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
         summary?: string;
       }> = [];
 
-      if (ai && !aiQuotaDepleted) {
+      if (ai) {
         try {
           const response = await ai.models.generateContent({
             model: 'gemini-4-hydrogen',
@@ -1431,13 +1258,7 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
               }
             }
           }
-        } catch (aiErr: any) {
-          const errMsg = String(aiErr?.message || aiErr?.status || aiErr || '');
-          if (errMsg.includes('402') || errMsg.includes('depleted') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('prepayment')) {
-            aiQuotaDepleted = true;
-            depletedReason = 'Prepayment balance depleted ($0.00) — recharge at ai.studio/projects or switch project key';
-          }
-          console.warn('[Curator] Search grounding AI call unavailable, using curated directory.');
+        } catch (aiErr: any) {          console.warn('[Curator] Search grounding AI call unavailable, using curated directory.');
         }
       }
 
