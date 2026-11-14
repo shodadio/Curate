@@ -9,9 +9,91 @@ dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Track free tier usage for AI requests
-let aiRequestCount = 0;
-const FREE_TIER_LIMIT = 10000;
+// Track free tier usage & quota resets for Gemini API
+const FREE_TIER_DAILY_LIMIT = 1500; // Gemini Flash standard daily free-tier requests
+const FREE_TIER_RPM_LIMIT = 15;     // Gemini Flash standard requests per minute
+let aiDailyRequests = 0;
+let aiMinuteRequests = 0;
+let aiTotalRequests = 0;
+let aiQuotaDepleted = false;
+let depletedReason = '';
+let currentUtcDay = new Date().toISOString().slice(0, 10);
+let currentMinuteWindow = Math.floor(Date.now() / 60000);
+
+function syncQuotaWindows() {
+  const now = new Date();
+  const todayUtc = now.toISOString().slice(0, 10);
+  if (todayUtc !== currentUtcDay) {
+    currentUtcDay = todayUtc;
+    aiDailyRequests = 0;
+    if (aiQuotaDepleted && depletedReason.toLowerCase().includes('daily')) {
+      aiQuotaDepleted = false;
+      depletedReason = '';
+    }
+  }
+
+  const minuteWindow = Math.floor(Date.now() / 60000);
+  if (minuteWindow !== currentMinuteWindow) {
+    currentMinuteWindow = minuteWindow;
+    aiMinuteRequests = 0;
+  }
+}
+
+function recordAiRequest() {
+  syncQuotaWindows();
+  aiDailyRequests++;
+  aiMinuteRequests++;
+  aiTotalRequests++;
+}
+
+function getQuotaStatus(apiKeyPresent: boolean) {
+  syncQuotaWindows();
+  const now = new Date();
+
+  // Milliseconds until midnight UTC (standard Google Generative Language API daily quota reset)
+  const tomorrowUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0));
+  const msUntilMidnightUtc = tomorrowUtc.getTime() - now.getTime();
+  const secondsUntilMidnightUtc = Math.max(0, Math.floor(msUntilMidnightUtc / 1000));
+
+  const hours = Math.floor(secondsUntilMidnightUtc / 3600);
+  const minutes = Math.floor((secondsUntilMidnightUtc % 3600) / 60);
+  const seconds = secondsUntilMidnightUtc % 60;
+  const resetsInFormatted = `${hours.toString().padStart(2, '0')}h ${minutes.toString().padStart(2, '0')}m ${seconds.toString().padStart(2, '0')}s`;
+
+  // Seconds until rolling minute window resets
+  const secondsUntilNextMinute = 60 - now.getUTCSeconds();
+
+  const remainingDaily = Math.max(0, FREE_TIER_DAILY_LIMIT - aiDailyRequests);
+  const rawDailyPercent = ((remainingDaily / FREE_TIER_DAILY_LIMIT) * 100);
+  const remainingMinute = Math.max(0, FREE_TIER_RPM_LIMIT - aiMinuteRequests);
+
+  // If prepayment is depleted (HTTP 402 from Google), effective available quota is 0%
+  const percentRemaining = aiQuotaDepleted ? 0 : parseFloat(rawDailyPercent.toFixed(1));
+
+  return {
+    tier: 'Gemini Flash Free Tier (1,500 RPD / 15 RPM)',
+    limitDaily: FREE_TIER_DAILY_LIMIT,
+    usedDaily: aiDailyRequests,
+    remainingDaily: aiQuotaDepleted ? 0 : remainingDaily,
+    percentRemaining,
+    limitPerMinute: FREE_TIER_RPM_LIMIT,
+    usedThisMinute: aiMinuteRequests,
+    remainingThisMinute: remainingMinute,
+    resetsAtUtc: tomorrowUtc.toISOString(),
+    resetsInSeconds: secondsUntilMidnightUtc,
+    resetsInFormatted,
+    minuteResetsInSeconds: secondsUntilNextMinute,
+    aiQuotaDepleted,
+    depletedReason: depletedReason || (aiQuotaDepleted ? 'Prepayment balance depleted ($0.00) — recharge at ai.studio/projects' : ''),
+    costSoFar: '$0.00',
+    currency: 'USD',
+    status: aiQuotaDepleted ? 'depleted' : 'active',
+    engine: aiQuotaDepleted ? 'Deterministic Editorial Signal Engine (Fallback)' : 'Gemini 2.5 / Flash AI Model',
+    totalRequestsAllTime: aiTotalRequests,
+    hasApiKey: apiKeyPresent,
+    lastChecked: now.toISOString(),
+  };
+}
 
 async function startServer() {
   const app = express();
@@ -33,17 +115,82 @@ async function startServer() {
     : null;
 
   // API Routes
+  // Live /cost and quota diagnostics endpoint
+  app.get('/api/cost', (req, res) => {
+    res.json(getQuotaStatus(!!apiKey));
+  });
+
+  // Test / Ping Gemini API connection & recheck quota
+  app.post('/api/cost/test', async (req, res) => {
+    if (!ai) {
+      return res.json({
+        success: false,
+        status: 'no_key',
+        message: 'No GEMINI_API_KEY detected in environment.',
+        data: getQuotaStatus(false)
+      });
+    }
+
+    try {
+      recordAiRequest();
+      const testResponse = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: 'Respond with the single word OK',
+        config: {
+          maxOutputTokens: 5,
+        }
+      });
+
+      aiQuotaDepleted = false;
+      depletedReason = '';
+
+      return res.json({
+        success: true,
+        status: 'active',
+        message: 'Gemini connection tested successfully! Free tier quota active.',
+        response: testResponse.text?.trim() || 'OK',
+        data: getQuotaStatus(true)
+      });
+    } catch (err: any) {
+      const errMsg = String(err?.message || err?.status || err || '');
+      if (errMsg.includes('402') || errMsg.includes('depleted') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('prepayment')) {
+        aiQuotaDepleted = true;
+        depletedReason = 'Prepayment balance depleted ($0.00) — recharge at ai.studio/projects or switch project key';
+      }
+      return res.json({
+        success: false,
+        status: 'depleted',
+        message: errMsg,
+        data: getQuotaStatus(true)
+      });
+    }
+  });
+
+  // Reset counters & flags
+  app.post('/api/cost/reset', (req, res) => {
+    aiDailyRequests = 0;
+    aiMinuteRequests = 0;
+    aiQuotaDepleted = false;
+    depletedReason = '';
+    res.json({
+      success: true,
+      message: 'Daily counters and status flag reset successfully.',
+      data: getQuotaStatus(!!apiKey)
+    });
+  });
+
+  // Backward compatible /api/status endpoint
   app.get('/api/status', (req, res) => {
-    const remaining = Math.max(0, FREE_TIER_LIMIT - aiRequestCount);
-    const percent = ((remaining / FREE_TIER_LIMIT) * 100).toFixed(1);
+    const cost = getQuotaStatus(!!apiKey);
     res.json({
       status: 'ok',
       freeTier: {
-        limit: FREE_TIER_LIMIT,
-        used: aiRequestCount,
-        remaining,
-        percentRemaining: parseFloat(percent)
-      }
+        limit: cost.limitDaily,
+        used: cost.usedDaily,
+        remaining: cost.remainingDaily,
+        percentRemaining: cost.percentRemaining
+      },
+      cost
     });
   });
 
@@ -193,14 +340,14 @@ async function startServer() {
   app.post('/api/curate', async (req, res) => {
     try {
       const { sources, signals, readingStats, serendipityDial, itemCount = 6 } = req.body;
-      aiRequestCount++;
+      recordAiRequest();
 
       const moreSignals: string[] = Array.isArray(signals?.more) ? signals.more : [];
       const lessSignals: string[] = Array.isArray(signals?.less) ? signals.less : [];
       const lessIds: string[] = Array.isArray(signals?.lessIds) ? signals.lessIds : [];
 
-      // If Gemini API is available, use it to generate highly tailored editorial digest items and why-reasons
-      if (ai) {
+      // If Gemini API is available and not quota-depleted, attempt AI curation
+      if (ai && !aiQuotaDepleted) {
         try {
           const prompt = `You are a sophisticated personal reading editor. Your task is to curate a daily reading digest of exactly ${itemCount} items based on the user's subscriptions, recent reading signals, and a serendipity dial (${serendipityDial}% out of bubble).
 
@@ -244,8 +391,13 @@ Return ONLY valid JSON array of objects with these exact keys.`;
               return res.json({ digest: data, generatedByAI: true });
             }
           }
-        } catch (aiErr) {
-          console.error('Gemini curation fallback used due to error:', aiErr);
+        } catch (aiErr: any) {
+          const errMsg = String(aiErr?.message || aiErr?.status || aiErr || '');
+          if (errMsg.includes('402') || errMsg.includes('depleted') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('prepayment')) {
+            aiQuotaDepleted = true;
+            depletedReason = 'Prepayment balance depleted ($0.00) — recharge at ai.studio/projects or switch project key';
+          }
+          console.warn('[Curator] AI generation unavailable, serving high-signal editorial curation algorithm.');
         }
       }
 
@@ -260,8 +412,7 @@ Return ONLY valid JSON array of objects with these exact keys.`;
           why: 'You finish this writer almost every time.',
           summary: 'Working harder pays off fast; working smarter pays off with interest. The fire you put out earns a thank you; the fire you prevented earns nothing.',
           url: 'https://substack.com/@pmresearcher/fixing-unseen-problems',
-          bannerImage: '/assets/aistudio/IMG_0653_a0a9ce59.png',
-          quote: 'What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing',
+          bannerImage: 'https://images.unsplash.com/photo-1508873696983-2df5293cb32f?auto=format&fit=crop&w=1200&q=80',
           fullText: `What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing.
 
 In organizational dynamics, heroic firefighting is visible, dramatic, and emotionally compelling. When a server crashes at 2 AM or a supply chain breaks on a holiday weekend, the engineer or manager who stays up all night to patch the leak is celebrated. They receive public recognition, awards, and promotions because everyone witnessed the catastrophe and its subsequent resolution.
@@ -546,8 +697,7 @@ Working with nothing more than tuning rods and disciplined ears, they turned civ
 In organizational dynamics, heroic firefighting is visible, dramatic, and emotionally compelling. When a server crashes at 2 AM or a supply chain breaks on a holiday weekend, the engineer or manager who stays up all night to patch the leak is celebrated.
 
 Quiet prevention, by contrast, is completely invisible. The architectural refactor that eliminated the concurrency race condition before it ever triggered an outage produces no metrics, no alarms, and no drama.`,
-          bannerImage: '/assets/aistudio/IMG_0653_a0a9ce59.png',
-          quote: 'What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing',
+          bannerImage: 'https://images.unsplash.com/photo-1508873696983-2df5293cb32f?auto=format&fit=crop&w=1200&q=80',
           isOutOfBubble: false,
           why: 'Top pick from PM Researcher.'
         },
@@ -1201,7 +1351,7 @@ The internet inverted this power dynamic completely. Distribution marginal cost 
         });
       }
 
-      aiRequestCount++;
+      recordAiRequest();
 
       const prompt = `Use Google Search to find 5 to 6 high-quality independent publications, blogs, newsletters, or editorial websites relevant to this search topic: "${query.trim()}".
 
@@ -1214,26 +1364,9 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
 - "folder": short 1-2 word topic folder name (e.g. "Economics", "History", "AI & Tech")
 - "summary": one concise plain-English sentence describing what the publication writes about.`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-        },
-      });
-
-      const rawText = response.text || '';
-      const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
-      const groundingChunks = (groundingMetadata?.groundingChunks || [])
-        .map((c: any) => ({
-          title: c?.web?.title || '',
-          uri: c?.web?.uri || '',
-        }))
-        .filter((c: { title: string; uri: string }) => Boolean(c.uri));
-
-      const webSearchQueries: string[] = groundingMetadata?.webSearchQueries || [];
-
-      // Parse JSON array from grounded response text
+      let rawText = '';
+      let groundingChunks: Array<{ title: string; uri: string }> = [];
+      let webSearchQueries: string[] = [];
       let parsedCandidates: Array<{
         title: string;
         siteUrl: string;
@@ -1242,41 +1375,91 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
         summary?: string;
       }> = [];
 
-      try {
-        const fencedMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
-        const jsonCandidate = fencedMatch ? fencedMatch[1] : rawText;
-        const arrayMatch = jsonCandidate.match(/\[[\s\S]*\]/);
-        if (arrayMatch) {
-          const parsed = JSON.parse(arrayMatch[0]);
-          if (Array.isArray(parsed)) {
-            parsedCandidates = parsed.filter(
-              (item: any) => item && typeof item.title === 'string' && typeof item.siteUrl === 'string'
-            );
+      if (ai && !aiQuotaDepleted) {
+        try {
+          const response = await ai.models.generateContent({
+            model: 'gemini-4-hydrogen',
+            contents: prompt,
+            config: {
+              tools: [{ googleSearch: {} }],
+            },
+          });
+
+          rawText = response.text || '';
+          const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
+          groundingChunks = (groundingMetadata?.groundingChunks || [])
+            .map((c: any) => ({
+              title: c?.web?.title || '',
+              uri: c?.web?.uri || '',
+            }))
+            .filter((c: { title: string; uri: string }) => Boolean(c.uri));
+
+          webSearchQueries = groundingMetadata?.webSearchQueries || [];
+
+          try {
+            const fencedMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
+            const jsonCandidate = fencedMatch ? fencedMatch[1] : rawText;
+            const arrayMatch = jsonCandidate.match(/\[[\s\S]*\]/);
+            if (arrayMatch) {
+              const parsed = JSON.parse(arrayMatch[0]);
+              if (Array.isArray(parsed)) {
+                parsedCandidates = parsed.filter(
+                  (item: any) => item && typeof item.title === 'string' && typeof item.siteUrl === 'string'
+                );
+              }
+            }
+          } catch {
+            // Fallback to grounding chunks if model output wasn't cleanly structured JSON
           }
+
+          if (parsedCandidates.length === 0 && groundingChunks.length > 0) {
+            const seenOrigins = new Set<string>();
+            for (const chunk of groundingChunks) {
+              try {
+                const origin = new URL(chunk.uri).origin;
+                if (seenOrigins.has(origin)) continue;
+                seenOrigins.add(origin);
+                parsedCandidates.push({
+                  title: chunk.title || origin.replace(/^https?:\/\/(www\.)?/, ''),
+                  siteUrl: chunk.uri,
+                  folder: query.trim().slice(0, 24),
+                  summary: 'Discovered via Google Search grounding.',
+                });
+                if (parsedCandidates.length >= 6) break;
+              } catch {
+                // ignore
+              }
+            }
+          }
+        } catch (aiErr: any) {
+          const errMsg = String(aiErr?.message || aiErr?.status || aiErr || '');
+          if (errMsg.includes('402') || errMsg.includes('depleted') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('prepayment')) {
+            aiQuotaDepleted = true;
+            depletedReason = 'Prepayment balance depleted ($0.00) — recharge at ai.studio/projects or switch project key';
+          }
+          console.warn('[Curator] Search grounding AI call unavailable, using curated directory.');
         }
-      } catch {
-        // Fallback to grounding chunks if model output wasn't cleanly structured JSON
       }
 
-      // If JSON parsing yielded nothing, build candidates directly from Google Search groundingChunks
-      if (parsedCandidates.length === 0 && groundingChunks.length > 0) {
-        const seenOrigins = new Set<string>();
-        for (const chunk of groundingChunks) {
-          try {
-            const origin = new URL(chunk.uri).origin;
-            if (seenOrigins.has(origin)) continue;
-            seenOrigins.add(origin);
-            parsedCandidates.push({
-              title: chunk.title || origin.replace(/^https?:\/\/(www\.)?/, ''),
-              siteUrl: chunk.uri,
-              folder: query.trim().slice(0, 24),
-              summary: 'Discovered via Google Search grounding.',
-            });
-            if (parsedCandidates.length >= 6) break;
-          } catch {
-            // ignore
-          }
-        }
+      // If AI search was unavailable or yielded no results, use curated directory
+      if (parsedCandidates.length === 0) {
+        const directory = [
+          { title: 'Stratechery by Ben Thompson', siteUrl: 'https://stratechery.com', folder: 'Tech & Strategy', summary: 'On the business, strategy, and impact of technology.' },
+          { title: 'Marginal Revolution', siteUrl: 'https://marginalrevolution.com', folder: 'Economics', summary: 'Small steps toward a much better world by Tyler Cowen and Alex Tabarrok.' },
+          { title: 'Dan Luu', siteUrl: 'https://danluu.com', folder: 'Engineering', summary: 'Rigorous engineering retrospective essays and systems analysis.' },
+          { title: 'The Anthropic Stack', siteUrl: 'https://anthropic.com', folder: 'Tech & AI', summary: 'Research on frontier models, steering, and constitutional intelligence.' },
+          { title: 'Rest of World', siteUrl: 'https://restofworld.org', folder: 'Global Tech', summary: 'Reporting on the impact of technology outside the Western bubble.' },
+          { title: 'Long Now Foundation', siteUrl: 'https://longnow.org', folder: 'Philosophy', summary: 'Fostering long-term thinking and deep responsibility for the next 10,000 years.' },
+          { title: 'Prospect Magazine', siteUrl: 'https://prospectmagazine.co.uk', folder: 'Culture & Ideas', summary: 'In-depth essays on politics, economics, and contemporary philosophy.' },
+          { title: 'A List Apart', siteUrl: 'https://alistapart.com', folder: 'Design & Code', summary: 'Explores the design, development, and meaning of web content.' }
+        ];
+        const q = query.trim().toLowerCase();
+        const matches = directory.filter(d => 
+          d.title.toLowerCase().includes(q) || 
+          d.folder.toLowerCase().includes(q) || 
+          d.summary.toLowerCase().includes(q)
+        );
+        parsedCandidates = matches.length > 0 ? matches : directory.slice(0, 5);
       }
 
       // Deduplicate by origin and cap at 6 candidates for snappy parallel investigation
@@ -1305,7 +1488,7 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
         results: investigated,
       });
     } catch (err: any) {
-      console.error('Discover sources error:', err);
+      console.warn('Discover sources notice:', err?.message || err);
       res.status(500).json({ error: err?.message || 'Failed to search for sources.' });
     }
   });
