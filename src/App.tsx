@@ -6,6 +6,7 @@ import {
   ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square,
   RotateCcw, EyeOff
 } from 'lucide-react';
+import QRCode from 'qrcode';
 
 interface DiscoveredSource {
   title: string;
@@ -46,6 +47,27 @@ interface SourceItem {
   failingReason?: string;
   lastSyncedAt?: number;
   avatar?: string;
+}
+
+function QRCodeBox({ url }: { url: string }) {
+  const [svgStr, setSvgStr] = useState<string>('');
+  useEffect(() => {
+    QRCode.toString(url, { type: 'svg', width: 160, margin: 1, color: { dark: '#020617', light: '#ffffff' } }, (err, string) => {
+      if (!err && string) {
+        setSvgStr(string);
+      }
+    });
+  }, [url]);
+
+  return (
+    <div className="bg-white p-3 rounded-2xl shadow-lg border border-slate-800 shrink-0 flex items-center justify-center w-40 h-40">
+      {svgStr ? (
+        <div dangerouslySetInnerHTML={{ __html: svgStr }} className="w-full h-full flex items-center justify-center [&>svg]:w-full [&>svg]:h-full" />
+      ) : (
+        <div className="text-xs text-slate-400">Loading QR...</div>
+      )}
+    </div>
+  );
 }
 
 export default function App() {
@@ -2524,13 +2546,7 @@ export default function App() {
                 <p className="text-xs text-slate-400 mt-0.5">Scan this QR code with your iPhone camera to open Curator instantly.</p>
               </div>
               <div className="flex flex-col sm:flex-row items-center gap-6 pt-2">
-                <div className="bg-white p-3 rounded-2xl shadow-lg border border-slate-800 shrink-0">
-                  <img 
-                    src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=https://ais-pre-szra6uvq22i3o7dvcof5go-706549575453.europe-west2.run.app" 
-                    alt="QR Code to open Curator on mobile" 
-                    className="w-36 h-36 rounded-lg object-contain"
-                  />
-                </div>
+                <QRCodeBox url="https://ais-pre-szra6uvq22i3o7dvcof5go-706549575453.europe-west2.run.app" />
                 <div className="space-y-2 text-xs text-slate-300">
                   <p className="font-medium text-slate-200">Quick Setup Instructions:</p>
                   <ol className="list-decimal list-inside space-y-1 text-slate-400">
