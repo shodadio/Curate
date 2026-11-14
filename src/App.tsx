@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Sun, Bookmark, Rss, Settings, RefreshCw, ChevronRight, Check, CheckCheck, Plus, Trash2, 
-  Download, Upload, Bell, Sliders, ExternalLink, ArrowLeft, Heart, Eye, Sparkles, 
-  AlertCircle, ShieldCheck, HelpCircle, X, Edit2, MessageSquare, Repeat, Share2, Home, BookOpen, Compass, Headphones, MessageCircle, Activity,
-  ThumbsUp, ThumbsDown, FileUp, Search, Globe, CheckCircle2, Volume2, VolumeX, Play, Pause, Square,
+  Bookmark, Rss, RefreshCw, Check, CheckCheck, Plus, Trash2, 
+  Download, Upload, Sliders, ExternalLink, ArrowLeft, Sparkles, 
+  AlertCircle, X, Home, Compass,
+  ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square,
   RotateCcw, EyeOff
 } from 'lucide-react';
 
@@ -55,10 +55,6 @@ export default function App() {
   const [selectedFeedSource, setSelectedFeedSource] = useState<string | null>(null);
   const [feedStreamArticles, setFeedStreamArticles] = useState<DigestItem[]>([]);
   const [loadingFeedStream, setLoadingFeedStream] = useState<boolean>(false);
-  const [recentReadItem, setRecentReadItem] = useState<DigestItem | null>(null);
-  const [showKeepReading, setShowKeepReading] = useState<boolean>(() => {
-    return localStorage.getItem('curator_keep_reading_dismissed') !== 'true';
-  });
   const [readSourceIds, setReadSourceIds] = useState<string[]>(() => {
     const saved = localStorage.getItem('curator_read_sources');
     if (saved) {
@@ -81,7 +77,6 @@ export default function App() {
       return {};
     }
   });
-  const [repostIds, setRepostIds] = useState<string[]>([]);
   const [refreshingSourceId, setRefreshingSourceId] = useState<string | null>(null);
 
   // App data state with localStorage persistence
@@ -119,14 +114,6 @@ export default function App() {
   });
   const [savedIds, setSavedIds] = useState<string[]>(() => {
     const saved = localStorage.getItem('curator_saved_ids');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { /* ignore */ }
-    }
-    return [];
-  });
-
-  const [likedIds, setLikedIds] = useState<string[]>(() => {
-    const saved = localStorage.getItem('curator_liked_ids');
     if (saved) {
       try { return JSON.parse(saved); } catch (e) { /* ignore */ }
     }
@@ -206,7 +193,6 @@ export default function App() {
   const [hasSearchedSources, setHasSearchedSources] = useState<boolean>(false);
 
   // Reading view timer & depth tracking
-  const [readingStartTime, setReadingStartTime] = useState<number | null>(null);
 
   // Read Aloud (iOS onboard speech synthesis)
   const [speechPlaying, setSpeechPlaying] = useState<boolean>(false);
@@ -245,10 +231,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('curator_saved_ids', JSON.stringify(savedIds));
   }, [savedIds]);
-
-  useEffect(() => {
-    localStorage.setItem('curator_liked_ids', JSON.stringify(likedIds));
-  }, [likedIds]);
 
   useEffect(() => {
     localStorage.setItem('curator_signals', JSON.stringify(signals));
@@ -339,12 +321,6 @@ export default function App() {
   const markAllSourcesAsUnread = () => {
     setReadSourceIds([]);
     showToast('Unread indicators reset');
-  };
-
-  const toggleSourceRead = (sourceId: string) => {
-    setReadSourceIds(prev =>
-      prev.includes(sourceId) ? prev.filter(id => id !== sourceId) : [...prev, sourceId]
-    );
   };
 
   const generateDigest = async () => {
@@ -484,15 +460,6 @@ export default function App() {
       setSavedIds(prev => [...prev, item.id]);
       setSavedArticles(prev => [item, ...prev.filter(a => a.id !== item.id)]);
       showToast('Saved to your reading queue');
-    }
-  };
-
-  const handleLike = (item: DigestItem) => {
-    if (likedIds.includes(item.id)) {
-      setLikedIds(prev => prev.filter(id => id !== item.id));
-    } else {
-      setLikedIds(prev => [...prev, item.id]);
-      showToast('Liked item');
     }
   };
 
@@ -853,28 +820,6 @@ export default function App() {
     showToast(`Speed set to ${nextRate}x`);
   };
 
-  const toggleReadThrough = (itemId: string) => {
-    const current = readingStats[itemId] || { maxDepth: 0, finished: false };
-    const nextFinished = !current.finished;
-    const updated = {
-      ...readingStats,
-      [itemId]: {
-        maxDepth: nextFinished ? 100 : 0,
-        finished: nextFinished,
-        lastRead: Date.now()
-      }
-    };
-    setReadingStats(updated);
-    localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
-
-    if (nextFinished) {
-      setReadArticleIds(prev => (prev.includes(itemId) ? prev : [...prev, itemId]));
-      showToast('Card actioned: Marked as read through');
-    } else {
-      showToast('Marked as unread');
-    }
-  };
-
   const getCardActions = (itemId: string) => {
     const stats = readingStats[itemId] || {};
 
@@ -882,11 +827,9 @@ export default function App() {
     const isClicked = readArticleIds.includes(itemId) || Boolean(stats?.maxDepth && stats.maxDepth > 0);
     const isVotedMore = Boolean(signals.moreIds?.includes(itemId));
     const isVotedLess = Boolean(signals.lessIds?.includes(itemId));
-    const isLiked = likedIds.includes(itemId);
     const isSaved = savedIds.includes(itemId);
-    const isQuoted = repostIds.includes(itemId);
 
-    const hasAnyAction = isReadThrough || isClicked || isVotedMore || isVotedLess || isLiked || isSaved || isQuoted;
+    const hasAnyAction = isReadThrough || isClicked || isVotedMore || isVotedLess || isSaved;
 
     const actionTags: Array<{ label: string; color: 'emerald' | 'amber' | 'rose' | 'sky' | 'purple' }> = [];
 
@@ -907,23 +850,13 @@ export default function App() {
       actionTags.push({ label: 'Saved', color: 'amber' });
     }
 
-    if (isLiked) {
-      actionTags.push({ label: 'Liked', color: 'rose' });
-    }
-
-    if (isQuoted) {
-      actionTags.push({ label: 'Quoted', color: 'purple' });
-    }
-
     return {
       hasAnyAction,
       isReadThrough,
       isClicked,
       isVotedMore,
       isVotedLess,
-      isLiked,
       isSaved,
-      isQuoted,
       actionTags,
       summaryText: actionTags.length > 0 ? actionTags.map(t => t.label).join(' · ') : 'None',
     };
@@ -931,7 +864,6 @@ export default function App() {
 
   const openArticle = (item: DigestItem) => {
     setSelectedArticle(item);
-    setReadingStartTime(Date.now());
 
     // Mark article as read / clicked
     setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
@@ -1037,9 +969,6 @@ export default function App() {
               };
               setReadingStats(updated);
               localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
-              if (finished) {
-                setRecentReadItem(null);
-              }
             }
           }}
         >

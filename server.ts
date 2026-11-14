@@ -2,12 +2,181 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import dns from 'dns';
+import http from 'http';
+import https from 'https';
+import net from 'net';
 
 dotenv.config();
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Outbound fetch hardening: only public http(s) hosts, re-checked on every redirect hop
+const MAX_REDIRECTS = 4;
+const MAX_PAGE_BYTES = 2 * 1024 * 1024;
+
+class BlockedUrlError extends Error {}
+
+const BLOCKED_HOSTNAMES = new Set(['localhost', 'metadata.google.internal']);
+const BLOCKED_HOST_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa'];
+
+function isBlockedIpv4(ip: string): boolean {
+  const parts = ip.split('.').map(Number);
+  if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+  const [a, b, c] = parts;
+  if (a === 0 || a === 10 || a === 127) return true;              // "this" network, private, loopback
+  if (a === 100 && b >= 64 && b <= 127) return true;               // CGNAT 100.64/10
+  if (a === 169 && b === 254) return true;                         // link-local incl. cloud metadata
+  if (a === 172 && b >= 16 && b <= 31) return true;                // private 172.16/12
+  if (a === 192 && b === 168) return true;                         // private 192.168/16
+  if (a === 192 && b === 0 && (c === 0 || c === 2)) return true;   // 192.0.0/24, TEST-NET-1
+  if (a === 198 && (b === 18 || b === 19)) return true;            // benchmarking 198.18/15
+  if (a === 198 && b === 51 && c === 100) return true;             // TEST-NET-2
+  if (a === 203 && b === 0 && c === 113) return true;              // TEST-NET-3
+  if (a >= 224) return true;                                       // multicast, reserved, broadcast
+  return false;
+}
+
+function isBlockedIpv6(ip: string): boolean {
+  const addr = ip.toLowerCase();
+  if (addr === '::' || addr === '::1') return true;
+  if (addr.startsWith('::ffff:')) {
+    const mapped = addr.slice('::ffff:'.length);
+    return net.isIPv4(mapped) ? isBlockedIpv4(mapped) : true;
+  }
+  const firstGroup = addr.split(':')[0];
+  if (firstGroup.startsWith('fc') || firstGroup.startsWith('fd')) return true; // unique-local fc00::/7
+  if (/^fe[89ab]/.test(firstGroup)) return true;                               // link-local fe80::/10
+  if (firstGroup.startsWith('ff')) return true;                                // multicast
+  return false;
+}
+
+function isBlockedAddress(ip: string): boolean {
+  if (net.isIPv4(ip)) return isBlockedIpv4(ip);
+  if (net.isIPv6(ip)) return isBlockedIpv6(ip);
+  return true;
+}
+
+async function assertPublicHttpUrl(raw: string): Promise<URL> {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new BlockedUrlError('Invalid URL');
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new BlockedUrlError('Only http and https URLs are supported');
+  }
+  if (url.username || url.password) {
+    throw new BlockedUrlError('URLs containing credentials are not supported');
+  }
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (!hostname) throw new BlockedUrlError('URL is missing a host');
+  if (BLOCKED_HOSTNAMES.has(hostname) || BLOCKED_HOST_SUFFIXES.some(suffix => hostname.endsWith(suffix))) {
+    throw new BlockedUrlError('Requests to local or internal hostnames are not allowed');
+  }
+  if (net.isIP(hostname) && isBlockedAddress(hostname)) {
+    throw new BlockedUrlError('Requests to internal network addresses are not allowed');
+  }
+  return url;
+}
+
+// Filter DNS answers at connect time so a host cannot resolve to a public IP first and an internal one later
+const guardedLookup = (
+  hostname: string,
+  options: any,
+  callback: (err: NodeJS.ErrnoException | null, address?: any, family?: number) => void,
+) => {
+  const lookupOptions = typeof options === 'number' ? { family: options } : { ...options };
+  dns.lookup(hostname, { ...lookupOptions, all: true } as dns.LookupAllOptions, (err, addresses) => {
+    if (err) {
+      callback(err);
+      return;
+    }
+    const safe = addresses.filter(entry => !isBlockedAddress(entry.address));
+    if (safe.length === 0) {
+      callback(new BlockedUrlError('Host resolves to an internal network address'));
+      return;
+    }
+    if (lookupOptions.all) {
+      callback(null, safe);
+      return;
+    }
+    callback(null, safe[0].address, safe[0].family);
+  });
+};
+
+interface PageResponse {
+  ok: boolean;
+  status: number;
+  url: string;
+  contentType: string;
+  text: string;
+}
+
+function requestOnce(url: URL, timeoutMs: number): Promise<{ redirectTo?: string; page?: PageResponse }> {
+  return new Promise((resolve, reject) => {
+    const isHttps = url.protocol === 'https:';
+    const requester = isHttps ? https.request : http.request;
+    const req = requester(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname.replace(/^\[|\]$/g, ''),
+        port: url.port || (isHttps ? 443 : 80),
+        path: `${url.pathname}${url.search}`,
+        method: 'GET',
+        lookup: guardedLookup as unknown as net.LookupFunction,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; CuratorRSSInvestigator/1.0)',
+          'Accept': 'application/rss+xml, application/atom+xml, application/feed+json, application/xml, text/xml, text/html;q=0.9, */*;q=0.8',
+          'Accept-Encoding': 'identity'
+        }
+      },
+      (res) => {
+        const status = res.statusCode || 0;
+        const location = res.headers.location;
+        if (status >= 300 && status < 400 && location) {
+          res.resume();
+          try {
+            resolve({ redirectTo: new URL(String(location), url).toString() });
+          } catch {
+            reject(new BlockedUrlError('Redirected to an invalid URL'));
+          }
+          return;
+        }
+        res.setEncoding('utf8');
+        let text = '';
+        res.on('data', (chunk: string) => {
+          if (text.length < MAX_PAGE_BYTES) text += chunk;
+        });
+        res.on('end', () => {
+          resolve({
+            page: {
+              ok: status >= 200 && status < 300,
+              status,
+              url: url.toString(),
+              contentType: String(res.headers['content-type'] || ''),
+              text
+            }
+          });
+        });
+        res.on('error', (err) => reject(err instanceof Error ? err : new Error(String(err))));
+      },
+    );
+
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('Request timed out')));
+    req.on('error', (err) => reject(err));
+    req.end();
+  });
+}
+
+async function fetchPublicPage(targetUrl: string, timeoutMs = 4500): Promise<PageResponse> {
+  let current = await assertPublicHttpUrl(targetUrl);
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    const result = await requestOnce(current, timeoutMs);
+    if (result.page) return result.page;
+    current = await assertPublicHttpUrl(result.redirectTo as string);
+  }
+  throw new BlockedUrlError('Too many redirects');
+}
 
 async function startServer() {
   const app = express();
@@ -225,7 +394,8 @@ Return ONLY valid JSON array of objects with these exact keys.`;
               return res.json({ digest: data, generatedByAI: true });
             }
           }
-        } catch (aiErr: any) {          console.warn('[Curator] AI generation unavailable, serving high-signal editorial curation algorithm.');
+        } catch {
+          console.warn('[Curator] AI generation unavailable, serving high-signal editorial curation algorithm.');
         }
       }
 
@@ -486,29 +656,10 @@ Working with nothing more than tuning rods and disciplined ears, they turned civ
     }
   });
 
-  // Fetch article reader proxy
-  app.post('/api/fetch-article', async (req, res) => {
-    try {
-      const { url } = req.body;
-      if (!url) {
-        return res.status(400).json({ error: 'URL required' });
-      }
-
-      res.json({
-        success: true,
-        url,
-        title: 'Article Reader View',
-        content: 'Clean reading view content successfully loaded and formatted for distraction-free reading.'
-      });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
   // Comprehensive multi-source feed stream endpoint
   app.post('/api/feed-stream', async (req, res) => {
     try {
-      const { sourceTitle, sourceId } = req.body;
+      const { sourceTitle } = req.body;
 
       const feedArticles = [
         {
@@ -837,25 +988,7 @@ The internet inverted this power dynamic completely. Distribution marginal cost 
   });
 
   // Helper utilities for RSS discovery and HTML-to-RSS investigation
-  const fetchPageWithTimeout = async (targetUrl: string, timeoutMs = 4500) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(targetUrl, {
-        signal: controller.signal,
-        redirect: 'follow',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; CuratorRSSInvestigator/1.0)',
-          'Accept': 'application/rss+xml, application/atom+xml, application/feed+json, application/xml, text/xml, text/html;q=0.9, */*;q=0.8'
-        }
-      });
-      const contentType = response.headers.get('content-type') || '';
-      const text = await response.text();
-      return { ok: response.ok, status: response.status, url: response.url || targetUrl, contentType, text };
-    } finally {
-      clearTimeout(timer);
-    }
-  };
+  const fetchPageWithTimeout = (targetUrl: string, timeoutMs = 4500) => fetchPublicPage(targetUrl, timeoutMs);
 
   const detectFeedFormat = (text: string, contentType: string): 'RSS 2.0' | 'Atom' | 'JSON Feed' | null => {
     const lowerCt = contentType.toLowerCase();
@@ -1258,7 +1391,8 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
               }
             }
           }
-        } catch (aiErr: any) {          console.warn('[Curator] Search grounding AI call unavailable, using curated directory.');
+        } catch {
+          console.warn('[Curator] Search grounding AI call unavailable, using curated directory.');
         }
       }
 
@@ -1360,7 +1494,8 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
       res.setHeader('Content-Type', 'application/rss+xml; charset=utf-8');
       res.send(rssXml);
     } catch (err: any) {
-      res.status(500).send(err?.message || 'Failed to generate RSS feed');
+      const status = err instanceof BlockedUrlError ? 400 : 500;
+      res.status(status).send(err?.message || 'Failed to generate RSS feed');
     }
   });
 
