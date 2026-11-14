@@ -1025,7 +1025,20 @@ export default function App() {
             }
           }}
         >
-          <header className="sticky top-0 z-10 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/80 px-6 py-4 flex items-center justify-between">
+          <header className="sticky top-0 z-20 bg-slate-950/95 backdrop-blur-md border-b border-slate-800/80 px-6 py-4 flex items-center justify-between">
+            {/* Visual reading progress bar */}
+            <div className="absolute top-0 left-0 right-0 h-1 bg-slate-900 overflow-hidden">
+              <div 
+                className="h-full bg-amber-400 transition-all duration-150 ease-out"
+                style={{ width: `${readingStats[selectedArticle.id]?.maxDepth || 0}%` }}
+                role="progressbar"
+                aria-valuenow={readingStats[selectedArticle.id]?.maxDepth || 0}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label="Article reading progress"
+              />
+            </div>
+
             <button 
               onClick={closeArticle}
               className="flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors"
@@ -2500,6 +2513,31 @@ export default function App() {
                   ) : (
                     <p className="text-xs text-slate-500 italic">No muted topics. Tap thumbs-down to quietly de-prioritize specific subjects without removing any author or feed.</p>
                   )}
+                </div>
+              </div>
+            </div>
+
+            {/* Mobile Access QR Code Card */}
+            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-200">Open on Your Phone</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Scan this QR code with your iPhone camera to open Curator instantly.</p>
+              </div>
+              <div className="flex flex-col sm:flex-row items-center gap-6 pt-2">
+                <div className="bg-white p-3 rounded-2xl shadow-lg border border-slate-800 shrink-0">
+                  <img 
+                    src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=https://ais-pre-szra6uvq22i3o7dvcof5go-706549575453.europe-west2.run.app" 
+                    alt="QR Code to open Curator on mobile" 
+                    className="w-36 h-36 rounded-lg object-contain"
+                  />
+                </div>
+                <div className="space-y-2 text-xs text-slate-300">
+                  <p className="font-medium text-slate-200">Quick Setup Instructions:</p>
+                  <ol className="list-decimal list-inside space-y-1 text-slate-400">
+                    <li>Open your iPhone Camera app and point it at the QR code.</li>
+                    <li>Tap the notification banner to open Curator in Safari.</li>
+                    <li>Tap the <strong>Share</strong> button and select <strong>Add to Home Screen</strong>.</li>
+                  </ol>
                 </div>
               </div>
             </div>
