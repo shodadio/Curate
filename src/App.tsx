@@ -1205,20 +1205,8 @@ export default function App() {
             </div>
           </button>
 
-          {/* Right Action Icons: Search, Refresh, and User Profile ME avatar */}
+          {/* Right Action Icons: Refresh and Settings */}
           <div className="flex items-center gap-2 shrink-0">
-            <button 
-              type="button"
-              onClick={() => setActiveTab('sources')}
-              className={`w-9 h-9 rounded-full border flex items-center justify-center transition cursor-pointer ${
-                activeTab === 'sources'
-                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
-                  : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-slate-100 hover:border-slate-700'
-              }`}
-              title="Search and discover sources"
-            >
-              <Search className="w-4 h-4" />
-            </button>
             <button 
               type="button"
               onClick={generateDigest}
@@ -1230,15 +1218,15 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => setActiveTab('settings')}
-              className={`w-9 h-9 rounded-full border flex items-center justify-center text-xs font-bold font-mono transition cursor-pointer shadow-sm ${
+              onClick={() => setActiveTab(prev => prev === 'settings' ? 'today' : 'settings')}
+              className={`w-9 h-9 rounded-full border flex items-center justify-center transition cursor-pointer shadow-sm ${
                 activeTab === 'settings'
-                  ? 'ring-2 ring-amber-400 bg-gradient-to-tr from-amber-500 to-orange-500 text-slate-950 border-amber-400'
-                  : 'bg-gradient-to-tr from-amber-500 to-orange-500 text-slate-950 border-orange-400/80 hover:scale-105'
+                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
+                  : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-slate-100 hover:border-slate-700'
               }`}
-              title="Profile & Settings"
+              title="Settings & Preferences"
             >
-              ME
+              <Sliders className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -1249,59 +1237,7 @@ export default function App() {
         {/* TAB 1: TODAY */}
         {activeTab === 'today' && (
           <div className="space-y-6 animate-fade-in w-full max-w-full">
-            {/* Top Circular Source Stories Carousel (Links through to separate article stream) */}
-            <div className="overflow-x-auto no-scrollbar py-2 -mx-4 px-4 sm:-mx-6 sm:px-6">
-              <div className="flex items-center gap-4 min-w-max">
-                {sources.slice(0, 10).map((src) => {
-                  const isUnread = !readSourceIds.includes(src.id);
-                  const avatarUrl = src.avatar || getSourceAvatar(src.title, src.feedUrl);
-                  return (
-                    <button
-                      key={src.id}
-                      type="button"
-                      onClick={() => handleOpenFeedStream(src.title, src.id)}
-                      className="flex flex-col items-center gap-2 group cursor-pointer focus:outline-none"
-                      title={isUnread ? `${src.title} (Unread entries - tap to view & dismiss)` : `Open ${src.title} stream`}
-                    >
-                      <div className={`relative w-16 h-16 rounded-full p-0.5 shadow-md group-hover:scale-105 transition-transform ${
-                        isUnread ? 'bg-gradient-to-tr from-amber-500 to-rose-500' : 'bg-slate-800'
-                      }`}>
-                        <div className="w-full h-full rounded-full bg-slate-900 flex items-center justify-center overflow-hidden border-2 border-slate-950 relative">
-                          {avatarUrl ? (
-                            <img 
-                              src={avatarUrl} 
-                              alt={src.title} 
-                              className="w-full h-full object-cover rounded-full"
-                              onError={(e) => {
-                                (e.currentTarget as HTMLElement).style.display = 'none';
-                                const fallback = e.currentTarget.parentElement?.querySelector('.feed-circle-initials');
-                                if (fallback) fallback.classList.remove('hidden');
-                              }}
-                            />
-                          ) : null}
-                          <span className={`feed-circle-initials text-xs font-bold ${avatarUrl ? 'hidden' : ''} ${isUnread ? 'text-slate-100' : 'text-slate-400'}`}>
-                            {src.title.slice(0, 2).toUpperCase()}
-                          </span>
-                        </div>
-                        {isUnread && (
-                          <div 
-                            className="absolute top-0 right-0 w-3.5 h-3.5 rounded-full bg-orange-500 border-2 border-slate-950 shadow-sm z-10"
-                            title="Unread entries"
-                          />
-                        )}
-                      </div>
-                      <span className={`text-[11px] font-medium max-w-[76px] truncate text-center group-hover:text-amber-300 transition-colors ${
-                        isUnread ? 'text-slate-200 font-semibold' : 'text-slate-400'
-                      }`}>
-                        {getShortSourceTitle(src.title)}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between border-b border-slate-900 pt-4 pb-4">
+            <div className="flex items-center justify-between border-b border-slate-900 pb-4">
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-100">Today's Digest</h2>
                 <p className="text-xs text-slate-400 mt-0.5">Curated at 7:00 AM · {digest.length} items worth your time</p>
@@ -2854,15 +2790,6 @@ export default function App() {
           >
             <Compass className="w-5 h-5" />
             <span className="text-[10px] tracking-tight">Sources</span>
-          </button>
-
-          <button 
-            type="button"
-            onClick={() => setActiveTab('settings')}
-            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'settings' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
-          >
-            <Sliders className="w-5 h-5" />
-            <span className="text-[10px] tracking-tight">Settings</span>
           </button>
         </div>
       </nav>

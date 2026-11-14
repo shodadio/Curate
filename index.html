@@ -1,6 +1,52 @@
 <!doctype html>
 <html lang="en" class="bg-slate-950 text-slate-100 overflow-x-hidden w-full max-w-full">
   <head>
+    <script>
+      // In AI Studio cloud iframe preview, HMR is disabled.
+      // Prevent vite-hmr from attempting unreachable WebSocket connections on port 24678.
+      (function() {
+        var NativeWebSocket = window.WebSocket;
+        if (NativeWebSocket) {
+          function DummySocket() {
+            var target = new EventTarget();
+            this.readyState = 1;
+            this.send = function() {};
+            this.close = function() {};
+            this.addEventListener = target.addEventListener.bind(target);
+            this.removeEventListener = target.removeEventListener.bind(target);
+            this.dispatchEvent = target.dispatchEvent.bind(target);
+            setTimeout(function() {
+              try { target.dispatchEvent(new Event('open')); } catch(e) {}
+            }, 0);
+          }
+          DummySocket.CONNECTING = 0;
+          DummySocket.OPEN = 1;
+          DummySocket.CLOSING = 2;
+          DummySocket.CLOSED = 3;
+
+          window.WebSocket = function(url, protocols) {
+            if (protocols === 'vite-hmr' || (typeof url === 'string' && (url.includes('24678') || url.includes('token=')))) {
+              return new DummySocket();
+            }
+            return new NativeWebSocket(url, protocols);
+          };
+          window.WebSocket.prototype = NativeWebSocket.prototype;
+          window.WebSocket.CONNECTING = 0;
+          window.WebSocket.OPEN = 1;
+          window.WebSocket.CLOSING = 2;
+          window.WebSocket.CLOSED = 3;
+        }
+
+        window.addEventListener('unhandledrejection', function(event) {
+          var reason = event && event.reason;
+          var msg = (reason && (reason.message || String(reason))) || '';
+          if (msg.includes('WebSocket') || msg.includes('vite:ws') || (reason && reason.stack && reason.stack.includes('@vite/client'))) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        }, true);
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Curator — Daily Curated Reading Digest</title>

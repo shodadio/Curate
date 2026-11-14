@@ -1499,9 +1499,9 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
     }
   });
 
-  // Vite middleware for development
+  // Vite middleware for development (HMR disabled in cloud iframe to prevent WebSocket closed errors)
   const vite = await createViteServer({
-    server: { middlewareMode: true, hmr: process.env.DISABLE_HMR !== 'true' }
+    server: { middlewareMode: true, hmr: false }
   });
 
   app.use(vite.middlewares);

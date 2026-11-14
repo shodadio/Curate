@@ -5,9 +5,10 @@
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-v4-38bdf8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)](https://expressjs.com/)
 [![Google GenAI SDK](https://img.shields.io/badge/@google/genai-3.3-4285f4?logo=google&logoColor=white)](https://ai.google.dev/)
+[![PWA Ready](https://img.shields.io/badge/PWA-Ready-5A0FC8?logo=pwa&logoColor=white)](https://web.dev/progressive-web-apps/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-amber.svg)](LICENSE)
 
-> **Curator** is a calm, finite morning reading editor that turns unmanageable RSS streams, Substacks, and web publications into an elegant, focused daily digest. Designed around editorial intentionality rather than algorithmic dopamine loops, it selects high-signal articles each morning, balances your intellectual diet with serendipitous perspectives, and provides instant fallback safeguards for signal tuning.
+> **Curator** is a calm, finite morning reading editor that turns unmanageable RSS streams, Substacks, and web publications into an elegant, focused daily digest. Designed around editorial intentionality rather than algorithmic engagement loops, it selects high-signal articles each morning, balances your intellectual diet with serendipitous perspectives, and provides instant fallback safeguards for signal tuning.
 
 ---
 
@@ -15,17 +16,23 @@
 
 - [Editorial Philosophy](#editorial-philosophy)
 - [Key Features](#key-features)
-  - [Daily Curated Digest](#1-daily-curated-digest)
-  - ["Out of the Bubble" Serendipity](#2-out-of-the-bubble-serendipity)
-  - [Signal Tuning with Undo / Redo Safeguards](#3-signal-tuning-with-undo--redo-safeguards)
-  - [Live `/cost` Free Tier Quota Inspector & Terminal](#4-live-cost-free-tier-quota-inspector--terminal)
-  - [Seamless Deterministic Fallback Engine](#5-seamless-deterministic-fallback-engine)
-  - [Google Search RSS Discovery & Feed Synthesis](#6-google-search-rss-discovery--feed-synthesis)
-  - [OPML Import & Export](#7-opml-import--export)
-  - [Distraction-Free Reader & iOS Web Speech Read Aloud](#8-distraction-free-reader--ios-web-speech-read-aloud)
-  - [Mobile & iOS Safari Viewport Hardening](#9-mobile--ios-safari-viewport-hardening)
+  - [1. Daily Curated Digest](#1-daily-curated-digest)
+  - [2. "Out of the Bubble" Serendipity](#2-out-of-the-bubble-serendipity)
+  - [3. Signal Tuning with Undo / Redo Safeguards](#3-signal-tuning-with-undo--redo-safeguards)
+  - [4. Google Search RSS Discovery & Feed Synthesis](#4-google-search-rss-discovery--feed-synthesis)
+  - [5. Outbound SSRF Hardening & Network Security](#5-outbound-ssrf-hardening--network-security)
+  - [6. High-Signal Deterministic Fallback Engine](#6-high-signal-deterministic-fallback-engine)
+  - [7. OPML Import & Export](#7-opml-import--export)
+  - [8. Distraction-Free Reader & iOS Web Speech Read Aloud](#8-distraction-free-reader--ios-web-speech-read-aloud)
+  - [9. Mobile & iOS Safari Viewport Hardening](#9-mobile--ios-safari-viewport-hardening)
+  - [10. Progressive Web App (PWA) Support](#10-progressive-web-app-pwa-support)
 - [System Architecture](#system-architecture)
 - [API Reference](#api-reference)
+  - [`POST /api/curate`](#post-apicurate)
+  - [`POST /api/feed-stream`](#post-apifeed-stream)
+  - [`POST /api/discover-sources`](#post-apidiscover-sources)
+  - [`POST /api/parse-opml`](#post-apiparse-opml)
+  - [`GET /api/generated-feed`](#get-apigenerated-feed)
 - [Getting Started](#getting-started)
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
@@ -40,10 +47,10 @@
 
 ## Editorial Philosophy
 
-Modern digital reading is broken by infinite feeds, engagement algorithms, and ad-incentivized outrage. Standard RSS readers often make the problem worse by creating an unread counter backlog that induces guilt and fatigue.
+Modern digital reading is burdened by infinite feeds, engagement algorithms, and ad-incentivized outrage. Standard RSS readers often amplify this problem by accumulating unread counters that induce guilt and information fatigue.
 
 **Curator** reintroduces the classic ritual of the **finite morning edition**:
-- **Finite editions**: Choose between 3, 5, 8, 12, or 15 high-signal pieces each morning. When you reach the bottom, you're finished for the day.
+- **Finite editions**: Choose between 3, 5, 8, 12, or 15 high-signal pieces each morning. When you reach the bottom, you are done for the day.
 - **Editorial signal over clickbait**: Evaluates articles based on analytical depth, evergreen value, and original reporting rather than sensationalism.
 - **Serendipity by design**: Includes deliberate "Out of the Bubble" selections from history, philosophy, design, and economics to prevent intellectual echo chambers.
 - **Forgiving user controls**: Any negative preference signal (such as clicking "Fewer like this") provides an immediate inline undo confirmation and interactive toast fallback, ensuring accidental taps never purge content permanently.
@@ -53,7 +60,7 @@ Modern digital reading is broken by infinite feeds, engagement algorithms, and a
 ## Key Features
 
 ### 1. Daily Curated Digest
-- **Custom Morning Issue**: Configurable issue size (3, 5, 8, 12, or 15 articles) with estimated reading times and topic badges.
+- **Configurable Morning Issue**: Select your target reading load (3, 5, 8, 12, or 15 articles) with estimated reading times and categorized tags.
 - **Dynamic Summaries**: Automatically generates concise, informative executive summaries and reading notes.
 - **Editorial Ranking**: Scores articles on analytical density, source reputation, topic diversity, and personal reading history.
 
@@ -69,26 +76,21 @@ Modern digital reading is broken by infinite feeds, engagement algorithms, and a
   - An interactive toast notification persists for 7 seconds with a direct one-click `Undo / Redo` action.
   - Inside the reader modal, clicking "Fewer" preserves your place and displays a reversible `✓ Fewer like this (Undo)` state without closing the article.
 
-### 4. Live `/cost` Free Tier Quota Inspector & Terminal
-- **Real-Time Free Tier Telemetry**: Monitors Google Generative Language API limits:
-  - **1,500 Requests Per Day (RPD)**.
-  - **15 Requests Per Minute (RPM)** rolling window.
-  - Live progress bar showing exact percentage remaining (e.g., `99.9% remaining`).
-- **Countdown to Daily Reset**: Live countdown timer calculating the exact time remaining until midnight UTC (`00:00:00 UTC`), when Google's daily quota window resets.
-- **Settings & Terminal Integration**:
-  - Full inspector widget embedded directly inside the **Settings** tab.
-  - Interactive `/cost` command terminal modal supporting `/cost`, `/test`, `/reset`, `/stats`, and `/help`.
-  - Immediate manual API ping (`/test`) to verify connectivity and refresh quota counters.
-
-### 5. Seamless Deterministic Fallback Engine
-- If the Gemini API key is missing, or if prepayment balance is depleted (`$0.00` / HTTP `402 Payment Required`), Curator automatically shifts to a **Deterministic Editorial Signal Engine**.
-- The deterministic algorithm scores articles using title heuristics, domain authority rankings, content length metrics, and time-decay curves.
-- The user's reading flow is never blocked or broken by API billing errors.
-
-### 6. Google Search RSS Discovery & Feed Synthesis
+### 4. Google Search RSS Discovery & Feed Synthesis
 - **Search Authors & Outlets**: Enter the name of any publication, thinker, or newsletter (e.g., *Stratechery*, *Marginal Revolution*, *Dan Luu*).
 - **RSS Availability Check**: Powered by Google Search grounding to detect whether the site provides native RSS/Atom feeds, Substack endpoints, or WordPress feeds.
-- **Automatic Feed Synthesis**: For publications without native feeds, Curator generates a clean, parsable XML feed endpoint via `/api/generated-feed`.
+- **Automatic Feed Synthesis**: For publications without native feeds, Curator extracts article links and generates a clean, parsable RSS 2.0 XML endpoint via `/api/generated-feed`.
+
+### 5. Outbound SSRF Hardening & Network Security
+- **DNS Lookup Guard (`guardedLookup`)**: Verifies all resolved IP addresses at connect time to prevent DNS rebinding attacks.
+- **Private Address Blocking**: Rejects connections to loopback (`127.0.0.0/8`, `::1`), private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), CGNAT (`100.64.0.0/10`), link-local/cloud metadata (`169.254.0.0/16`, `fe80::/10`, `metadata.google.internal`), and multicast addresses.
+- **Safe Redirect Resolution**: Limits redirect hops to 4 with re-validation on every hop.
+- **Payload Size Cap**: Enforces a strict 2MB maximum page download limit (`MAX_PAGE_BYTES`) to prevent denial-of-service memory exhaustion.
+
+### 6. High-Signal Deterministic Fallback Engine
+- If the Gemini API key is not present or an AI service error occurs, Curator automatically and seamlessly falls back to its built-in **Deterministic Editorial Signal Engine**.
+- The deterministic algorithm scores articles using title heuristics, domain authority rankings, content length metrics, and time-decay curves.
+- The user's reading flow is never blocked or interrupted by network or API availability issues.
 
 ### 7. OPML Import & Export
 - **One-Click Migration**: Import existing subscriptions from Feedly, Inoreader, NetNewsWire, Readwise Reader, Reeder, or NewsBlur.
@@ -105,8 +107,13 @@ Modern digital reading is broken by infinite feeds, engagement algorithms, and a
 
 ### 9. Mobile & iOS Safari Viewport Hardening
 - **Zero Horizontal Bleed**: `overflow-x: hidden`, `width: 100%`, and `background-color: #020617` enforced across `html`, `body`, `#root`, and layout wrappers.
-- **Safe Area Insets**: Uses `viewport-fit=cover` and responsive padding (`px-4 sm:px-6`) to prevent notch clipping or cut-off margins on iPhone viewports.
+- **Safe Area Insets**: Uses `viewport-fit=cover` and responsive padding (`px-4 sm:px-6`) to prevent notch clipping or cut-off margins on mobile viewports.
 - **Floating Bottom Dock**: Floating navigation dock centered using `left-1/2 -translate-x-1/2` and clamped to `w-[calc(100%-2rem)] max-w-lg`, preventing horizontal page jitter.
+
+### 10. Progressive Web App (PWA) Support
+- **Standalone Display**: Configured via Web App Manifest for full-screen, app-like experience when added to the home screen.
+- **Icon Set**: Complete set of PWA assets (`favicon.ico`, `apple-touch-icon.png`, `pwa-192x192.png`, `pwa-512x512.png`).
+- **Offline Reliability**: Powered by `vite-plugin-pwa` with service worker asset caching.
 
 ---
 
@@ -118,7 +125,8 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 ┌─────────────────────────────────────────────────────────────────┐
 │                       Client (React 19)                         │
 │  - Plus Jakarta Sans + Lora + JetBrains Mono                    │
-│  - Bottom Dock Navigation (Today, Feeds, Saved, Sources, Settings)│
+│  - Top Header Navigation with Refresh & Settings Controls       │
+│  - Bottom Dock Navigation (Today, Feeds, Saved, Sources)        │
 │  - Signal Tuning with Undo/Redo Fallbacks                       │
 │  - Web Speech API Audio Player                                  │
 │  - LocalStorage State Manager (Bookmarks, Stats, Signal Weights)│
@@ -128,14 +136,12 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 │                   Server (Express + Vite)                       │
 │  - server.ts entry point                                        │
 │  - Vite dev server middleware mounted in dev                     │
-│  - Live Quota & /cost Tracker (1500 RPD, 15 RPM, UTC Countdown) │
+│  - Outbound SSRF Protection (DNS Lookup Guard & IP Filter)      │
 ├─────────────────────────────────────────────────────────────────┤
 │                     Core API Endpoints                          │
-│  • /api/cost               • /api/curate                        │
-│  • /api/cost/test          • /api/fetch-article                 │
-│  • /api/cost/reset         • /api/feed-stream                   │
-│  • /api/parse-opml         • /api/discover-sources              │
-│  • /api/status             • /api/generated-feed                │
+│  • /api/curate                 • /api/discover-sources          │
+│  • /api/feed-stream            • /api/generated-feed            │
+│  • /api/parse-opml                                              │
 ├────────────────────────────────┬────────────────────────────────┤
 │                                │                                │
 │        Google GenAI SDK        │   Deterministic Signal Engine  │
@@ -150,58 +156,83 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 
 ## API Reference
 
-### Quota & Cost Endpoints
+### `POST /api/curate`
+Accepts a list of sources, item count target (3–15), and optional topic preference adjustments. Gathers recent feed entries and returns ranked, summarized digest articles with an "Out of the Bubble" pick.
 
-#### `GET /api/cost`
-Returns real-time diagnostics on free tier quota usage, requests remaining, and the UTC reset countdown.
+**Request Body:**
 ```json
 {
-  "tier": "Gemini Flash Free Tier (1,500 RPD / 15 RPM)",
-  "limitDaily": 1500,
-  "usedDaily": 1,
-  "remainingDaily": 1499,
-  "percentRemaining": 99.9,
-  "limitPerMinute": 15,
-  "usedThisMinute": 1,
-  "remainingThisMinute": 14,
-  "resetsAtUtc": "2026-11-15T00:00:00.000Z",
-  "resetsInSeconds": 44120,
-  "resetsInFormatted": "12h 15m 20s",
-  "aiQuotaDepleted": false,
-  "costSoFar": "$0.00",
-  "currency": "USD",
-  "status": "active",
-  "engine": "Gemini 2.5 / Flash AI Model"
+  "sources": [
+    { "id": "src_0", "title": "Nicole Williams", "feedUrl": "https://pmresearcher.substack.com/feed", "folder": "Strategy & Craft" }
+  ],
+  "signals": { "more": ["Technology"], "less": ["Crypto"] },
+  "itemCount": 6,
+  "serendipityDial": 20
 }
 ```
 
-#### `POST /api/cost/test`
-Sends a minimal probe request to the Gemini API (`gemini-2.5-flash`), tests connection health, and immediately refreshes quota counters.
-
-#### `POST /api/cost/reset`
-Resets local session request counters back to zero.
+**Response:**
+```json
+{
+  "digest": [
+    {
+      "id": "item_123",
+      "title": "The Architecture of Deep Focus",
+      "summary": "An examination of cognitive endurance in knowledge work.",
+      "readingTimeMinutes": 7,
+      "source": "Nicole Williams",
+      "folder": "Strategy & Craft",
+      "url": "https://example.com/article",
+      "isOutOfBubble": false
+    }
+  ],
+  "generatedByAI": true
+}
+```
 
 ---
 
-### Curation & Content Endpoints
+### `POST /api/feed-stream`
+Retrieves chronological feed entries for a specific source ID or across all subscribed sources for the traditional "Feeds" stream.
 
-#### `POST /api/curate`
-Accepts a list of sources, item count target (3–15), and optional topic preference adjustments. Gathers recent feed entries and returns ranked, summarized digest articles with an "Out of the Bubble" pick.
+**Request Body:**
+```json
+{
+  "sourceTitle": "Nicole Williams"
+}
+```
 
-#### `POST /api/fetch-article`
-Fetches a web article URL, extracts readable main text, removes navigation and ad clutter, and returns clean HTML content for the reader view.
+---
 
-#### `POST /api/feed-stream`
-Retrieves raw, chronological feed entries for a specific source ID or across all subscribed sources for the traditional "Feeds" stream.
-
-#### `POST /api/discover-sources`
+### `POST /api/discover-sources`
 Performs a grounded search using Google Search to discover publications, assess RSS availability, and extract sample headlines.
 
-#### `POST /api/parse-opml`
+**Request Body:**
+```json
+{
+  "query": "Byzantine history"
+}
+```
+
+---
+
+### `POST /api/parse-opml`
 Parses an uploaded `.opml` or `.xml` file and converts it into structured `SourceItem` objects categorized by folder.
 
-#### `GET /api/generated-feed`
-Synthesizes a live RSS 2.0 XML feed for websites that do not provide native feeds.
+**Request Body:**
+```json
+{
+  "opmlText": "<?xml version=\"1.0\"?><opml version=\"2.0\">...</opml>"
+}
+```
+
+---
+
+### `GET /api/generated-feed`
+Synthesizes a live RSS 2.0 XML feed for websites that do not provide native feeds, validated through the outbound security filter.
+
+**Query Parameters:**
+- `url`: The target website URL to scrape and convert into RSS (e.g., `https://example.com/blog`).
 
 ---
 
@@ -236,7 +267,7 @@ GEMINI_API_KEY=your_gemini_api_key_here
 PORT=3000
 ```
 
-> **Note**: If `GEMINI_API_KEY` is not provided or runs out of quota, Curator automatically operates on its Deterministic Editorial Engine with zero configuration required.
+> **Note**: If `GEMINI_API_KEY` is not provided, Curator automatically operates on its Deterministic Editorial Engine with zero configuration required.
 
 ### Running Locally
 
