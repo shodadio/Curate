@@ -929,10 +929,10 @@ export default function App() {
   const outOfBubbleDigest = digest.filter(d => d.isOutOfBubble);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-slate-800 selection:text-white">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-slate-800 selection:text-white w-full max-w-full overflow-x-hidden">
       {/* Toast Notification with Undo / Action fallback */}
       {activeToast && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] bg-slate-900/95 border border-slate-700/80 text-slate-200 text-xs px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-3 animate-fade-in backdrop-blur-md">
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] max-w-[calc(100vw-2rem)] bg-slate-900/95 border border-slate-700/80 text-slate-200 text-xs px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-3 animate-fade-in backdrop-blur-md">
           <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
           <span>{activeToast.message}</span>
           {activeToast.actionLabel && activeToast.onAction && (
@@ -1245,12 +1245,12 @@ export default function App() {
       </header>
 
       {/* Content Area */}
-      <main className="flex-1 max-w-3xl w-full mx-auto px-6 py-8 pb-32">
+      <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-32 overflow-x-hidden">
         {/* TAB 1: TODAY */}
         {activeTab === 'today' && (
-          <div className="space-y-6 animate-fade-in">
+          <div className="space-y-6 animate-fade-in w-full max-w-full">
             {/* Top Circular Source Stories Carousel (Links through to separate article stream) */}
-            <div className="overflow-x-auto no-scrollbar py-2 -mx-6 px-6">
+            <div className="overflow-x-auto no-scrollbar py-2 -mx-4 px-4 sm:-mx-6 sm:px-6">
               <div className="flex items-center gap-4 min-w-max">
                 {sources.slice(0, 10).map((src) => {
                   const isUnread = !readSourceIds.includes(src.id);
@@ -1909,7 +1909,7 @@ export default function App() {
             </div>
 
             {/* Google Search & RSS Investigation Tool */}
-            <section className="p-5 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
+            <section className="p-4 sm:p-5 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4 w-full max-w-full overflow-hidden">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
@@ -2105,27 +2105,27 @@ export default function App() {
             </section>
 
             {sources.some(s => s.status === 'failing') && (
-              <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-start gap-3">
+              <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-start gap-3 w-full max-w-full">
                 <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                <div>
+                <div className="min-w-0 flex-1">
                   <span className="font-semibold block mb-0.5">Some sources require attention</span>
                   <span>{sources.filter(s => s.status === 'failing').length} source is currently not responding and has been quietly bypassed in digests.</span>
                 </div>
               </div>
             )}
 
-            <div className="space-y-6">
+            <div className="space-y-6 w-full max-w-full">
               {Object.entries(sourcesByFolder).map(([folder, folderSources]: [string, SourceItem[]]) => (
-                <div key={folder} className="space-y-3">
+                <div key={folder} className="space-y-3 w-full max-w-full">
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-900 pb-2">
                     {folder} ({folderSources.length})
                   </h3>
-                  <div className="grid gap-2">
+                  <div className="grid gap-2 w-full max-w-full">
                     {folderSources.map((src) => {
                       const avatarUrl = src.avatar || getSourceAvatar(src.title, src.feedUrl);
                       const isRefreshing = refreshingSourceId === src.id;
                       return (
-                        <div key={src.id} className="p-4 rounded-2xl bg-slate-900/40 border border-slate-900 flex items-center justify-between gap-4">
+                        <div key={src.id} className="p-3.5 sm:p-4 rounded-2xl bg-slate-900/40 border border-slate-900 flex items-center justify-between gap-3 sm:gap-4 w-full max-w-full overflow-hidden">
                           <div className="flex items-center gap-3 min-w-0 flex-1">
                             <div className="w-10 h-10 rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden shrink-0 relative">
                               {avatarUrl ? (
@@ -2146,12 +2146,12 @@ export default function App() {
                             </div>
 
                             <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 min-w-0">
                                 <span className="text-sm font-medium text-slate-200 truncate">{src.title}</span>
                                 {src.status === 'failing' ? (
-                                  <span className="text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded">Failing</span>
+                                  <span className="text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded shrink-0">Failing</span>
                                 ) : (
-                                  <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded">Active</span>
+                                  <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded shrink-0">Active</span>
                                 )}
                               </div>
                               <span className="text-xs text-slate-400 truncate block mt-0.5">{src.feedUrl}</span>
@@ -2160,7 +2160,7 @@ export default function App() {
                                 <span>Synced {formatSyncTime(src.lastSyncedAt)}</span>
                               </div>
                               {src.failingReason && (
-                                <span className="text-xs text-rose-400 block mt-1">{src.failingReason}</span>
+                                <span className="text-xs text-rose-400 block mt-1 break-words">{src.failingReason}</span>
                               )}
                             </div>
                           </div>
@@ -2474,9 +2474,9 @@ export default function App() {
 
         {/* TAB 5: FEEDS (Traditional Reading Stream) */}
         {activeTab === 'feeds' && (
-          <div className="space-y-6 animate-fade-in">
+          <div className="space-y-6 animate-fade-in w-full max-w-full">
             {/* Top Circular Source Stories Carousel */}
-            <div className="overflow-x-auto no-scrollbar py-2 -mx-6 px-6">
+            <div className="overflow-x-auto no-scrollbar py-2 -mx-4 px-4 sm:-mx-6 sm:px-6">
               <div className="flex items-center gap-4 min-w-max">
                 {/* "All" feeds circle */}
                 <button
@@ -2808,7 +2808,7 @@ export default function App() {
 
 
       {/* Bottom Dock Navigation */}
-      <nav className="fixed bottom-3 left-4 right-4 z-40 max-w-lg mx-auto bg-slate-900/90 backdrop-blur-xl border border-slate-800/80 rounded-2xl py-2.5 px-3 shadow-2xl">
+      <nav className="fixed bottom-3 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-lg bg-slate-900/90 backdrop-blur-xl border border-slate-800/80 rounded-2xl py-2.5 px-3 shadow-2xl">
         <div className="flex items-center justify-around">
           <button 
             type="button"
