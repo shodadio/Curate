@@ -2546,7 +2546,7 @@ export default function App() {
                 <p className="text-xs text-slate-400 mt-0.5">Scan this QR code with your iPhone camera to open Curator instantly.</p>
               </div>
               <div className="flex flex-col sm:flex-row items-center gap-6 pt-2">
-                <QRCodeBox url="https://ais-pre-szra6uvq22i3o7dvcof5go-706549575453.europe-west2.run.app" />
+                <QRCodeBox url={typeof window !== 'undefined' ? window.location.origin : 'https://ais-dev-szra6uvq22i3o7dvcof5go-706549575453.europe-west2.run.app'} />
                 <div className="space-y-2 text-xs text-slate-300">
                   <p className="font-medium text-slate-200">Quick Setup Instructions:</p>
                   <ol className="list-decimal list-inside space-y-1 text-slate-400">
