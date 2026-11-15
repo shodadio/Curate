@@ -6,6 +6,7 @@ import dns from 'dns';
 import http from 'http';
 import https from 'https';
 import net from 'net';
+import path from 'path';
 
 dotenv.config();
 
@@ -15,29 +16,366 @@ const MAX_PAGE_BYTES = 8 * 1024 * 1024;
 
 class BlockedUrlError extends Error {}
 
-async function callOpenAI(apiKey: string, prompt: string): Promise<any> {
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: prompt }],
-      response_format: { type: 'json_object' }
-    })
-  });
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`OpenAI API error: ${resp.status} ${errText}`);
-  }
-  const data = await resp.json();
-  const content = data.choices?.[0]?.message?.content;
-  return JSON.parse(content);
+interface ProviderRequestConfig {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
 }
 
-async function callAnthropic(apiKey: string, prompt: string): Promise<any> {
+function providerEndpoint(baseUrl: string, route: string): string {
+  const url = new URL(baseUrl.trim());
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+    throw new Error('Provider base URL must be an HTTPS URL without credentials, query parameters, or a fragment.');
+  }
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/${route}`;
+  return url.toString();
+}
+
+async function postProviderJson(targetUrl: string, headers: Record<string, string>, body: unknown): Promise<any> {
+  const url = await assertPublicHttpUrl(targetUrl);
+  if (url.protocol !== 'https:') throw new Error('AI provider endpoints must use HTTPS.');
+
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      protocol: url.protocol,
+      hostname: url.hostname.replace(/^\[|\]$/g, ''),
+      port: url.port || 443,
+      path: `${url.pathname}${url.search}`,
+      method: 'POST',
+      lookup: guardedLookup as unknown as net.LookupFunction,
+      headers: { 'Content-Type': 'application/json', ...headers },
+    }, (res) => {
+      const status = res.statusCode || 0;
+      let text = '';
+      let size = 0;
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => {
+        size += Buffer.byteLength(chunk);
+        if (size > 2 * 1024 * 1024) {
+          res.destroy(new Error('AI provider response exceeded the 2 MB limit.'));
+          return;
+        }
+        text += chunk;
+      });
+      res.on('end', () => {
+        if (status < 200 || status >= 300) {
+          reject(new Error(`AI provider error: ${status} ${text.slice(0, 1000)}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(text));
+        } catch {
+          reject(new Error('AI provider returned invalid JSON.'));
+        }
+      });
+      res.on('error', reject);
+    });
+
+    req.setTimeout(30000, () => req.destroy(new Error('AI provider request timed out.')));
+    req.on('error', reject);
+    req.end(JSON.stringify(body));
+  });
+}
+
+function parseModelJson(text: string): any {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced ? fenced[1] : text).trim();
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    const array = candidate.match(/\[[\s\S]*\]/);
+    const object = candidate.match(/\{[\s\S]*\}/);
+    const recovered = array?.[0] || object?.[0];
+    if (recovered) return JSON.parse(recovered);
+    throw new Error('AI provider did not return valid JSON.');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Provider-agnostic semantic engine.
+// Runs on the feed text itself with no API key, so votes always change ranking.
+// Provider embeddings, when configured, are blended on top of these scores.
+// ---------------------------------------------------------------------------
+
+interface SemanticVoteExample {
+  id: string;
+  vote: 'like' | 'dislike';
+  title: string;
+  text: string;
+  timestamp: number;
+  source?: string;
+  folder?: string;
+}
+
+interface SemanticCandidate {
+  id: string;
+  title?: string;
+  summary?: string;
+  fullText?: string;
+  folder?: string;
+  source?: string;
+}
+
+const SEMANTIC_STOPWORDS = new Set(
+  (`a about above after again against all also although am an and any are as at be because been before being below
+   between both but by can could did do does doing down during each either few first for from further had has have
+   having he her here hers herself him himself his how i if in into is it its itself just like made make many may me
+   might more most much must my myself new no nor not now of off often on once one only or other our ours ourselves
+   out over own same she should since so some such than that the their theirs them themselves then there these they
+   this those through thus to too under until up upon very was we were what when where whether which while who whom
+   why will with within without would you your yours yourself yourselves`).split(/\s+/)
+);
+
+const semanticTokens = (text: string): string[] => {
+  const stripped = (text || '')
+    .replace(/<[^>]*>/g, ' ')
+    .toLowerCase();
+  const raw = stripped.match(/[a-z][a-z'-]{2,}/g) || [];
+  const tokens: string[] = [];
+  for (const token of raw) {
+    if (SEMANTIC_STOPWORDS.has(token)) continue;
+    tokens.push(token.length > 4 && token.endsWith('s') ? token.slice(0, -1) : token);
+  }
+  return tokens;
+};
+
+const semanticTermCounts = (text: string): Map<string, number> => {
+  const tokens = semanticTokens(text);
+  const counts = new Map<string, number>();
+  const bump = (term: string, amount: number) => {
+    if (!term) return;
+    counts.set(term, (counts.get(term) || 0) + amount);
+  };
+  tokens.forEach((token, index) => {
+    bump(token, 1);
+    const next = tokens[index + 1];
+    if (next) bump(`${token}_${next}`, 0.5);
+  });
+  return counts;
+};
+
+const composeSemanticText = (item: SemanticCandidate): string => {
+  const title = item.title || '';
+  const folder = item.folder || '';
+  const summary = item.summary || '';
+  const full = String(item.fullText || '').slice(0, 1800);
+  return `${title}. ${title}. ${title}. ${folder}. ${folder}. ${summary}. ${summary}. ${full}`;
+};
+
+const buildSemanticVectors = (documents: string[]): Array<Map<string, number>> => {
+  const counts = documents.map(semanticTermCounts);
+  const documentFrequency = new Map<string, number>();
+  counts.forEach(terms => {
+    terms.forEach((_value, term) => {
+      documentFrequency.set(term, (documentFrequency.get(term) || 0) + 1);
+    });
+  });
+  const total = Math.max(1, documents.length);
+
+  return counts.map(terms => {
+    const vector = new Map<string, number>();
+    let magnitude = 0;
+    terms.forEach((value, term) => {
+      const frequency = documentFrequency.get(term) || 1;
+      const weight = value * Math.log(1 + total / frequency);
+      if (weight <= 0) return;
+      vector.set(term, weight);
+      magnitude += weight * weight;
+    });
+    const norm = Math.sqrt(magnitude);
+    if (norm > 0) {
+      vector.forEach((value, term) => vector.set(term, value / norm));
+    }
+    return vector;
+  });
+};
+
+const sparseCosine = (left: Map<string, number>, right: Map<string, number>): number => {
+  if (left.size === 0 || right.size === 0) return 0;
+  const [small, large] = left.size <= right.size ? [left, right] : [right, left];
+  let dot = 0;
+  small.forEach((value, term) => {
+    const other = large.get(term);
+    if (other) dot += value * other;
+  });
+  return dot;
+};
+
+const buildSparseCentroid = (
+  vote: 'like' | 'dislike',
+  examples: SemanticVoteExample[],
+  vectors: Array<Map<string, number> | null>,
+): Map<string, number> | null => {
+  const halfLifeMs = 60 * 24 * 60 * 60 * 1000;
+  const centroid = new Map<string, number>();
+  let totalWeight = 0;
+
+  examples.forEach((example, index) => {
+    if (example.vote !== vote) return;
+    const vector = vectors[index];
+    if (!vector) return;
+    const ageMs = Math.max(0, Date.now() - example.timestamp);
+    const weight = Math.pow(0.5, ageMs / halfLifeMs);
+    vector.forEach((value, term) => centroid.set(term, (centroid.get(term) || 0) + value * weight));
+    totalWeight += weight;
+  });
+
+  if (totalWeight === 0 || centroid.size === 0) return null;
+  let magnitude = 0;
+  centroid.forEach(value => { magnitude += value * value; });
+  if (magnitude <= 0) return null;
+  const norm = Math.sqrt(magnitude);
+  centroid.forEach((value, term) => centroid.set(term, value / norm));
+  return centroid;
+};
+
+const localSemanticScores = (
+  feedback: SemanticVoteExample[],
+  candidates: SemanticCandidate[],
+): Map<string, number> => {
+  const scores = new Map<string, number>();
+  if (feedback.length === 0 || candidates.length === 0) return scores;
+
+  const candidateTexts = candidates.map(composeSemanticText);
+  const feedbackTexts = feedback.map(entry => `${entry.title}. ${entry.title}. ${entry.title}. ${entry.text}`);
+  const vectors = buildSemanticVectors([...candidateTexts, ...feedbackTexts]);
+  const feedbackVectors = vectors.slice(candidates.length);
+
+  const positive = buildSparseCentroid('like', feedback, feedbackVectors);
+  const negative = buildSparseCentroid('dislike', feedback, feedbackVectors);
+  if (!positive && !negative) return scores;
+
+  vectors.slice(0, candidates.length).forEach((vector, index) => {
+    const candidate = candidates[index];
+    if (!candidate || !candidate.id) return;
+    const positiveSimilarity = positive ? sparseCosine(vector, positive) : 0;
+    const negativeSimilarity = negative ? sparseCosine(vector, negative) : 0;
+    const score = positive && negative
+      ? (positiveSimilarity - negativeSimilarity) / 2
+      : positive
+        ? positiveSimilarity
+        : -negativeSimilarity;
+    if (Number.isFinite(score)) scores.set(candidate.id, score);
+  });
+
+  return scores;
+};
+
+// Recency from the feed's own publication date, falling back to a neutral value.
+const recencyWeight = (item: { publishedAtMs?: number }): number => {
+  const published = Number(item?.publishedAtMs);
+  if (!Number.isFinite(published) || published <= 0) return 0.45;
+  const ageDays = Math.max(0, (Date.now() - published) / (24 * 60 * 60 * 1000));
+  return Math.exp(-ageDays / 5);
+};
+
+// How fresh an article is, in words, for the editorial "why" line.
+const recencyPhrase = (item: { publishedAtMs?: number }): string => {
+  const published = Number(item?.publishedAtMs);
+  if (!Number.isFinite(published) || published <= 0) return '';
+  const ageHours = Math.max(0, (Date.now() - published) / (60 * 60 * 1000));
+  if (ageHours <= 24) return 'today';
+  if (ageHours <= 96) return 'this week';
+  if (ageHours <= 24 * 21) return 'this month';
+  return '';
+};
+
+// A distinct, specific "why" per card: reason first, then a rotating phrasing so a digest
+// drawn from one dominant feed does not repeat the same sentence on every card.
+const buildWhyLine = (
+  item: any,
+  index: number,
+  context: { liked: boolean; preferredTopic: boolean; semanticScore: number },
+): string => {
+  const source = String(item.source || 'your feeds').trim();
+  const folder = String(item.folder || '').trim();
+  const ageLabel = recencyPhrase(item);
+
+  if (context.liked) {
+    return `Selected for your reading interest in ${folder || source}.`;
+  }
+  if (context.preferredTopic) {
+    return `Selected because you keep returning to ${folder || source}.`;
+  }
+  if (context.semanticScore > 0.28) {
+    return 'A close match to the pieces you have been upvoting.';
+  }
+  if (context.semanticScore > 0.12) {
+    return 'Shares the shape of articles you liked lately.';
+  }
+
+  const variants = folder
+    ? [
+        `New ${ageLabel || 'recently'} from ${source} · ${folder}.`,
+        `${folder} from ${source}, not yet on your shelf.`,
+        `From ${source}: ${folder}, still unread here.`,
+        `${source} on ${folder} — a fresh corner of your library.`,
+      ]
+    : [
+        `New ${ageLabel || 'recently'} from ${source}.`,
+        `From ${source}, not yet on your shelf.`,
+        `Fresh from ${source}, outside your last digest.`,
+        `${source} — new to this digest.`,
+      ];
+
+  return variants[index % variants.length];
+};
+
+// Stable per-seed tie-breaker so a refresh reshuffles ties without shuffling mid-read.
+const stableJitter = (seed: string, id: string): number => {
+  let hash = 2166136261;
+  const input = `${seed}|${id}`;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 1000) / 1000;
+};
+
+// Greedy selection that avoids one prolific feed taking over the whole digest.
+const selectDiverse = (
+  ranked: any[],
+  count: number,
+  maxPerSource: number,
+  priority: any[] = [],
+): any[] => {
+  if (count <= 0) return [];
+  const chosen: any[] = [];
+  const usedIds = new Set<string>();
+  const perSource = new Map<string, number>();
+
+  const add = (item: any, enforceCap: boolean) => {
+    if (chosen.length >= count || !item || !item.id || usedIds.has(item.id)) return;
+    const key = item.source || 'Unknown';
+    if (enforceCap && (perSource.get(key) || 0) >= maxPerSource) return;
+    usedIds.add(item.id);
+    perSource.set(key, (perSource.get(key) || 0) + 1);
+    chosen.push(item);
+  };
+
+  priority.forEach(item => add(item, true));
+  ranked.forEach(item => add(item, true));
+  if (chosen.length < count) ranked.forEach(item => add(item, false));
+  return chosen.slice(0, count);
+};
+
+async function callOpenAICompatible(config: ProviderRequestConfig, prompt: string): Promise<any> {
+  const data = await postProviderJson(
+    providerEndpoint(config.baseUrl, 'chat/completions'),
+    { Authorization: `Bearer ${config.apiKey}` },
+    { model: config.model, messages: [{ role: 'user', content: prompt }], max_tokens: 4096 },
+  );
+  const content = data.choices?.[0]?.message?.content;
+  const text = typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content.map((part: any) => typeof part?.text === 'string' ? part.text : '').join('')
+      : '';
+  if (!text) throw new Error('AI provider returned no message content.');
+  return parseModelJson(text);
+}
+
+async function callAnthropic(apiKey: string, prompt: string, model: string): Promise<any> {
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -46,7 +384,7 @@ async function callAnthropic(apiKey: string, prompt: string): Promise<any> {
       'anthropic-version': '2023-06-01'
     },
     body: JSON.stringify({
-      model: 'claude-3-5-sonnet-20241022',
+      model,
       max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }]
     })
@@ -57,9 +395,8 @@ async function callAnthropic(apiKey: string, prompt: string): Promise<any> {
   }
   const data = await resp.json();
   const text = data.content?.[0]?.text;
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const jsonStr = fenced ? fenced[1] : text;
-  return JSON.parse(jsonStr);
+  if (typeof text !== 'string') throw new Error('Anthropic returned no message content.');
+  return parseModelJson(text);
 }
 
 const BLOCKED_HOSTNAMES = new Set(['localhost', 'metadata.google.internal']);
@@ -227,7 +564,7 @@ async function fetchPublicPage(targetUrl: string, timeoutMs = 4500): Promise<Pag
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '25mb' }));
 
   const PORT = process.env.PORT || 3000;
 
@@ -243,8 +580,114 @@ async function startServer() {
         },
       })
     : null;
+  const semanticEmbeddingCache = new Map<string, number[]>();
+  const vectorSimilarity = (left: number[], right: number[]): number => {
+    if (left.length !== right.length || left.length === 0) return 0;
+    return left.reduce((sum, value, index) => sum + value * right[index], 0);
+  };
+  const buildFeedbackCentroid = (
+    vote: 'like' | 'dislike',
+    examples: Array<{ vote: 'like' | 'dislike'; timestamp: number }>,
+    embeddings: Array<number[] | null>,
+  ): number[] | null => {
+    let centroid: number[] = [];
+    let totalWeight = 0;
+    const halfLifeMs = 90 * 24 * 60 * 60 * 1000;
+
+    examples.forEach((example, index) => {
+      const vector = embeddings[index];
+      if (example.vote !== vote || !vector) return;
+      if (centroid.length === 0) centroid = Array(vector.length).fill(0);
+      if (centroid.length !== vector.length) return;
+      const ageMs = Math.max(0, Date.now() - example.timestamp);
+      const weight = Math.pow(0.5, ageMs / halfLifeMs);
+      vector.forEach((value, dimension) => {
+        centroid[dimension] += value * weight;
+      });
+      totalWeight += weight;
+    });
+
+    if (totalWeight === 0) return null;
+    const magnitude = Math.sqrt(centroid.reduce((sum, value) => sum + value * value, 0));
+    return magnitude > 0 ? centroid.map(value => value / magnitude) : null;
+  };
+
+  const embedSemanticTexts = async (
+    texts: string[],
+    config: { provider: string; apiKey: string; baseUrl: string; model: string },
+  ): Promise<Array<number[] | null>> => {
+    const results: Array<number[] | null> = Array(texts.length).fill(null);
+    const provider = config.provider;
+    if (provider === 'none' || texts.length === 0) return results;
+
+    const apiKey = config.apiKey || (provider === 'gemini' ? process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '' : '');
+    const model = config.model.trim() || (provider === 'gemini' ? 'gemini-embedding-001' : 'text-embedding-3-small');
+    const baseUrl = config.baseUrl.trim();
+    if (!apiKey || (provider === 'openai-compatible' && !baseUrl)) return results;
+    if (provider !== 'openai-compatible' && provider !== 'gemini') return results;
+
+    const cachePrefix = `${provider}|${baseUrl}|${model}|`;
+    const pending: Array<{ index: number; text: string; cacheKey: string }> = [];
+    texts.forEach((text, index) => {
+      const cacheKey = `${cachePrefix}${text}`;
+      const cached = semanticEmbeddingCache.get(cacheKey);
+      if (cached) results[index] = cached;
+      else pending.push({ index, text, cacheKey });
+    });
+
+    const gemini = provider === 'gemini'
+      ? new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+      : null;
+
+    for (let start = 0; start < pending.length; start += 50) {
+      const batch = pending.slice(start, start + 50);
+      let vectors: any[] = [];
+      if (provider === 'gemini' && gemini) {
+        const response = await gemini.models.embedContent({
+          model,
+          contents: batch.map(item => item.text),
+          config: { taskType: 'SEMANTIC_SIMILARITY', outputDimensionality: 768 },
+        });
+        vectors = (response.embeddings || []).map(item => item?.values);
+      } else {
+        const response = await postProviderJson(
+          providerEndpoint(baseUrl, 'embeddings'),
+          { Authorization: `Bearer ${apiKey}` },
+          { model, input: batch.map(item => item.text) },
+        );
+        vectors = Array.isArray(response.data)
+          ? [...response.data].sort((a: any, b: any) => (a.index || 0) - (b.index || 0)).map((item: any) => item.embedding)
+          : [];
+      }
+
+      batch.forEach((item, index) => {
+        const values = vectors[index];
+        if (!Array.isArray(values) || values.length === 0) return;
+        const rawVector = values.map(Number);
+        if (rawVector.some(value => !Number.isFinite(value))) return;
+        const magnitude = Math.sqrt(rawVector.reduce((sum, value) => sum + value * value, 0));
+        if (magnitude === 0) return;
+        const vector = rawVector.map(value => value / magnitude);
+        results[item.index] = vector;
+        if (semanticEmbeddingCache.size >= 1000) {
+          const oldestKey = semanticEmbeddingCache.keys().next().value;
+          if (oldestKey) semanticEmbeddingCache.delete(oldestKey);
+        }
+        semanticEmbeddingCache.set(item.cacheKey, vector);
+      });
+    }
+
+    return results;
+  };
 
   // API Routes
+  app.get('/api/semantic-status', (_req, res) => {
+    res.json({
+      geminiConfigured: Boolean(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY),
+      localEngine: true,
+    });
+  });
+
   // OPML Parser endpoint
   app.post('/api/parse-opml', (req, res) => {
     try {
@@ -255,6 +698,15 @@ async function startServer() {
 
       const decodeXml = (str: string) =>
         str
+          .replace(/&#(x[0-9a-f]+|[0-9]+);/gi, (entity, value: string) => {
+            const codePoint = value[0].toLowerCase() === 'x'
+              ? parseInt(value.slice(1), 16)
+              : parseInt(value, 10);
+            return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff &&
+              !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+              ? String.fromCodePoint(codePoint)
+              : entity;
+          })
           .replace(/&amp;/g, '&')
           .replace(/&lt;/g, '<')
           .replace(/&gt;/g, '>')
@@ -280,17 +732,65 @@ async function startServer() {
       const failures: Array<{ title: string; reason: string }> = [];
       const seenUrls = new Set<string>();
 
-      // Tokenize all <outline ...> opening/self-closing tags and </outline> closing tags
-      const tagRegex = /<\/outline\s*>|<outline\b[^>]*\/?>/gi;
+      // Scan outline tags without treating a '>' inside a quoted attribute as the end of a tag.
+      const outlineTags: string[] = [];
+      let cursor = 0;
+      while ((cursor = opmlText.indexOf('<', cursor)) !== -1) {
+        if (opmlText.startsWith('<!--', cursor)) {
+          const commentEnd = opmlText.indexOf('-->', cursor + 4);
+          cursor = commentEnd === -1 ? opmlText.length : commentEnd + 3;
+          continue;
+        }
+        if (opmlText.startsWith('<![CDATA[', cursor)) {
+          const cdataEnd = opmlText.indexOf(']]>', cursor + 9);
+          cursor = cdataEnd === -1 ? opmlText.length : cdataEnd + 3;
+          continue;
+        }
+        if (opmlText.startsWith('<!', cursor) || opmlText.startsWith('<?', cursor)) {
+          const declarationEnd = opmlText.indexOf('>', cursor + 2);
+          cursor = declarationEnd === -1 ? opmlText.length : declarationEnd + 1;
+          continue;
+        }
+
+        const remainder = opmlText.slice(cursor);
+        const closingTag = remainder.match(/^<\/(?:[\w.-]+:)?outline\s*>/i);
+        if (closingTag) {
+          outlineTags.push(closingTag[0]);
+          cursor += closingTag[0].length;
+          continue;
+        }
+
+        const openingTag = remainder.match(/^<(?:[\w.-]+:)?outline(?=[\s/>])/i);
+        if (!openingTag) {
+          cursor += 1;
+          continue;
+        }
+
+        let end = cursor + openingTag[0].length;
+        let quote: string | null = null;
+        for (; end < opmlText.length; end += 1) {
+          const char = opmlText[end];
+          if (quote) {
+            if (char === quote) quote = null;
+          } else if (char === '"' || char === "'") {
+            quote = char;
+          } else if (char === '>') {
+            break;
+          }
+        }
+        if (end >= opmlText.length) break;
+
+        outlineTags.push(opmlText.slice(cursor, end + 1));
+        cursor = end + 1;
+      }
+
       const folderStack: string[] = [];
-      let match: RegExpExecArray | null;
       let foundAnyOutline = false;
 
-      while ((match = tagRegex.exec(opmlText)) !== null) {
-        const tag = match[0];
+      for (const tag of outlineTags) {
         foundAnyOutline = true;
 
-        if (/^<\/outline/i.test(tag)) {
+        if (/^<\/(?:[\w.-]+:)?outline/i.test(tag)) {
           if (folderStack.length > 0) {
             folderStack.pop();
           }
@@ -515,6 +1015,7 @@ async function startServer() {
       const dateMatch = block.match(/<(?:pubDate|published|updated|dc:date)[^>]*>([\s\S]*?)<\/(?:pubDate|published|updated|dc:date)>/i);
       const rawDate = dateMatch ? cleanHtml(dateMatch[1]) : '';
       const publishedAt = formatPublishDate(rawDate);
+      const publishedAtMs = rawDate ? new Date(rawDate).getTime() : NaN;
 
       const contentMatch = block.match(/<(?:content:encoded|content)[^>]*>([\s\S]*?)<\/(?:content:encoded|content)>/i);
       const descMatch = block.match(/<description[^>]*>([\s\S]*?)<\/description>/i);
@@ -533,12 +1034,26 @@ async function startServer() {
       }
 
       let bannerImage: string | undefined;
-      const mediaMatch = block.match(/<media:content\b[^>]*url\s*=\s*["']([^"']+)["'][^>]*>/i) ||
-                         block.match(/<enclosure\b[^>]*url\s*=\s*["']([^"']+)["'][^>]*type\s*=\s*["']image\/[^"']+["'][^>]*>/i) ||
-                         block.match(/<enclosure\b[^>]*type\s*=\s*["']image\/[^"']+["'][^>]*url\s*=\s*["']([^"']+)["'][^>]*>/i);
-      if (mediaMatch && mediaMatch[1]) {
-        bannerImage = mediaMatch[1];
-      } else {
+      const mediaTags = block.match(/<media:(?:content|thumbnail)\b[^>]*>/gi) || [];
+      for (const tag of mediaTags) {
+        const urlMatch = tag.match(/\burl\s*=\s*["']([^"']+)["']/i);
+        const isImage = /<media:thumbnail\b/i.test(tag) ||
+          /\bmedium\s*=\s*["']image["']/i.test(tag) ||
+          /\btype\s*=\s*["']image\/[^"']+["']/i.test(tag) ||
+          (urlMatch && /\.(?:avif|gif|jpe?g|png|webp)(?:[?#]|$)/i.test(urlMatch[1]));
+        if (isImage && urlMatch) {
+          bannerImage = urlMatch[1];
+          break;
+        }
+      }
+
+      if (!bannerImage) {
+        const enclosureMatch = block.match(/<enclosure\b[^>]*url\s*=\s*["']([^"']+)["'][^>]*type\s*=\s*["']image\/[^"']+["'][^>]*>/i) ||
+          block.match(/<enclosure\b[^>]*type\s*=\s*["']image\/[^"']+["'][^>]*url\s*=\s*["']([^"']+)["'][^>]*>/i);
+        if (enclosureMatch && enclosureMatch[1]) bannerImage = enclosureMatch[1];
+      }
+
+      if (!bannerImage) {
         const imgMatch = fullRaw.match(/<img\b[^>]*src\s*=\s*["'](https?:\/\/[^"']+)["'][^>]*>/i);
         if (imgMatch && imgMatch[1] && !imgMatch[1].includes('feedburner') && !imgMatch[1].includes('tracking') && !imgMatch[1].includes('spacer')) {
           bannerImage = imgMatch[1];
@@ -562,6 +1077,7 @@ async function startServer() {
         url: link,
         fullText: cleanFull.length > 120 ? cleanFull : (summary + '\n\n' + 'Read the complete article directly at: ' + link),
         publishedAt,
+        publishedAtMs: Number.isFinite(publishedAtMs) ? publishedAtMs : undefined,
         bannerImage,
         isOutOfBubble: false,
         why: `From your ${sourceTitle} subscription.`
@@ -570,11 +1086,15 @@ async function startServer() {
     return items;
   };
 
-  const fetchFeedArticles = async (feedUrl: string, sourceTitle: string, folder: string): Promise<any[]> => {
-    if (!feedUrl) return [];
+  const fetchFeedWithStatus = async (
+    feedUrl: string,
+    sourceTitle: string,
+    folder: string,
+  ): Promise<{ items: any[]; error?: string }> => {
+    if (!feedUrl) return { items: [], error: 'No feed URL set' };
     const cached = feedCache.get(feedUrl);
     if (cached && Date.now() - cached.timestamp < FEED_CACHE_TTL) {
-      return cached.items;
+      return { items: cached.items };
     }
     try {
       const page = await fetchPublicPage(feedUrl, 7000);
@@ -582,35 +1102,98 @@ async function startServer() {
         const parsed = parseFeedItems(page.text, sourceTitle, folder, feedUrl);
         if (parsed.length > 0) {
           feedCache.set(feedUrl, { timestamp: Date.now(), items: parsed });
-          return parsed;
+          return { items: parsed };
         }
+        return { items: [], error: 'No readable articles in the feed' };
       }
+      return { items: [], error: `Feed responded with ${page?.status ?? 'an error'}` };
     } catch (err: any) {
       console.warn(`[FeedFetch] Failed to fetch feed for "${sourceTitle}" (${feedUrl}):`, err.message);
+      return { items: [], error: err?.message || 'Feed could not be reached' };
     }
-    return [];
   };
 
-  // Curate daily digest from live feeds using Gemini, OpenAI, Anthropic, or Deterministic engine
+  const fetchFeedArticles = async (feedUrl: string, sourceTitle: string, folder: string): Promise<any[]> =>
+    (await fetchFeedWithStatus(feedUrl, sourceTitle, folder)).items;
+
+  // Curate daily digest from live feeds using configured provider adapters or deterministic ranking
   app.post('/api/curate', async (req, res) => {
     try {
-      const { sources: clientSources, signals, readingStats, serendipityDial = 30, itemCount = 6, provider = 'gemini', apiKey: clientApiKey } = req.body;
+      const { sources: clientSources, signals, readingStats, serendipityDial = 30, itemCount = 6 } = req.body;
+      const requestedProvider = typeof req.body.provider === 'string' ? req.body.provider : 'deterministic';
+      const provider = requestedProvider === 'openai' ? 'openai-compatible' : requestedProvider;
+      const clientApiKey = typeof req.body.apiKey === 'string' ? req.body.apiKey : '';
+      const clientBaseUrl = typeof req.body.baseUrl === 'string' ? req.body.baseUrl.trim() : '';
+      const clientModel = typeof req.body.model === 'string' ? req.body.model.trim() : '';
+      const requestedEmbeddingProvider = typeof req.body.embeddingProvider === 'string' ? req.body.embeddingProvider : 'none';
+      const embeddingProvider = ['none', 'gemini', 'openai-compatible'].includes(requestedEmbeddingProvider)
+        ? requestedEmbeddingProvider
+        : 'none';
+      const embeddingConfig = {
+        provider: embeddingProvider,
+        apiKey: (typeof req.body.embeddingApiKey === 'string' ? req.body.embeddingApiKey.trim() : '') ||
+          (embeddingProvider === provider ? clientApiKey.trim() : ''),
+        baseUrl: (typeof req.body.embeddingBaseUrl === 'string' ? req.body.embeddingBaseUrl.trim() : '') ||
+          (embeddingProvider === provider ? clientBaseUrl : ''),
+        model: typeof req.body.embeddingModel === 'string' ? req.body.embeddingModel.trim() : '',
+      };
+      const feedbackExamples: SemanticVoteExample[] =
+        Array.isArray(req.body.feedback)
+          ? req.body.feedback
+              .filter((entry: any) => entry && typeof entry.id === 'string' &&
+                (entry.vote === 'like' || entry.vote === 'dislike') &&
+                typeof entry.title === 'string' && typeof entry.text === 'string' &&
+                Number.isFinite(entry.timestamp))
+              .slice(-40)
+              .map((entry: any) => ({
+                id: entry.id.slice(0, 200),
+                vote: entry.vote,
+                title: entry.title.slice(0, 300),
+                text: entry.text.slice(0, 3000),
+                timestamp: entry.timestamp,
+                source: typeof entry.source === 'string' ? entry.source.slice(0, 120) : undefined,
+                folder: typeof entry.folder === 'string' ? entry.folder.slice(0, 120) : undefined,
+              }))
+          : [];
+
+      const wantsFreshDigest = Boolean(req.body.fresh);
+      const seed = typeof req.body.seed === 'string' || typeof req.body.seed === 'number'
+        ? String(req.body.seed)
+        : String(Date.now());
 
       const activeSources = Array.isArray(clientSources) && clientSources.length > 0
         ? clientSources.filter((s: any) => s.status !== 'failing')
         : DEFAULT_FEEDS;
 
-      // 1. Fetch live articles from candidate sources in parallel
+      // 1. Fetch live articles from candidate sources in parallel.
+      // A library can hold far more feeds than one run can fetch, so a fresh run rotates
+      // through the wider library instead of only ever reading the first ten feeds.
+      const MAX_SOURCES_PER_RUN = 14;
+      const orderedSources = activeSources.length > MAX_SOURCES_PER_RUN
+        ? [...activeSources].sort((a: any, b: any) =>
+            stableJitter(seed, String(a.feedUrl || a.id || '')) -
+            stableJitter(seed, String(b.feedUrl || b.id || ''))
+          )
+        : activeSources;
+      const runSources = orderedSources.slice(0, MAX_SOURCES_PER_RUN);
+
       const feedResults = await Promise.allSettled(
-        activeSources.slice(0, 10).map((s: any) => fetchFeedArticles(s.feedUrl, s.title, s.folder))
+        runSources.map((s: any) => fetchFeedWithStatus(s.feedUrl, s.title, s.folder))
       );
 
+      const feedFailures: Array<{ title: string; reason: string }> = [];
       let candidatePool: any[] = [];
-      for (const r of feedResults) {
-        if (r.status === 'fulfilled' && Array.isArray(r.value)) {
-          candidatePool.push(...r.value);
+      runSources.forEach((source: any, index: number) => {
+        const result = feedResults[index];
+        if (!result || result.status === 'rejected') {
+          feedFailures.push({ title: source.title || 'Source', reason: 'Request failed' });
+          return;
         }
-      }
+        if (result.value.error) {
+          feedFailures.push({ title: source.title || 'Source', reason: result.value.error });
+        }
+        candidatePool.push(...result.value.items);
+      });
 
       // If pool is sparse, fetch from default verified feeds as supplement
       if (candidatePool.length < 4) {
@@ -642,16 +1225,185 @@ async function startServer() {
         : Array.isArray(signals?.less) ? signals.less : [];
       const moreIds: string[] = Array.isArray(signals?.moreIds) ? signals.moreIds : [];
       const lessIds: string[] = Array.isArray(signals?.lessIds) ? signals.lessIds : [];
+      const matchesTopicSignal = (item: any, topicList: string[]) =>
+        topicList.some(sig => {
+          const s = sig.toLowerCase().trim();
+          if (!s) return false;
+          return (
+            (item.folder && item.folder.toLowerCase().includes(s)) ||
+            (item.title && item.title.toLowerCase().includes(s)) ||
+            (item.summary && item.summary.toLowerCase().includes(s))
+          );
+        });
+
+      // Older votes carry ids but no stored excerpt. Recover the article text from the live
+      // pool so the semantic engine has examples to learn from straight away.
+      if (feedbackExamples.length < 40 && (moreIds.length > 0 || lessIds.length > 0)) {
+        const poolById = new Map<string, any>(candidatePool.map(item => [item.id, item]));
+        const knownFeedbackIds = new Set(feedbackExamples.map(entry => entry.id));
+        const recover = (ids: string[], vote: 'like' | 'dislike') => {
+          ids.forEach(id => {
+            if (feedbackExamples.length >= 40 || knownFeedbackIds.has(id)) return;
+            const item = poolById.get(id);
+            if (!item || !item.title) return;
+            knownFeedbackIds.add(id);
+            feedbackExamples.push({
+              id,
+              vote,
+              title: String(item.title).slice(0, 300),
+              text: `${item.title}\n${item.summary || ''}\n${item.fullText || ''}`.slice(0, 3000),
+              timestamp: Date.now(),
+              source: item.source,
+              folder: item.folder,
+            });
+          });
+        };
+        recover(moreIds, 'like');
+        recover(lessIds, 'dislike');
+      }
+
+      // Apply explicit negative feedback before either AI or deterministic curation.
+      candidatePool = candidatePool.filter(item =>
+        !lessIds.includes(item.id) && !matchesTopicSignal(item, lessTopics)
+      );
+
+      // Freshness: what the browser already showed, so a refresh never repeats itself.
+      const recentlyShown: Array<{ id: string; shownAt: number }> = Array.isArray(req.body.recentlyShown)
+        ? req.body.recentlyShown
+            .filter((entry: any) => entry && typeof entry.id === 'string' && Number.isFinite(entry.shownAt))
+            .slice(-200)
+            .map((entry: any) => ({ id: entry.id, shownAt: Number(entry.shownAt) }))
+        : [];
+      const previousDigestIds = new Set<string>(
+        Array.isArray(req.body.previousDigestIds)
+          ? req.body.previousDigestIds.filter((id: any) => typeof id === 'string')
+          : []
+      );
+      const nowMs = Date.now();
+      const exposurePenalty = new Map<string, number>();
+      const deprioritizedIds = new Set<string>();
+      recentlyShown.forEach(entry => {
+        const ageHours = Math.max(0, (nowMs - entry.shownAt) / (60 * 60 * 1000));
+        const penalty = ageHours < 18 ? 65 : ageHours < 72 ? 28 : ageHours < 336 ? 8 : 0;
+        if (penalty > 0) {
+          exposurePenalty.set(entry.id, Math.max(exposurePenalty.get(entry.id) || 0, penalty));
+        }
+      });
+
+      // A manual refresh keeps the current digest's articles out of the pool when there is room.
+      if (wantsFreshDigest && previousDigestIds.size > 0) {
+        const withoutPrevious = candidatePool.filter(item => !previousDigestIds.has(item.id));
+        if (withoutPrevious.length >= itemCount) {
+          candidatePool = withoutPrevious;
+        }
+      }
+
+      // Provider-free semantic ranking: votes change the digest even with no API key.
+      const semanticScores = new Map<string, number>();
+      if (feedbackExamples.length > 0 && candidatePool.length > 0) {
+        localSemanticScores(feedbackExamples, candidatePool).forEach((value, key) => {
+          semanticScores.set(key, value);
+        });
+      }
+
+      // Optional provider embeddings sharpen those scores; they never silently replace them.
+      let providerSemanticMatches = 0;
+      const semanticItems = candidatePool.slice(0, 80);
+      if (embeddingProvider !== 'none' && feedbackExamples.length > 0 && semanticItems.length > 0) {
+        try {
+          const feedbackTexts = feedbackExamples.map(entry => `${entry.title}\n${entry.text}`.slice(0, 3200));
+          const candidateTexts = semanticItems.map(item =>
+            `${item.title || ''}\n${item.summary || ''}\n${item.fullText || ''}`
+              .replace(/<[^>]*>/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 3000)
+          );
+          const vectors = await embedSemanticTexts([...feedbackTexts, ...candidateTexts], embeddingConfig);
+          const positiveCentroid = buildFeedbackCentroid('like', feedbackExamples, vectors);
+          const negativeCentroid = buildFeedbackCentroid('dislike', feedbackExamples, vectors);
+          const candidateVectors = vectors.slice(feedbackExamples.length);
+
+          candidateVectors.forEach((vector, index) => {
+            if (!vector) return;
+            const positiveSimilarity = positiveCentroid ? vectorSimilarity(vector, positiveCentroid) : 0;
+            const negativeSimilarity = negativeCentroid ? vectorSimilarity(vector, negativeCentroid) : 0;
+            const providerScore = (positiveSimilarity - negativeSimilarity) / 2;
+            const itemId = semanticItems[index]?.id;
+            if (!itemId) return;
+            const localScore = semanticScores.get(itemId) || 0;
+            semanticScores.set(itemId, providerScore * 0.65 + localScore * 0.35);
+            providerSemanticMatches += 1;
+          });
+        } catch (err: any) {
+          console.warn('[Curator] Provider embeddings unavailable, continuing with the built-in semantic engine:', err?.message || err);
+        }
+      }
+
+      const scoredPool = candidatePool
+        .map((item: any) => {
+          const semanticScore = semanticScores.get(item.id) || 0;
+          const liked = moreIds.includes(item.id);
+          const preferredTopic = matchesTopicSignal(item, moreTopics);
+          const penalty = exposurePenalty.get(item.id) || 0;
+          if (penalty > 0) deprioritizedIds.add(item.id);
+
+          let score = recencyWeight(item) * 45
+            + semanticScore * 120
+            + stableJitter(seed, item.id) * 12
+            - penalty;
+          if (liked) score += 30;
+          if (preferredTopic) score += 15;
+          if (readingStats && readingStats[item.id]?.finished) score += 8;
+
+          return { ...item, isOutOfBubble: false, _score: score, _semantic: semanticScore };
+        })
+        .sort((a, b) => b._score - a._score);
+
+      // Assign a distinct editorial reason per card, in final ranked order.
+      scoredPool.forEach((entry: any, index: number) => {
+        entry.why = buildWhyLine(entry, index, {
+          liked: moreIds.includes(entry.id),
+          preferredTopic: matchesTopicSignal(entry, moreTopics),
+          semanticScore: Number(entry._semantic) || 0,
+        });
+      });
+
+      const rankedItems = scoredPool.map(({ _score, _semantic, ...rest }: any) => rest);
+
+      const distinctSources = new Set(
+        rankedItems.map(item => item.source).filter((value): value is string => Boolean(value))
+      ).size;
+      const maxPerSource = Math.max(
+        2,
+        Math.min(itemCount, Math.ceil(itemCount / Math.max(1, distinctSources)))
+      );
+
+      const semanticSummary = {
+        feedbackExamples: feedbackExamples.length,
+        providerVectors: providerSemanticMatches,
+        deprioritized: deprioritizedIds.size,
+        localEngine: true,
+      };
+
+      const feedReport = {
+        attempted: runSources.length,
+        failed: feedFailures.slice(0, 12),
+      };
 
       // 2. Curate using AI if requested and candidate pool is ready
       if (provider !== 'deterministic' && candidatePool.length >= 4) {
-        const candidatesForAi = candidatePool.slice(0, 30).map((item, idx) => ({
+        const candidatesForAi = scoredPool.slice(0, 30).map((item: any, idx: number) => ({
           idx,
+          id: item.id,
           title: item.title,
           source: item.source,
           folder: item.folder,
           summary: item.summary,
-          readTime: item.readTime
+          readTime: item.readTime,
+          isLiked: moreIds.includes(item.id),
+          matchesPreferredTopic: matchesTopicSignal(item, moreTopics),
+          semanticScore: Number((item._semantic || 0).toFixed(3))
         }));
 
         const prompt = `You are a sophisticated personal reading editor. Your task is to curate a daily reading digest of exactly ${itemCount} items by selecting the best articles from the live candidate pool below based on the user's signals and serendipity setting (${serendipityDial}%).
@@ -662,50 +1414,56 @@ ${JSON.stringify(candidatesForAi)}
 User Reading Preferences:
 - Prioritized Topics (MORE): ${JSON.stringify(moreTopics)}
 - De-emphasized Topics (LESS): ${JSON.stringify(lessTopics)}
+- Candidate isLiked and matchesPreferredTopic flags reflect exact article/topic feedback.
+- semanticScore is a relevance score built from your recent positive minus negative article votes (Curator's built-in semantic engine, plus your embeddings provider when configured); higher values are a better match.
 - Articles thumbs-up: ${JSON.stringify(moreIds)}
-- Articles thumbs-down: ${JSON.stringify(lessIds)}
+- Articles thumbs-down: ${JSON.stringify(lessIds)} (exact downvoted articles and any legacy less topics are already excluded)
 Serendipity Dial: ${serendipityDial}% (0% = stay close to established interests; 100% = stretch into unfamiliar intellectual territories).
 
 CURATION RULES:
 1. Select exactly ${itemCount} unique items from the candidate pool using their "idx".
-2. At least 1 (or 2 if serendipity >= 40) should be an "isOutOfBubble": true stretch item from a folder different from the user's top interests.
-3. For each selected item, write a 1-sentence editorial "why" rationale explaining why this piece was selected (e.g. "Selected for your reading interest in Economics", "A thoughtful design retrospective", "Deliberate stretch: outside your usual tech routine").
-4. Return ONLY a JSON array of objects with keys: "idx" (number), "why" (string), "isOutOfBubble" (boolean).`;
+2. Strongly prioritize candidates marked isLiked, matchesPreferredTopic, or with higher semanticScore; avoid negative semanticScore candidates when similar alternatives exist.
+3. At least 1 (or 2 if serendipity >= 40) should be an "isOutOfBubble": true stretch item from a folder different from the user's top interests.
+4. For each selected item, write a 1-sentence editorial "why" rationale explaining why this piece was selected (e.g. "Selected for your reading interest in Economics", "A thoughtful design retrospective", "Deliberate stretch: outside your usual tech routine").
+5. Candidates are already ordered by publication recency, topic fit and semantic match, and pieces shown in recent digests are down-ranked. Prefer items nearer the top of the list.
+6. Return ONLY a JSON array of objects with keys: "idx" (number), "why" (string), "isOutOfBubble" (boolean).`;
 
         let aiSelections: Array<{ idx: number; why: string; isOutOfBubble: boolean }> | null = null;
 
-        if (provider === 'openai' && clientApiKey?.trim()) {
+        if (provider === 'openai-compatible' && clientApiKey.trim() && clientBaseUrl && clientModel) {
           try {
-            const parsed = await callOpenAI(clientApiKey.trim(), prompt);
+            const parsed = await callOpenAICompatible({
+              apiKey: clientApiKey.trim(),
+              baseUrl: clientBaseUrl,
+              model: clientModel,
+            }, prompt);
             const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
             if (Array.isArray(list) && list.length > 0) aiSelections = list;
           } catch (e: any) {
-            console.warn('[Curator] OpenAI curation failed, falling back:', e.message);
+            console.warn('[Curator] OpenAI-compatible curation failed, falling back:', e.message);
           }
-        } else if (provider === 'anthropic' && clientApiKey?.trim()) {
+        } else if (provider === 'anthropic' && clientApiKey.trim()) {
           try {
-            const parsed = await callAnthropic(clientApiKey.trim(), prompt);
+            const parsed = await callAnthropic(clientApiKey.trim(), prompt, clientModel || 'claude-3-5-sonnet-20241022');
             const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
             if (Array.isArray(list) && list.length > 0) aiSelections = list;
           } catch (e: any) {
             console.warn('[Curator] Anthropic curation failed, falling back:', e.message);
           }
-        } else {
-          const activeAi = clientApiKey?.trim()
+        } else if (provider === 'gemini') {
+          const activeAi = clientApiKey.trim()
             ? new GoogleGenAI({ apiKey: clientApiKey.trim(), httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
             : ai;
 
           if (activeAi) {
             try {
               const response = await activeAi.models.generateContent({
-                model: 'gemini-4-hydrogen',
+                model: clientModel || 'gemini-4-hydrogen',
                 contents: prompt,
-                config: {
-                  responseMimeType: 'application/json'
-                }
+                config: { responseMimeType: 'application/json' }
               });
               if (response.text) {
-                const parsed = JSON.parse(response.text);
+                const parsed = parseModelJson(response.text);
                 const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
                 if (Array.isArray(list) && list.length > 0) aiSelections = list;
               }
@@ -719,77 +1477,156 @@ CURATION RULES:
           const chosenArticles: any[] = [];
           const usedIdx = new Set<number>();
           for (const sel of aiSelections) {
-            const candidate = candidatePool[sel.idx];
-            if (candidate && !usedIdx.has(sel.idx)) {
-              usedIdx.add(sel.idx);
-              chosenArticles.push({
-                ...candidate,
-                why: sel.why || candidate.why,
-                isOutOfBubble: Boolean(sel.isOutOfBubble)
-              });
-            }
+            const idx = Number(sel?.idx);
+            const entry = scoredPool[idx];
+            if (!entry || usedIdx.has(idx)) continue;
+            usedIdx.add(idx);
+            const { _score, _semantic, ...rest } = entry;
+            chosenArticles.push({
+              ...rest,
+              why: typeof sel.why === 'string' && sel.why.trim() ? sel.why : rest.why,
+              isOutOfBubble: Boolean(sel.isOutOfBubble)
+            });
           }
 
-          if (chosenArticles.length >= Math.min(itemCount, candidatePool.length)) {
-            return res.json({ digest: chosenArticles.slice(0, itemCount), generatedByAI: true });
+          const aiDigest = selectDiverse(rankedItems, itemCount, maxPerSource, chosenArticles);
+          if (aiDigest.length >= Math.min(itemCount, Math.max(1, candidatePool.length))) {
+            return res.json({ digest: aiDigest, generatedByAI: true, semanticSummary, feedReport });
           }
         }
       }
 
-      // 3. Deterministic signal-aware curation over the live candidate pool
-      const matchesTopicSignal = (item: any, topicList: string[]) =>
-        topicList.some(sig => {
-          const s = sig.toLowerCase().trim();
-          if (!s) return false;
-          return (
-            (item.folder && item.folder.toLowerCase().includes(s)) ||
-            (item.title && item.title.toLowerCase().includes(s)) ||
-            (item.summary && item.summary.toLowerCase().includes(s))
-          );
+      // 3. Deterministic signal-aware curation over the semantically ranked pool
+      const likedExamples = feedbackExamples.filter(entry => entry.vote === 'like');
+      const familiarSources = new Set(
+        likedExamples.map(entry => entry.source).filter((value): value is string => Boolean(value))
+      );
+      const familiarFolders = new Set(
+        likedExamples.map(entry => entry.folder).filter((value): value is string => Boolean(value))
+      );
+      if (familiarFolders.size === 0 && rankedItems.length > 0) {
+        const folderCounts = new Map<string, number>();
+        rankedItems.slice(0, 10).forEach(item => {
+          const key = item.folder || '';
+          if (!key) return;
+          folderCounts.set(key, (folderCounts.get(key) || 0) + 1);
         });
+        const leadingFolder = [...folderCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+        if (leadingFolder) familiarFolders.add(leadingFolder);
+      }
 
-      const scored = candidatePool
-        .filter(item => !lessIds.includes(item.id) && !matchesTopicSignal(item, lessTopics))
-        .map((item, idx) => {
-          let score = 100 - idx;
-          let why = `Top dispatch from ${item.source}.`;
-          let isOutOfBubble = false;
+      const stretchTarget = serendipityDial >= 50
+        ? Math.min(2, itemCount)
+        : serendipityDial >= 20
+          ? Math.min(1, itemCount)
+          : 0;
+      const stretchItems: any[] = [];
+      if (stretchTarget > 0) {
+        for (const item of rankedItems) {
+          if (stretchItems.length >= stretchTarget) break;
+          const source = item.source || '';
+          const folder = item.folder || '';
+          if (familiarSources.has(source) || familiarFolders.has(folder)) continue;
+          const publishedMs = Number(item.publishedAtMs);
+          if (Number.isFinite(publishedMs) && Date.now() - publishedMs > 45 * 24 * 60 * 60 * 1000) continue;
+          stretchItems.push({
+            ...item,
+            isOutOfBubble: true,
+            why: `Deliberate stretch: outside your usual ${familiarFolders.size > 0 ? [...familiarFolders][0] : (folder || 'reading')} routine.`
+          });
+        }
+      }
 
-          if (moreIds.includes(item.id) || matchesTopicSignal(item, moreTopics)) {
-            score += 40;
-            why = `Selected for your reading interest in ${item.folder}.`;
-          }
-          if (readingStats && readingStats[item.id]?.finished) {
-            score += 5;
-          }
+      const stretchIds = new Set(stretchItems.map(item => item.id));
+      const regular = selectDiverse(
+        rankedItems.filter(item => !stretchIds.has(item.id)),
+        Math.max(0, itemCount - stretchItems.length),
+        maxPerSource
+      );
+      const digest = [...regular, ...stretchItems].slice(0, itemCount);
 
-          if (idx % 3 === 2) {
-            isOutOfBubble = true;
-            why = 'Deliberate stretch: outside your usual reading routine.';
-          }
-
-          return { ...item, why, isOutOfBubble, _score: score };
-        });
-
-      const inBubble = scored
-        .filter(i => !i.isOutOfBubble)
-        .sort((a, b) => b._score - a._score);
-
-      const outBubble = scored
-        .filter(i => i.isOutOfBubble)
-        .sort((a, b) => b._score - a._score);
-
-      const stretchTarget = serendipityDial >= 50 ? Math.min(2, outBubble.length) : (serendipityDial >= 20 ? Math.min(1, outBubble.length) : 0);
-      const regularTarget = Math.max(0, itemCount - stretchTarget);
-
-      const selected = [
-        ...inBubble.slice(0, regularTarget),
-        ...outBubble.slice(0, stretchTarget)
-      ].map(({ _score, ...rest }) => rest);
-
-      res.json({ digest: selected.slice(0, itemCount), generatedByAI: false });
+      res.json({ digest, generatedByAI: false, semanticSummary, feedReport });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to generate digest' });
+    }
+  });
+
+  // Calibration pool for the setup wizard: a spread of recent articles to vote on
+  app.post('/api/calibrate', async (req, res) => {
+    try {
+      const { sources: clientSources, excludeIds } = req.body;
+      const activeSources = Array.isArray(clientSources) && clientSources.length > 0
+        ? clientSources.filter((s: any) => s.status !== 'failing')
+        : DEFAULT_FEEDS;
+
+      const seed = String(Date.now());
+      const ordered = activeSources.length > 14
+        ? [...activeSources].sort((a: any, b: any) =>
+            stableJitter(seed, String(a.feedUrl || a.id || '')) -
+            stableJitter(seed, String(b.feedUrl || b.id || ''))
+          )
+        : activeSources;
+
+      const feedResults = await Promise.allSettled(
+        ordered.slice(0, 14).map((s: any) => fetchFeedArticles(s.feedUrl, s.title, s.folder))
+      );
+
+      const excluded = new Set<string>(
+        Array.isArray(excludeIds) ? excludeIds.filter((id: any) => typeof id === 'string') : []
+      );
+
+      let pool: any[] = [];
+      for (const result of feedResults) {
+        if (result.status === 'fulfilled' && Array.isArray(result.value)) {
+          pool.push(...result.value);
+        }
+      }
+
+      const seen = new Set<string>();
+      pool = pool
+        .filter(item => {
+          if (!item || !item.id || !item.title) return false;
+          if (excluded.has(item.id) || seen.has(item.id)) return false;
+          seen.add(item.id);
+          return true;
+        })
+        .sort((a, b) => {
+          const left = Number(a.publishedAtMs);
+          const right = Number(b.publishedAtMs);
+          return (Number.isFinite(right) ? right : 0) - (Number.isFinite(left) ? left : 0);
+        });
+
+      const perSource = new Map<string, number>();
+      const candidates: any[] = [];
+      for (const item of pool) {
+        if (candidates.length >= 12) break;
+        const key = item.source || 'Unknown';
+        const used = perSource.get(key) || 0;
+        if (used >= 2) continue;
+        perSource.set(key, used + 1);
+        candidates.push({
+          id: item.id,
+          title: item.title,
+          source: item.source,
+          folder: item.folder,
+          summary: item.summary,
+          readTime: item.readTime,
+          url: item.url,
+          fullText: String(item.fullText || '').slice(0, 1500),
+          publishedAt: item.publishedAt,
+          bannerImage: item.bannerImage,
+          isOutOfBubble: false,
+          why: 'Calibration sample',
+        });
+      }
+
+      if (candidates.length === 0) {
+        return res.status(404).json({ error: 'No live articles were available to calibrate with.' });
+      }
+
+      res.json({ candidates });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Could not build a calibration list' });
     }
   });
 
@@ -1175,13 +2012,6 @@ CURATION RULES:
         return res.status(400).json({ error: 'Search terms are required.' });
       }
 
-      if (!ai) {
-        return res.status(503).json({
-          error: 'Google Search discovery requires a configured GEMINI_API_KEY on the server.',
-        });
-      }
-
-
       const prompt = `Use Google Search to find 5 to 6 high-quality independent publications, blogs, newsletters, or editorial websites relevant to this search topic: "${query.trim()}".
 
 Focus on thoughtful writing and recurring publications (not social media profiles, shopping pages, or encyclopedias).
@@ -1368,16 +2198,21 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
     }
   });
 
-  // Vite middleware for development (HMR disabled in cloud iframe to prevent WebSocket closed errors)
-  const vite = await createViteServer({
-    server: {
-      middlewareMode: true,
-      hmr: false,
-      allowedHosts: true,
-    }
-  });
-
-  app.use(vite.middlewares);
+  if (process.env.NODE_ENV === 'production') {
+    const distDir = path.resolve(process.cwd(), 'dist');
+    app.use(express.static(distDir));
+    app.get('*', (_req, res) => res.sendFile(path.join(distDir, 'index.html')));
+  } else {
+    // Vite middleware for development (HMR disabled in cloud iframe to prevent WebSocket closed errors)
+    const vite = await createViteServer({
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        allowedHosts: true,
+      }
+    });
+    app.use(vite.middlewares);
+  }
 
   app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);

@@ -88,10 +88,11 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Safe Redirect Resolution**: Limits redirect hops to 4 with re-validation on every hop.
 - **Payload Size Cap**: Enforces a strict 2MB maximum page download limit (`MAX_PAGE_BYTES`) to prevent denial-of-service memory exhaustion.
 
-### 6. High-Signal Deterministic Fallback Engine
-- If the Gemini API key is not present or an AI service error occurs, Curator automatically and seamlessly falls back to its built-in **Deterministic Editorial Signal Engine**.
-- The deterministic algorithm scores articles using title heuristics, domain authority rankings, content length metrics, and time-decay curves.
-- The user's reading flow is never blocked or interrupted by network or API availability issues.
+### 6. Provider-Configurable Curation & Semantic Ranking
+- Digest curation can use a configurable OpenAI-compatible chat endpoint, Anthropic, optional Gemini, or the built-in deterministic engine.
+- Semantic ranking uses a separately configured OpenAI-compatible embeddings endpoint or optional Gemini embeddings, with provider/model/base URL settings in the app.
+- Feedback examples remain browser-local; embedding vectors are short-lived server-memory cache entries. If an API is unavailable, Curator falls back to deterministic ranking.
+- Google Search grounding is an optional source-discovery adapter; without it, source discovery uses Curator's built-in publication directory.
 
 ### 7. OPML Import & Export
 - **One-Click Migration**: Import existing subscriptions from Feedly, Inoreader, NetNewsWire, Readwise Reader, Reeder, or NewsBlur.
@@ -99,7 +100,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Export Anytime**: Download a clean, standardized `.opml` XML file containing your complete watch list.
 
 ### 8. Distraction-Free Reader & iOS Web Speech Read Aloud
-- **Typographic Discipline**: Clean reading interface using *Lora* (serif body), *Plus Jakarta Sans* (interface), and *JetBrains Mono* (metadata).
+- **Typographic Discipline**: One self-hosted variable font for the interface (*Plus Jakarta Sans*, 27 KB woff2, `font-display: optional`), with system serif for reading bodies and system mono for metadata — no Google Fonts requests, so text never reflows or changes face after first paint.
 - **Native Web Speech Read Aloud**:
   - Integrated text-to-speech audio player powered by the browser's native `window.speechSynthesis`.
   - Fully compatible with iOS Safari and modern mobile browsers.
@@ -125,7 +126,7 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                       Client (React 19)                         │
-│  - Plus Jakarta Sans + Lora + JetBrains Mono                    │
+│  - Plus Jakarta Sans (self-hosted) + system serif/mono            │
 │  - Top Header Navigation with Refresh & Settings Controls       │
 │  - Bottom Dock Navigation (Today, Feeds, Saved, Sources)        │
 │  - Signal Tuning with Undo/Redo Fallbacks                       │
@@ -145,11 +146,11 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 │  • /api/parse-opml                                              │
 ├────────────────────────────────┬────────────────────────────────┤
 │                                │                                │
-│        Google GenAI SDK        │   Deterministic Signal Engine  │
-│      (gemini-2.5-flash)        │      (Automatic Fallback)      │
-│  - Deep article curation       │  - Analytical density scoring  │
-│  - Executive summaries         │  - Anti-clickbait heuristics   │
-│  - "Out of Bubble" serendipity │  - Domain authority ranking    │
+│      Provider Adapters         │   Built-in Semantic Engine     │
+│  - OpenAI-compatible APIs      │      (Always On, No Key)       │
+│  - Optional Anthropic/Gemini   │  - TF-IDF article similarity   │
+│  - Separate embedding API      │  - Vote-weighted centroids     │
+│                                │  - Recency + exposure decay    │
 └────────────────────────────────┴────────────────────────────────┘
 ```
 
@@ -160,6 +161,21 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 ### `POST /api/curate`
 Accepts a list of sources, item count target (3–15), and optional topic preference adjustments. Gathers recent feed entries and returns ranked, summarized digest articles with an "Out of the Bubble" pick.
 
+Ranking happens in three layers, and all three run without any API key:
+
+1. **Built-in semantic engine** — TF-IDF vectors over each article's title, folder, summary and excerpt, compared against recency-weighted centroids of your liked and disliked articles. Legacy votes (ids without a stored excerpt) are recovered from the live pool so the engine learns immediately.
+2. **Freshness** — articles you have already been shown are down-weighted (heavy for 18 hours, lighter for up to two weeks), and a manual refresh keeps the current digest's articles out of the pool when there is room. Feed libraries wider than one run can fetch are rotated by a per-request seed.
+3. **Optional provider embeddings** — when an OpenAI-compatible or Gemini embeddings endpoint is configured, provider similarity is blended 65/35 with the built-in scores. Provider failures fall back to the built-in engine rather than silently disabling semantic ranking.
+
+### Setup and calibration
+A cold profile has nothing to rank against, so the app ships a three-step setup flow (shown on first run when no votes exist, and re-runnable from **Settings → Semantic Reading Profile → Re-run calibration**):
+
+1. **Sources** — shows the feed count and scans them.
+2. **Calibration** — presents up to 12 recent articles from across the library (max 2 per source) with *More like this* / *Not for me*. Each tap is written to the browser-local profile exactly like a digest vote.
+3. **Engine** — confirms the built-in engine is on and builds the first digest. Embeddings providers stay optional.
+
+Calibration is served by `POST /api/calibrate` with `{ sources, excludeIds }` and returns up to 12 candidate articles, newest first and spread across sources. It uses the same feed cache as curation, so a scan immediately followed by a digest does not re-download every feed.
+
 **Request Body:**
 ```json
 {
@@ -167,6 +183,13 @@ Accepts a list of sources, item count target (3–15), and optional topic prefer
     { "id": "src_0", "title": "Nicole Williams", "feedUrl": "https://pmresearcher.substack.com/feed", "folder": "Strategy & Craft" }
   ],
   "signals": { "more": ["Technology"], "less": ["Crypto"] },
+  "feedback": [
+    { "id": "live_ab12", "vote": "like", "title": "The Architecture of Deep Focus", "text": "…", "timestamp": 1732000000000, "source": "Nicole Williams", "folder": "Strategy & Craft" }
+  ],
+  "recentlyShown": [{ "id": "live_cd34", "shownAt": 1732000000000 }],
+  "previousDigestIds": ["live_cd34"],
+  "fresh": true,
+  "seed": "1732000000000-0.42",
   "itemCount": 6,
   "serendipityDial": 20
 }
@@ -242,7 +265,7 @@ Synthesizes a live RSS 2.0 XML feed for websites that do not provide native feed
 ### Prerequisites
 - **Node.js**: v18.0.0 or higher
 - **npm**: v9.0.0 or higher
-- *(Optional)* **Gemini API Key**: A free API key from [Google AI Studio](https://aistudio.google.com/). If omitted, Curator automatically runs using the built-in Deterministic Editorial Engine.
+- *(Optional)* Provider API keys: configure an OpenAI-compatible endpoint, Anthropic, or Gemini in Curator's Settings. A server-side Gemini key is optional for Google Search-grounded discovery and Gemini-provider fallback.
 
 ### Installation
 
@@ -261,14 +284,15 @@ Synthesizes a live RSS 2.0 XML feed for websites that do not provide native feed
 
 Create a `.env` file in the project root:
 ```env
-# Optional: Google AI Studio Gemini API Key for AI curation & summaries
+# Optional server-side Gemini key for Google Search grounding,
+# or when Gemini is selected as the curation/embedding provider.
 GEMINI_API_KEY=your_gemini_api_key_here
 
 # Server port (defaults to 3000)
 PORT=3000
 ```
 
-> **Note**: If `GEMINI_API_KEY` is not provided, Curator automatically operates on its Deterministic Editorial Engine with zero configuration required.
+> **Note**: Other provider keys and OpenAI-compatible base URLs are configured in Curator's Settings and stored in this browser. Without an AI provider, Curator uses deterministic curation.
 
 ### Running Locally
 

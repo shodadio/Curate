@@ -98,9 +98,9 @@
   <!-- Typography: THE CURATOR -->
   <g transform="translate(300, 420)">
     <!-- "THE" in warm gold -->
-    <text x="-95" y="0" text-anchor="middle" font-family="Lora, Georgia, serif" font-size="34" font-weight="600" letter-spacing="0.28em" fill="#e29547">THE</text>
+    <text x="-95" y="0" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="34" font-weight="600" letter-spacing="0.28em" fill="#e29547">THE</text>
     
     <!-- "CURATOR" in brilliant white with serif styling -->
-    <text x="50" y="0" text-anchor="middle" font-family="Lora, Georgia, serif" font-size="34" font-weight="700" letter-spacing="0.22em" fill="#ffffff">CURATOR</text>
+    <text x="50" y="0" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="34" font-weight="700" letter-spacing="0.22em" fill="#ffffff">CURATOR</text>
   </g>
 </svg>

@@ -1,5 +1,16 @@
 @import "tailwindcss";
 
+/* One self-hosted variable font, one file, no third-party requests.
+   `font-display: optional` means the browser either has it within ~100ms or keeps the
+   fallback for that page load — the text never changes face after it is painted. */
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: optional;
+  src: url('/fonts/plus-jakarta-sans-latin-wght-normal.woff2') format('woff2');
+}
+
 html,
 body,
 #root {
@@ -14,7 +25,7 @@ body,
 }
 
 :root {
-  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
   letter-spacing: -0.012em;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   background-color: #020617;
@@ -22,17 +33,18 @@ body,
 }
 
 body {
-  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 .font-reading {
-  font-family: 'Lora', Georgia, Cambria, 'Times New Roman', serif;
+  font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, Cambria, 'Times New Roman', serif;
   letter-spacing: -0.003em;
 }
 
 .font-mono {
-  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
   font-feature-settings: "tnum";
 }

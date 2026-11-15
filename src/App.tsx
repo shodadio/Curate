@@ -51,6 +51,16 @@ interface SourceItem {
   avatar?: string;
 }
 
+interface SemanticFeedbackItem {
+  id: string;
+  vote: 'like' | 'dislike';
+  title: string;
+  text: string;
+  timestamp: number;
+  source?: string;
+  folder?: string;
+}
+
 function QRCodeBox({ url }: { url: string }) {
   const [svgStr, setSvgStr] = useState<string>('');
   useEffect(() => {
@@ -107,14 +117,14 @@ export default function App() {
   const [sources, setSources] = useState<SourceItem[]>(() => {
     const now = Date.now();
     const defaultSources: SourceItem[] = [
-      { id: 'src_mr', title: 'Marginal Revolution', feedUrl: 'https://marginalrevolution.com/feed', folder: 'Economics', status: 'active', lastSyncedAt: now - 5 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_dan', title: 'Dan Luu', feedUrl: 'https://danluu.com/atom.xml', folder: 'Tech & Engineering', status: 'active', lastSyncedAt: now - 15 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_simon', title: 'Simon Willison', feedUrl: 'https://simonwillison.net/atom/entries/', folder: 'Software & AI', status: 'active', lastSyncedAt: now - 20 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_ars', title: 'Ars Technica', feedUrl: 'https://feeds.arstechnica.com/arstechnica/index', folder: 'Tech & Policy', status: 'active', lastSyncedAt: now - 25 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_strat', title: 'Stratechery by Ben Thompson', feedUrl: 'https://stratechery.com/feed/', folder: 'Tech & Strategy', status: 'active', lastSyncedAt: now - 35 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_ala', title: 'A List Apart', feedUrl: 'https://alistapart.com/main/feed/', folder: 'Design & Craft', status: 'active', lastSyncedAt: now - 45 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_aeon', title: 'Aeon Magazine', feedUrl: 'https://aeon.co/feed.rss', folder: 'Philosophy & Culture', status: 'active', lastSyncedAt: now - 60 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_row', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech', status: 'active', lastSyncedAt: now - 75 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=160&auto=format&fit=crop&q=80' }
+      { id: 'src_mr', title: 'Marginal Revolution', feedUrl: 'https://marginalrevolution.com/feed', folder: 'Economics', status: 'active', lastSyncedAt: now - 5 * 60 * 1000 },
+      { id: 'src_dan', title: 'Dan Luu', feedUrl: 'https://danluu.com/atom.xml', folder: 'Tech & Engineering', status: 'active', lastSyncedAt: now - 15 * 60 * 1000 },
+      { id: 'src_simon', title: 'Simon Willison', feedUrl: 'https://simonwillison.net/atom/entries/', folder: 'Software & AI', status: 'active', lastSyncedAt: now - 20 * 60 * 1000 },
+      { id: 'src_ars', title: 'Ars Technica', feedUrl: 'https://feeds.arstechnica.com/arstechnica/index', folder: 'Tech & Policy', status: 'active', lastSyncedAt: now - 25 * 60 * 1000 },
+      { id: 'src_strat', title: 'Stratechery by Ben Thompson', feedUrl: 'https://stratechery.com/feed/', folder: 'Tech & Strategy', status: 'active', lastSyncedAt: now - 35 * 60 * 1000 },
+      { id: 'src_ala', title: 'A List Apart', feedUrl: 'https://alistapart.com/main/feed/', folder: 'Design & Craft', status: 'active', lastSyncedAt: now - 45 * 60 * 1000 },
+      { id: 'src_aeon', title: 'Aeon Magazine', feedUrl: 'https://aeon.co/feed.rss', folder: 'Philosophy & Culture', status: 'active', lastSyncedAt: now - 60 * 60 * 1000 },
+      { id: 'src_row', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech', status: 'active', lastSyncedAt: now - 75 * 60 * 1000 }
     ];
 
     const saved = localStorage.getItem('curator_sources');
@@ -135,6 +145,33 @@ export default function App() {
   });
 
   const [digest, setDigest] = useState<DigestItem[]>([]);
+  const [semanticSummary, setSemanticSummary] = useState<{
+    feedbackExamples: number;
+    providerVectors: number;
+    deprioritized: number;
+    localEngine?: boolean;
+  } | null>(null);
+  const [feedReport, setFeedReport] = useState<{
+    attempted: number;
+    failed: Array<{ title: string; reason: string }>;
+  } | null>(null);
+
+  // First-run calibration flow for the semantic profile
+  const [showSetupWizard, setShowSetupWizard] = useState<boolean>(() => {
+    try {
+      if (localStorage.getItem('curator_setup_complete')) return false;
+      const savedFeedback = JSON.parse(localStorage.getItem('curator_semantic_feedback') || '[]');
+      return !(Array.isArray(savedFeedback) && savedFeedback.length > 0);
+    } catch {
+      return true;
+    }
+  });
+  const [setupStep, setSetupStep] = useState<1 | 2 | 3>(1);
+  const [setupError, setSetupError] = useState<string | null>(null);
+  const [loadingCalibration, setLoadingCalibration] = useState<boolean>(false);
+  const [calibrationCandidates, setCalibrationCandidates] = useState<DigestItem[]>([]);
+  const [calibrationIndex, setCalibrationIndex] = useState<number>(0);
+  const [calibrationVotes, setCalibrationVotes] = useState<number>(0);
   const [savedArticles, setSavedArticles] = useState<DigestItem[]>(() => {
     const saved = localStorage.getItem('curator_saved_articles');
     if (saved) {
@@ -199,28 +236,35 @@ export default function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        const moreTopics = Array.isArray(parsed.moreTopics)
-          ? parsed.moreTopics
-          : Array.isArray(parsed.more)
-            ? parsed.more.filter((m: string) => !sources.some(s => s.title.toLowerCase() === m.toLowerCase()))
-            : [];
-        const lessTopics = Array.isArray(parsed.lessTopics)
-          ? parsed.lessTopics
-          : Array.isArray(parsed.less)
-            ? parsed.less.filter((l: string) => !sources.some(s => s.title.toLowerCase() === l.toLowerCase()))
-            : [];
+        // Older versions turned a vote into a broad folder preference. Keep exact article IDs,
+        // but clear those topic rules so the semantic profile can learn from article content.
         return {
-          moreTopics,
-          lessTopics,
+          moreTopics: [],
+          lessTopics: [],
           moreIds: Array.isArray(parsed.moreIds) ? parsed.moreIds : [],
           lessIds: Array.isArray(parsed.lessIds) ? parsed.lessIds : [],
-          more: moreTopics,
-          less: lessTopics,
+          more: [],
+          less: [],
         };
       } catch (e) { /* ignore */ }
     }
     return { moreTopics: [], lessTopics: [], moreIds: [], lessIds: [], more: [], less: [] };
   });
+  const [semanticFeedback, setSemanticFeedback] = useState<SemanticFeedbackItem[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('curator_semantic_feedback') || '[]');
+      if (!Array.isArray(saved)) return [];
+      return saved
+        .filter((item: any) => item && typeof item.id === 'string' &&
+          (item.vote === 'like' || item.vote === 'dislike') &&
+          typeof item.title === 'string' && typeof item.text === 'string' &&
+          Number.isFinite(item.timestamp))
+        .slice(-40);
+    } catch {
+      return [];
+    }
+  });
+  const [serverGeminiAvailable, setServerGeminiAvailable] = useState<boolean>(false);
 
   // Settings
   const [serendipityDial, setSerendipityDial] = useState<number>(() => {
@@ -236,8 +280,27 @@ export default function App() {
     const saved = localStorage.getItem('curator_item_count');
     return saved ? Number(saved) : 6;
   });
-  const [aiProvider, setAiProvider] = useState<string>(() => localStorage.getItem('curator_ai_provider') || 'gemini');
+  const [aiProvider, setAiProvider] = useState<string>(() => {
+    const saved = localStorage.getItem('curator_ai_provider');
+    if (saved === 'openai') return 'openai-compatible';
+    if (saved === 'gemini') return 'deterministic';
+    return saved || 'deterministic';
+  });
   const [customApiKey, setCustomApiKey] = useState<string>(() => localStorage.getItem('curator_custom_api_key') || '');
+  const [aiBaseUrl, setAiBaseUrl] = useState<string>(() => localStorage.getItem('curator_ai_base_url') || '');
+  const [aiModel, setAiModel] = useState<string>(() => localStorage.getItem('curator_ai_model') || '');
+  const [embeddingProvider, setEmbeddingProvider] = useState<string>(() => localStorage.getItem('curator_embedding_provider') || 'openai-compatible');
+  const [embeddingApiKey, setEmbeddingApiKey] = useState<string>(() => localStorage.getItem('curator_embedding_api_key') || '');
+  const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState<string>(() => localStorage.getItem('curator_embedding_base_url') || '');
+  const [embeddingModel, setEmbeddingModel] = useState<string>(() => localStorage.getItem('curator_embedding_model') || '');
+  const embeddingKeyMatchesChatProvider =
+    (embeddingProvider === 'gemini' && aiProvider === 'gemini') ||
+    (embeddingProvider === 'openai-compatible' && aiProvider === 'openai-compatible');
+  const semanticServiceReady = embeddingProvider === 'openai-compatible'
+    ? Boolean((embeddingApiKey || (embeddingKeyMatchesChatProvider && customApiKey)) && (embeddingBaseUrl || (embeddingKeyMatchesChatProvider && aiBaseUrl)))
+    : embeddingProvider === 'gemini'
+      ? Boolean(embeddingApiKey || (embeddingKeyMatchesChatProvider && customApiKey) || serverGeminiAvailable)
+      : false;
 
   const [loadingDigest, setLoadingDigest] = useState<boolean>(false);
   const [activeToast, setActiveToast] = useState<{
@@ -282,31 +345,11 @@ export default function App() {
 
   // Reading view timer & depth tracking
 
-  // Read Aloud (iOS onboard speech synthesis)
+  // Read Aloud (iOS onboard speech synthesis).
+  // Voice, rate and pitch are never set here: the system speaks with the
+  // default voice and settings the user picked in Spoken Content.
   const [speechPlaying, setSpeechPlaying] = useState<boolean>(false);
   const [speechPaused, setSpeechPaused] = useState<boolean>(false);
-  const [speechRate, setSpeechRate] = useState<number>(1.0);
-  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      const updateVoices = () => {
-        try {
-          const v = window.speechSynthesis.getVoices();
-          if (v && v.length > 0) {
-            setAvailableVoices(v);
-          }
-        } catch (e) {
-          // ignore
-        }
-      };
-      updateVoices();
-      window.speechSynthesis.onvoiceschanged = updateVoices;
-      return () => {
-        window.speechSynthesis.onvoiceschanged = null;
-      };
-    }
-  }, []);
 
   useEffect(() => {
     localStorage.setItem('curator_saved_articles', JSON.stringify(savedArticles));
@@ -323,6 +366,17 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('curator_signals', JSON.stringify(signals));
   }, [signals]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_semantic_feedback', JSON.stringify(semanticFeedback));
+  }, [semanticFeedback]);
+
+  useEffect(() => {
+    fetch('/api/semantic-status')
+      .then(res => res.json())
+      .then(data => setServerGeminiAvailable(Boolean(data.geminiConfigured)))
+      .catch(() => setServerGeminiAvailable(false));
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('curator_serendipity', serendipityDial.toString());
@@ -349,6 +403,30 @@ export default function App() {
   }, [customApiKey]);
 
   useEffect(() => {
+    localStorage.setItem('curator_ai_base_url', aiBaseUrl);
+  }, [aiBaseUrl]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_ai_model', aiModel);
+  }, [aiModel]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_embedding_provider', embeddingProvider);
+  }, [embeddingProvider]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_embedding_api_key', embeddingApiKey);
+  }, [embeddingApiKey]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_embedding_base_url', embeddingBaseUrl);
+  }, [embeddingBaseUrl]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_embedding_model', embeddingModel);
+  }, [embeddingModel]);
+
+  useEffect(() => {
     localStorage.setItem('curator_read_sources', JSON.stringify(readSourceIds));
   }, [readSourceIds]);
 
@@ -357,8 +435,10 @@ export default function App() {
   }, [readArticleIds]);
 
   useEffect(() => {
+    // While setup is open, calibration votes accumulate first and one digest is built at the end.
+    if (showSetupWizard) return;
     generateDigest();
-  }, [itemCount, serendipityDial]);
+  }, [itemCount, serendipityDial, signals, semanticFeedback, showSetupWizard]);
 
   useEffect(() => {
     if (activeTab === 'feeds') {
@@ -419,7 +499,7 @@ export default function App() {
     showToast('Unread indicators reset');
   };
 
-  const generateDigest = async () => {
+  const generateDigest = async (options?: { fresh?: boolean }) => {
     setLoadingDigest(true);
     try {
       let readingStats = {};
@@ -427,33 +507,67 @@ export default function App() {
         readingStats = JSON.parse(localStorage.getItem('curator_reading_stats') || '{}');
       } catch (e) { /* ignore */ }
 
+      // Freshness history lives in this browser. The digest currently on screen is not
+      // "already shown" — the server only down-weights pieces you have moved past.
+      let shownHistory: Array<{ id: string; shownAt: number }> = [];
+      try {
+        const savedHistory = JSON.parse(localStorage.getItem('curator_digest_history') || '[]');
+        if (Array.isArray(savedHistory)) {
+          shownHistory = savedHistory
+            .filter((entry: any) => entry && typeof entry.id === 'string' && Number.isFinite(entry.shownAt))
+            .slice(-150);
+        }
+      } catch {
+        shownHistory = [];
+      }
+
+      const currentDigestIds = new Set(digest.map(item => item.id));
+      const recentlyShown = shownHistory.filter(entry => !currentDigestIds.has(entry.id));
+
       const res = await fetch('/api/curate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sources, signals, readingStats, serendipityDial, itemCount, provider: aiProvider, apiKey: customApiKey })
+        body: JSON.stringify({
+          sources,
+          signals,
+          feedback: semanticFeedback,
+          readingStats,
+          serendipityDial,
+          itemCount,
+          provider: aiProvider,
+          apiKey: customApiKey,
+          baseUrl: aiBaseUrl,
+          model: aiModel,
+          embeddingProvider,
+          embeddingApiKey,
+          embeddingBaseUrl,
+          embeddingModel,
+          recentlyShown,
+          previousDigestIds: [...currentDigestIds],
+          fresh: Boolean(options?.fresh),
+          seed: options?.fresh ? `${Date.now()}-${Math.random()}` : 'stable',
+        })
       });
-      const data = await res.json();
-      if (data.digest) {
-        // Attach realistic imagery matching the design aesthetic
-        const enhanced = data.digest.map((item: DigestItem, idx: number) => {
-          const banners = [
-            'https://images.unsplash.com/photo-1508873696983-2df5293cb32f?auto=format&fit=crop&w=1200&q=80',
-            'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80',
-            'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
-            'https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=1200&q=80',
-            'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1200&q=80',
-            'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=1200&q=80',
-            'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80'
-          ];
-          return {
-            ...item,
-            bannerImage: item.bannerImage || banners[idx % banners.length]
-          };
-        });
-        setDigest(enhanced);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(data?.error ? `Could not refresh the digest: ${data.error}` : 'Could not refresh the digest');
+        return;
+      }
+      if (Array.isArray(data.digest) && data.digest.length > 0) {
+        setDigest(data.digest);
+        if (data.semanticSummary) setSemanticSummary(data.semanticSummary);
+        if (data.feedReport) setFeedReport(data.feedReport);
+
+        const shownAt = Date.now();
+        const freshIds = new Set<string>(data.digest.map((item: DigestItem) => item.id));
+        const mergedHistory = [
+          ...shownHistory.filter(entry => !freshIds.has(entry.id)),
+          ...data.digest.map((item: DigestItem) => ({ id: item.id, shownAt })),
+        ].slice(-150);
+        localStorage.setItem('curator_digest_history', JSON.stringify(mergedHistory));
       }
     } catch (e) {
-      // fallback
+      showToast('Could not refresh the digest');
     } finally {
       setLoadingDigest(false);
     }
@@ -473,74 +587,161 @@ export default function App() {
     }, onAction ? 7000 : 3500);
   };
 
-  const handleMore = (item: DigestItem) => {
-    const topic = item.folder || 'this topic';
-    const alreadyMore = (signals.moreIds || []).includes(item.id);
-    if (alreadyMore) {
-      setSignals(prev => {
-        const nextIds = (prev.moreIds || []).filter(id => id !== item.id);
-        const hasOtherWithSameTopic = digest.some(d => d.id !== item.id && d.folder === item.folder && nextIds.includes(d.id));
-        const nextTopics = hasOtherWithSameTopic ? (prev.moreTopics || []) : (prev.moreTopics || []).filter(t => t !== item.folder);
-        return {
-          ...prev,
-          moreIds: nextIds,
-          moreTopics: nextTopics,
-          more: nextTopics,
-        };
+  const recordSemanticFeedback = (item: DigestItem, vote: 'like' | 'dislike') => {
+    const text = `${item.title}\n${item.summary}\n${item.fullText}`
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 3000);
+    setSemanticFeedback(prev => [
+      ...prev.filter(entry => entry.id !== item.id),
+      { id: item.id, vote, title: item.title, text, timestamp: Date.now(), source: item.source, folder: item.folder },
+    ].slice(-40));
+  };
+
+  const removeSemanticFeedback = (itemId: string) => {
+    setSemanticFeedback(prev => prev.filter(entry => entry.id !== itemId));
+  };
+
+  const markSetupComplete = () => {
+    try {
+      localStorage.setItem('curator_setup_complete', '1');
+    } catch { /* ignore */ }
+  };
+
+  const openSetupWizard = () => {
+    setSetupStep(1);
+    setSetupError(null);
+    setCalibrationIndex(0);
+    setCalibrationVotes(0);
+    setShowSetupWizard(true);
+  };
+
+  const dismissSetupWizard = () => {
+    markSetupComplete();
+    setShowSetupWizard(false);
+  };
+
+  const finishSetup = () => {
+    markSetupComplete();
+    setShowSetupWizard(false);
+    showToast(calibrationVotes > 0
+      ? `Calibrated with ${calibrationVotes} verdicts — building your digest`
+      : 'Setup saved — building your digest');
+  };
+
+  const loadCalibration = async () => {
+    setLoadingCalibration(true);
+    setSetupError(null);
+    try {
+      const res = await fetch('/api/calibrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sources,
+          excludeIds: semanticFeedback.map(entry => entry.id),
+        })
       });
-      showToast(`Removed preference for "${topic}"`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(data.candidates) || data.candidates.length === 0) {
+        setSetupError(data?.error || 'No live articles came back. Check your feed URLs, then try again.');
+        return;
+      }
+      setCalibrationCandidates(data.candidates);
+      setCalibrationIndex(0);
+      setCalibrationVotes(0);
+      setSetupStep(2);
+    } catch {
+      setSetupError('Could not reach your feeds. Check your connection and try again.');
+    } finally {
+      setLoadingCalibration(false);
+    }
+  };
+
+  const answerCalibration = (item: DigestItem, vote: 'like' | 'dislike') => {
+    recordSemanticFeedback(item, vote);
+    setCalibrationVotes(prev => prev + 1);
+    const nextIndex = calibrationIndex + 1;
+    setCalibrationIndex(nextIndex);
+    if (nextIndex >= calibrationCandidates.length) {
+      setSetupStep(3);
+    }
+  };
+
+  const handleMore = (item: DigestItem) => {
+    const alreadyMore = (signals.moreIds || []).includes(item.id);
+    const existingFeedback = semanticFeedback.find(entry => entry.id === item.id);
+    if (alreadyMore && existingFeedback?.vote === 'like') {
+      setSignals(prev => ({
+        ...prev,
+        moreIds: (prev.moreIds || []).filter(id => id !== item.id),
+        moreTopics: [],
+        lessTopics: [],
+        more: [],
+        less: [],
+      }));
+      removeSemanticFeedback(item.id);
+      showToast('Removed this article from your semantic profile');
+      return;
+    }
+    if (alreadyMore) {
+      setSignals(prev => ({
+        ...prev,
+        lessIds: (prev.lessIds || []).filter(id => id !== item.id),
+        moreTopics: [],
+        lessTopics: [],
+        more: [],
+        less: [],
+      }));
+      recordSemanticFeedback(item, 'like');
+      showToast('Added this like to your semantic profile');
       return;
     }
 
-    setSignals(prev => {
-      const nextMoreIds = Array.from(new Set([...(prev.moreIds || []), item.id]));
-      const nextLessIds = (prev.lessIds || []).filter(id => id !== item.id);
-      const nextMoreTopics = item.folder ? Array.from(new Set([...(prev.moreTopics || []), item.folder])) : (prev.moreTopics || []);
-      const nextLessTopics = (prev.lessTopics || []).filter(t => t !== item.folder);
-      return {
-        ...prev,
-        moreIds: nextMoreIds,
-        lessIds: nextLessIds,
-        moreTopics: nextMoreTopics,
-        lessTopics: nextLessTopics,
-        more: nextMoreTopics,
-        less: nextLessTopics,
-      };
-    });
-    showToast(`Learned reading preference: More on ${topic}`);
+    setSignals(prev => ({
+      ...prev,
+      moreIds: Array.from(new Set([...(prev.moreIds || []), item.id])),
+      lessIds: (prev.lessIds || []).filter(id => id !== item.id),
+      moreTopics: [],
+      lessTopics: [],
+      more: [],
+      less: [],
+    }));
+    recordSemanticFeedback(item, 'like');
+    showToast('Semantic profile learned from this article');
   };
 
   const handleLess = (item: DigestItem) => {
-    const topic = item.folder || 'this topic';
     const isAlreadyLess = (signals.lessIds || []).includes(item.id);
+    const existingFeedback = semanticFeedback.find(entry => entry.id === item.id);
     if (isAlreadyLess && !mutedCards[item.id]) {
-      undoHandleLess(item.id);
+      if (existingFeedback?.vote === 'dislike') {
+        undoHandleLess(item.id);
+      } else {
+        recordSemanticFeedback(item, 'dislike');
+        showToast('Added this dislike to your semantic profile');
+      }
       return;
     }
 
-    setSignals(prev => {
-      const nextLessIds = Array.from(new Set([...(prev.lessIds || []), item.id]));
-      const nextMoreIds = (prev.moreIds || []).filter(id => id !== item.id);
-      const nextLessTopics = item.folder ? Array.from(new Set([...(prev.lessTopics || []), item.folder])) : (prev.lessTopics || []);
-      const nextMoreTopics = (prev.moreTopics || []).filter(t => t !== item.folder);
-      return {
-        ...prev,
-        lessIds: nextLessIds,
-        moreIds: nextMoreIds,
-        lessTopics: nextLessTopics,
-        moreTopics: nextMoreTopics,
-        less: nextLessTopics,
-        more: nextMoreTopics,
-      };
-    });
+    setSignals(prev => ({
+      ...prev,
+      lessIds: Array.from(new Set([...(prev.lessIds || []), item.id])),
+      moreIds: (prev.moreIds || []).filter(id => id !== item.id),
+      moreTopics: [],
+      lessTopics: [],
+      more: [],
+      less: [],
+    }));
+    recordSemanticFeedback(item, 'dislike');
 
-    // Retain in mutedCards so the card slot shows an inline "Undo / Redo" fallback
+    // Retain in mutedCards so the card slot shows an inline Undo / Redo fallback
     setMutedCards(prev => ({
       ...prev,
       [item.id]: item
     }));
 
-    showToast(`Learned reading preference: Fewer on ${topic}`, 'Undo', () => undoHandleLess(item.id));
+    showToast('Semantic profile learned to avoid this article', 'Undo', () => undoHandleLess(item.id));
   };
 
   const undoHandleLess = (itemId: string) => {
@@ -552,20 +753,18 @@ export default function App() {
       delete next[itemId];
       return next;
     });
+    removeSemanticFeedback(itemId);
 
-    setSignals(prev => {
-      const nextLessIds = (prev.lessIds || []).filter(id => id !== itemId);
-      const hasOtherWithSameTopic = digest.some(d => d.id !== itemId && d.folder === topic && nextLessIds.includes(d.id));
-      const nextLessTopics = hasOtherWithSameTopic ? (prev.lessTopics || []) : (prev.lessTopics || []).filter(t => t !== topic);
-      return {
-        ...prev,
-        lessIds: nextLessIds,
-        lessTopics: nextLessTopics,
-        less: nextLessTopics,
-      };
-    });
+    setSignals(prev => ({
+      ...prev,
+      lessIds: (prev.lessIds || []).filter(id => id !== itemId),
+      moreTopics: [],
+      lessTopics: [],
+      more: [],
+      less: [],
+    }));
 
-    showToast(topic ? `Restored reading topic "${topic}"` : 'Restored article to feed');
+    showToast(topic ? `Restored article from ${topic}` : 'Restored article to feed');
   };
 
   const permanentlyDismissMuted = (itemId: string) => {
@@ -623,9 +822,21 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ opmlText: rawText })
       });
-      const data = await res.json();
+      const responseText = await res.text();
+      let data: any = null;
+      try {
+        data = responseText ? JSON.parse(responseText) : null;
+      } catch {
+        // The server may return a non-JSON error page, such as for an oversized request.
+      }
       if (!res.ok) {
-        setImportError(data.error || 'Could not parse subscription file.');
+        setImportError(res.status === 413
+          ? 'This OPML file is too large to import. Try a smaller export.'
+          : data?.error || `Could not parse subscription file (HTTP ${res.status}).`);
+        return;
+      }
+      if (!data || typeof data !== 'object') {
+        setImportError('The OPML import service returned an invalid response. Please try again.');
         return;
       }
       if (data.success && data.sources) {
@@ -639,7 +850,7 @@ export default function App() {
         showToast(`Imported ${data.totalImported} sources with folders intact`);
       }
     } catch (e) {
-      setImportError('Error uploading or parsing subscription file.');
+      setImportError('Unable to reach the OPML import service. Please try again.');
     } finally {
       setIsImportingOpml(false);
     }
@@ -742,44 +953,14 @@ export default function App() {
     showToast('Subscription list exported successfully');
   };
 
-  const DEFAULT_SOURCE_AVATARS: Record<string, string> = {
-    'nicole williams': 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=160&auto=format&fit=crop&q=80',
-    'the anthropic stack': 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=160&auto=format&fit=crop&q=80',
-    'world politics & history': 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=160&auto=format&fit=crop&q=80',
-    'prospect magazine': 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=160&auto=format&fit=crop&q=80',
-    'dr. bhaskar economics': 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=160&auto=format&fit=crop&q=80',
-    'stratechery by ben thompson': 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=160&auto=format&fit=crop&q=80',
-    'marginal revolution': 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=160&auto=format&fit=crop&q=80',
-    'dan luu': 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=160&auto=format&fit=crop&q=80',
-    'a list apart': 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=160&auto=format&fit=crop&q=80',
-    'long now foundation': 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=160&auto=format&fit=crop&q=80',
-    'rest of world': 'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=160&auto=format&fit=crop&q=80',
-  };
-
-  const getSourceAvatar = (title: string, feedUrl?: string): string | undefined => {
-    const normalized = (title || '').trim().toLowerCase();
-    for (const [key, avatar] of Object.entries(DEFAULT_SOURCE_AVATARS)) {
-      if (normalized.includes(key) || key.includes(normalized)) {
-        return avatar;
-      }
+  const getSourceAvatar = (feedUrl?: string): string | undefined => {
+    if (!feedUrl) return undefined;
+    try {
+      const url = new URL(feedUrl);
+      return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(url.hostname)}&sz=128`;
+    } catch (e) {
+      return undefined;
     }
-    const matchSource = sources.find(s => s.title.toLowerCase() === normalized);
-    if (matchSource?.avatar) return matchSource.avatar;
-
-    const foundArticle = digest.find(d => d.source.toLowerCase() === normalized) ||
-                         feedStreamArticles.find(a => a.source.toLowerCase() === normalized);
-    if (foundArticle?.avatar) return foundArticle.avatar;
-    if (foundArticle?.bannerImage) return foundArticle.bannerImage;
-
-    if (feedUrl) {
-      try {
-        const url = new URL(feedUrl);
-        return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(url.hostname)}&sz=128`;
-      } catch (e) {
-        // ignore
-      }
-    }
-    return undefined;
   };
 
   const formatSyncTime = (timestamp?: number): string => {
@@ -881,28 +1062,13 @@ export default function App() {
     const textToRead = `${article.title}. By ${article.source}. ${article.summary}. ${cleanBody}`;
     const utterance = new SpeechSynthesisUtterance(textToRead);
 
-    const voices = availableVoices.length > 0 ? availableVoices : window.speechSynthesis.getVoices();
-    const iosVoice = voices.find(v => 
-      v.lang.startsWith('en') && (
-        v.name.includes('Samantha') || 
-        v.name.includes('Siri') || 
-        v.name.includes('Daniel') || 
-        v.name.includes('Karen') ||
-        v.name.includes('Apple')
-      )
-    ) || voices.find(v => v.lang.startsWith('en')) || voices[0];
-
-    if (iosVoice) {
-      utterance.voice = iosVoice;
-    }
-
-    utterance.rate = speechRate;
-    utterance.pitch = 1.0;
+    // Leave voice, rate, pitch and volume untouched so the system speaks with
+    // the default voice and speech settings the user chose on the device.
 
     utterance.onstart = () => {
       setSpeechPlaying(true);
       setSpeechPaused(false);
-      showToast('Reading aloud with iOS voice...');
+      showToast('Reading aloud with your default voice');
     };
 
     utterance.onend = () => {
@@ -933,18 +1099,6 @@ export default function App() {
     }
     setSpeechPlaying(false);
     setSpeechPaused(false);
-  };
-
-  const handleCycleSpeechRate = (article: DigestItem) => {
-    const nextRate = speechRate === 1.0 ? 1.25 : speechRate === 1.25 ? 1.5 : 1.0;
-    setSpeechRate(nextRate);
-    if (speechPlaying) {
-      handleStopReadAloud();
-      setTimeout(() => {
-        handleToggleReadAloud(article);
-      }, 50);
-    }
-    showToast(`Speed set to ${nextRate}x`);
   };
 
   const getCardActions = (itemId: string) => {
@@ -1054,6 +1208,7 @@ export default function App() {
   ];
   const normalDigest = digest.filter(d => !d.isOutOfBubble);
   const outOfBubbleDigest = digest.filter(d => d.isOutOfBubble);
+  const currentCalibrationItem = calibrationCandidates[calibrationIndex];
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-slate-800 selection:text-white w-full max-w-full overflow-x-hidden">
@@ -1146,7 +1301,7 @@ export default function App() {
                     ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 ring-2 ring-amber-500/30'
                     : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-amber-400 hover:border-slate-700'
                 }`}
-                title="Read aloud using iOS onboard voice"
+                title="Read aloud with your default device voice"
               >
                 {speechPlaying ? (
                   speechPaused ? <Play className="w-3.5 h-3.5 fill-current" /> : <Pause className="w-3.5 h-3.5 fill-current" />
@@ -1196,20 +1351,12 @@ export default function App() {
                   >
                     {speechPaused ? <Play className="w-3.5 h-3.5 fill-current ml-0.5" /> : <Pause className="w-3.5 h-3.5 fill-current" />}
                   </button>
-                  <span className="text-slate-200 truncate">
-                    {speechPaused ? 'Audio paused' : 'Reading aloud with iOS voice...'}
+                  <span className="text-slate-200 truncate" title="Voice and rate follow Settings › Accessibility › Spoken Content">
+                    {speechPaused ? 'Audio paused' : 'Reading aloud with your default voice'}
                   </span>
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => handleCycleSpeechRate(selectedArticle)}
-                    className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:text-white font-mono text-[11px]"
-                    title="Playback speed"
-                  >
-                    {speechRate}x
-                  </button>
                   <button
                     type="button"
                     onClick={handleStopReadAloud}
@@ -1360,7 +1507,7 @@ export default function App() {
             </button>
             <button 
               type="button"
-              onClick={generateDigest}
+              onClick={() => generateDigest({ fresh: true })}
               disabled={loadingDigest}
               className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-50 cursor-pointer"
               title="Refresh today's digest"
@@ -1418,7 +1565,12 @@ export default function App() {
             <div className="flex items-center justify-between border-b border-slate-900 pb-4">
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-100">Today's Digest</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Curated at 7:00 AM · {digest.length} items worth your time</p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Curated at 7:00 AM · {digest.length} items worth your time
+                  {semanticSummary && semanticSummary.feedbackExamples > 0
+                    ? ` · ranked from ${semanticSummary.feedbackExamples} vote examples`
+                    : ''}
+                </p>
               </div>
               <div className="flex items-center gap-2 text-xs text-slate-400">
                 <span>Show:</span>
@@ -1434,6 +1586,21 @@ export default function App() {
               </div>
             </div>
 
+            {feedReport && feedReport.failed.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('sources')}
+                className="w-full flex items-center gap-2 text-left text-[11px] text-amber-300/80 bg-amber-500/5 border border-amber-500/20 rounded-xl px-3 py-2 hover:bg-amber-500/10 transition"
+              >
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  {feedReport.failed.length} of {feedReport.attempted} feeds returned nothing today
+                  {' '}({feedReport.failed.slice(0, 3).map(f => f.title).join(', ')}
+                  {feedReport.failed.length > 3 ? ', …' : ''}). Tap to review sources.
+                </span>
+              </button>
+            )}
+
             {loadingDigest && digest.length === 0 ? (
               <div className="py-20 text-center text-slate-500 space-y-3">
                 <RefreshCw className="w-6 h-6 animate-spin mx-auto text-amber-500" />
@@ -1442,7 +1609,7 @@ export default function App() {
             ) : digest.length === 0 ? (
               <div className="py-20 text-center text-slate-500 space-y-2">
                 <p className="text-sm">No new items today. Your sources are quiet.</p>
-                <button onClick={generateDigest} className="text-xs text-amber-400 underline">Fetch today's live digest</button>
+                <button onClick={() => generateDigest({ fresh: true })} className="text-xs text-amber-400 underline">Fetch today's live digest</button>
               </div>
             ) : (
               <div className="space-y-8">
@@ -1499,7 +1666,7 @@ export default function App() {
                       <div className="p-5 pb-3 flex items-center justify-between">
                         <div className="flex items-center gap-3">
                           {(() => {
-                            const itemAvatar = item.avatar || getSourceAvatar(item.source, item.url);
+                            const itemAvatar = getSourceAvatar(item.url);
                             return (
                               <div className="w-9 h-9 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center overflow-hidden shrink-0 relative">
                                 {itemAvatar ? (
@@ -1739,7 +1906,7 @@ export default function App() {
                           <div className="p-5 pb-3 flex items-center justify-between">
                             <div className="flex items-center gap-3">
                             {(() => {
-                            const itemAvatar = item.avatar || getSourceAvatar(item.source, item.url);
+                            const itemAvatar = getSourceAvatar(item.url);
                             return (
                               <div className="w-9 h-9 rounded-full bg-slate-900 border border-rose-800 flex items-center justify-center overflow-hidden shrink-0 relative">
                                 {itemAvatar ? (
@@ -2253,7 +2420,7 @@ export default function App() {
                   </h3>
                   <div className="grid gap-2 w-full max-w-full">
                     {folderSources.map((src) => {
-                      const avatarUrl = src.avatar || getSourceAvatar(src.title, src.feedUrl);
+                      const avatarUrl = getSourceAvatar(src.feedUrl);
                       const isRefreshing = refreshingSourceId === src.id;
                       return (
                         <div key={src.id} className="p-3.5 sm:p-4 rounded-2xl bg-slate-900/40 border border-slate-900 flex items-center justify-between gap-3 sm:gap-4 w-full max-w-full overflow-hidden">
@@ -2382,6 +2549,206 @@ export default function App() {
                       </button>
                     </div>
                   </form>
+                </div>
+              </div>
+            )}
+
+            {/* First-run semantic setup */}
+            {showSetupWizard && (
+              <div className="fixed inset-0 z-[70] bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
+                <div className="w-full max-w-lg rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-5 max-h-[90vh] overflow-y-auto animate-fade-in">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] uppercase tracking-wider text-amber-400/90 font-semibold">
+                        Setup · step {setupStep} of 3
+                      </p>
+                      <h3 className="text-lg font-semibold text-slate-100 mt-1">
+                        {setupStep === 1
+                          ? 'Set up your semantic curator'
+                          : setupStep === 2
+                            ? 'Teach it in ten taps'
+                            : 'Your engine is ready'}
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={dismissSetupWizard}
+                      className="p-1 text-slate-500 hover:text-slate-200 transition"
+                      title="Skip setup"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    {[1, 2, 3].map(step => (
+                      <span
+                        key={step}
+                        className={`h-1 flex-1 rounded-full transition-colors ${step <= setupStep ? 'bg-amber-500' : 'bg-slate-800'}`}
+                      />
+                    ))}
+                  </div>
+
+                  {setupStep === 1 && (
+                    <div className="space-y-4">
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        Curator ranks your feeds by similarity to what you vote on. That profile comes from a few quick
+                        verdicts below and stays in this browser — no account, no key, no third-party calls.
+                      </p>
+
+                      <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-400">Feeds in your library</span>
+                          <span className="font-semibold text-slate-100">{sources.length}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-400">Votes already in your profile</span>
+                          <span className="font-semibold text-slate-100">{semanticFeedback.length}</span>
+                        </div>
+                      </div>
+
+                      {setupError && (
+                        <p className="text-[11px] text-rose-400 leading-relaxed">{setupError}</p>
+                      )}
+
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={loadCalibration}
+                          disabled={loadingCalibration}
+                          className="w-full px-4 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-semibold flex items-center justify-center gap-2 hover:bg-amber-400 transition disabled:opacity-60"
+                        >
+                          {loadingCalibration ? (
+                            <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Scanning your feeds…</>
+                          ) : (
+                            <><Sparkles className="w-3.5 h-3.5" /> Scan my feeds and calibrate</>
+                          )}
+                        </button>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowAddSourceModal(true)}
+                            className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-300 hover:text-slate-100 transition"
+                          >
+                            Import OPML
+                          </button>
+                          <button
+                            type="button"
+                            onClick={finishSetup}
+                            className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-400 hover:text-slate-200 transition"
+                          >
+                            Skip for now
+                          </button>
+                        </div>
+                      </div>
+
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        No provider keys needed. OpenAI-compatible or Gemini embeddings are an optional upgrade in Settings.
+                      </p>
+                    </div>
+                  )}
+
+                  {setupStep === 2 && (
+                    <div className="space-y-4">
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        Say what you would read and what you would not. Titles and excerpts only — the built-in engine
+                        scores them on this app's server.
+                      </p>
+
+                      {currentCalibrationItem ? (
+                        <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-2">
+                          <div className="text-[11px] text-slate-500">
+                            {currentCalibrationItem.source} · {currentCalibrationItem.folder}
+                          </div>
+                          <h4 className="text-sm font-semibold text-slate-100 leading-snug">
+                            {currentCalibrationItem.title}
+                          </h4>
+                          <p className="text-[11px] text-slate-400 leading-relaxed line-clamp-3">
+                            {currentCalibrationItem.summary}
+                          </p>
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => answerCalibration(currentCalibrationItem, 'like')}
+                              className="flex-1 px-3 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center justify-center gap-1.5 hover:bg-emerald-500/25 transition"
+                            >
+                              <ThumbsUp className="w-3.5 h-3.5" /> More like this
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => answerCalibration(currentCalibrationItem, 'dislike')}
+                              className="flex-1 px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center justify-center gap-1.5 hover:bg-rose-500/20 transition"
+                            >
+                              <ThumbsDown className="w-3.5 h-3.5" /> Not for me
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 text-center text-xs text-slate-300">
+                          <Check className="w-5 h-5 text-emerald-400 mx-auto mb-2" />
+                          {calibrationVotes} verdict{calibrationVotes === 1 ? '' : 's'} recorded. That is enough to
+                          rank today's digest.
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between text-[11px] text-slate-500">
+                        <span>
+                          {Math.min(calibrationIndex, calibrationCandidates.length)} of {calibrationCandidates.length} reviewed
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setSetupStep(3)}
+                          className="text-amber-400 font-medium hover:text-amber-300 transition"
+                        >
+                          Continue
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {setupStep === 3 && (
+                    <div className="space-y-4">
+                      <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 space-y-1.5">
+                        <div className="flex items-center gap-2 font-medium">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                          Built-in semantic engine: on
+                        </div>
+                        <p className="text-[11px] text-slate-400 leading-relaxed">
+                          {calibrationVotes > 0
+                            ? `Ranking from ${calibrationVotes} calibration verdict${calibrationVotes === 1 ? '' : 's'} plus any earlier votes.`
+                            : 'Ranking from the votes you cast on digest cards.'}
+                          {' '}No key and no third-party calls. Refreshing the digest rotates in pieces you have not seen.
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col gap-2">
+                        <button
+                          type="button"
+                          onClick={finishSetup}
+                          className="w-full px-4 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-semibold hover:bg-amber-400 transition"
+                        >
+                          Build my digest
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            finishSetup();
+                            setActiveTab('settings');
+                          }}
+                          className="w-full px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-300 hover:text-slate-100 transition"
+                        >
+                          Add an embeddings provider (optional)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSetupStep(2)}
+                          className="text-[11px] text-slate-500 hover:text-slate-300 transition"
+                        >
+                          Back to calibration
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -2561,47 +2928,153 @@ export default function App() {
               </div>
             </div>
 
-            {/* AI Provider & Custom API Key */}
-            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
+            {/* Provider-configurable AI services */}
+            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-5">
               <div>
-                <h3 className="text-sm font-semibold text-slate-200">AI Model & Provider</h3>
-                <p className="text-xs text-slate-400 mt-0.5">Swap out the default AI provider or plug in your own custom API key.</p>
+                <h3 className="text-sm font-semibold text-slate-200">AI Providers</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Chat and embeddings are configured independently. A built-in semantic engine always ranks your feeds by similarity to what you vote on; an embeddings provider is optional.</p>
               </div>
 
-              <div className="space-y-4 pt-2">
+              <div className="space-y-3 pt-1">
                 <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1.5">AI Provider</label>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">Digest curation provider</label>
                   <select
                     value={aiProvider}
-                    onChange={e => {
-                      setAiProvider(e.target.value);
-                      showToast(`Switched AI provider to ${e.target.value}`);
-                    }}
+                    onChange={e => setAiProvider(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
                   >
-                    <option value="gemini">Google Gemini (Default / AI Studio)</option>
-                    <option value="openai">OpenAI (GPT-4o-mini)</option>
-                    <option value="anthropic">Anthropic (Claude 3.5 Sonnet)</option>
-                    <option value="deterministic">Deterministic Engine (No Key Needed)</option>
+                    <option value="deterministic">Deterministic (no external AI)</option>
+                    <option value="openai-compatible">OpenAI-compatible API</option>
+                    <option value="anthropic">Anthropic Messages API</option>
+                    <option value="gemini">Google Gemini (optional)</option>
                   </select>
                 </div>
 
-                {aiProvider !== 'deterministic' && (
+                {aiProvider === 'openai-compatible' && (
                   <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                      Custom API Key {aiProvider === 'openai' ? '(OpenAI)' : aiProvider === 'anthropic' ? '(Anthropic)' : '(Gemini)'}
-                    </label>
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">Chat API base URL</label>
                     <input
-                      type="password"
-                      value={customApiKey}
-                      onChange={e => setCustomApiKey(e.target.value)}
-                      placeholder={aiProvider === 'openai' ? 'sk-...' : aiProvider === 'anthropic' ? 'sk-ant-...' : 'AIzaSy...'}
+                      type="url"
+                      value={aiBaseUrl}
+                      onChange={e => setAiBaseUrl(e.target.value)}
+                      placeholder="https://api.openai.com/v1"
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
                     />
-                    <p className="text-[11px] text-slate-500 mt-1">Stored locally in your browser and used securely for your requests.</p>
+                    <p className="text-[11px] text-slate-500 mt-1">Use an HTTPS OpenAI-compatible base URL, such as an OpenAI, OpenRouter, or compatible gateway endpoint.</p>
+                  </div>
+                )}
+
+                {aiProvider !== 'deterministic' && (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Chat model</label>
+                      <input
+                        type="text"
+                        value={aiModel}
+                        onChange={e => setAiModel(e.target.value)}
+                        placeholder={aiProvider === 'openai-compatible' ? 'e.g. gpt-4o-mini or provider model ID' : aiProvider === 'anthropic' ? 'e.g. claude-3-5-sonnet-20241022' : 'e.g. gemini-2.5-flash'}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Chat API key</label>
+                      <input
+                        type="password"
+                        value={customApiKey}
+                        onChange={e => setCustomApiKey(e.target.value)}
+                        placeholder="Your provider API key"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                      />
+                      <p className="text-[11px] text-slate-500 mt-1">Stored in this browser and sent to the selected provider over HTTPS.</p>
+                    </div>
+                  </>
+                )}
+
+                <div className="pt-3 border-t border-slate-800">
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">Semantic embeddings provider</label>
+                  <select
+                    value={embeddingProvider}
+                    onChange={e => {
+                      const nextProvider = e.target.value;
+                      setEmbeddingProvider(nextProvider);
+                      setEmbeddingModel(current => {
+                        if (current === 'text-embedding-3-small' || current === 'gemini-embedding-001') {
+                          return nextProvider === 'gemini' ? 'gemini-embedding-001' : 'text-embedding-3-small';
+                        }
+                        return current;
+                      });
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
+                  >
+                    <option value="openai-compatible">OpenAI-compatible embeddings API</option>
+                    <option value="gemini">Google Gemini embeddings (optional)</option>
+                    <option value="none">Off — built-in semantic engine only</option>
+                  </select>
+                </div>
+
+                {embeddingProvider === 'openai-compatible' && (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Embeddings API base URL</label>
+                      <input
+                        type="url"
+                        value={embeddingBaseUrl}
+                        onChange={e => setEmbeddingBaseUrl(e.target.value)}
+                        placeholder="https://api.openai.com/v1"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Embeddings model</label>
+                      <input
+                        type="text"
+                        value={embeddingModel}
+                        onChange={e => setEmbeddingModel(e.target.value)}
+                        placeholder="text-embedding-3-small"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {embeddingProvider === 'gemini' && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">Gemini embedding model</label>
+                    <input
+                      type="text"
+                      value={embeddingModel}
+                      onChange={e => setEmbeddingModel(e.target.value)}
+                      placeholder="gemini-embedding-001"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                )}
+
+                {embeddingProvider !== 'none' && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">Embeddings API key (optional)</label>
+                    <input
+                      type="password"
+                      value={embeddingApiKey}
+                      onChange={e => setEmbeddingApiKey(e.target.value)}
+                      placeholder="Leave blank to reuse the chat key for the same provider"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                    />
+                    <p className="text-[11px] text-slate-500 mt-1">Keys are stored in this browser and sent only with requests. Provider endpoints must use HTTPS.</p>
                   </div>
                 )}
               </div>
+              <button
+                type="button"
+                onClick={() => {
+                  generateDigest({ fresh: true });
+                  showToast('Provider settings applied; refreshing your digest');
+                }}
+                disabled={loadingDigest}
+                className="px-4 py-2 text-xs font-medium rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition disabled:opacity-50"
+              >
+                Apply providers & refresh digest
+              </button>
             </div>
 
             {/* Serendipity Dial */}
@@ -2668,65 +3141,60 @@ export default function App() {
               </div>
             </div>
 
-            {/* Reading Preferences (Topics & Themes) */}
+            {/* Browser-local semantic reading profile */}
             <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-200">Reading Preferences (Topics & Depth)</h3>
+                  <h3 className="text-sm font-semibold text-slate-200">Semantic Reading Profile</h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Curator learns your reading tastes from Thumbs Up / Down. Your feed and author subscriptions in Sources remain untouched.
+                    {semanticFeedback.length} of 40 feedback examples · {semanticFeedback.filter(item => item.vote === 'like').length} liked · {semanticFeedback.filter(item => item.vote === 'dislike').length} disliked
                   </p>
                 </div>
-                {((signals.moreTopics && signals.moreTopics.length > 0) || (signals.lessTopics && signals.lessTopics.length > 0) || (signals.moreIds && signals.moreIds.length > 0) || (signals.lessIds && signals.lessIds.length > 0)) && (
+                {(semanticFeedback.length > 0 || signals.moreIds.length > 0 || signals.lessIds.length > 0) && (
                   <button
                     type="button"
                     onClick={() => {
+                      setSemanticFeedback([]);
                       setSignals({ moreTopics: [], lessTopics: [], moreIds: [], lessIds: [], more: [], less: [] });
-                      showToast('Reading preferences reset to neutral');
+                      showToast('Semantic reading profile reset');
                     }}
-                    className="text-xs text-slate-400 hover:text-rose-400 transition"
+                    className="text-xs text-slate-400 hover:text-rose-400 transition shrink-0"
                   >
-                    Reset preferences
+                    Reset profile
                   </button>
                 )}
               </div>
 
-              <div className="space-y-3 pt-1">
-                <div>
-                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">
-                    Prioritized Reading Topics ({signals.moreTopics?.length || 0})
-                  </span>
-                  {signals.moreTopics && signals.moreTopics.length > 0 ? (
-                    <div className="flex flex-wrap gap-1.5">
-                      {signals.moreTopics.map(topic => (
-                        <span key={topic} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/15 border border-amber-500/30 text-amber-300">
-                          <ThumbsUp className="w-3 h-3 fill-amber-400/40" />
-                          <span>{topic}</span>
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-500 italic">No topic boosts yet. Tap thumbs-up on articles you enjoy to prioritize similar themes.</p>
-                  )}
-                </div>
+              <button
+                type="button"
+                onClick={openSetupWizard}
+                className="w-full px-3 py-2 rounded-xl bg-slate-950/70 border border-slate-800 text-xs font-medium text-amber-300 hover:border-amber-500/40 hover:text-amber-200 transition flex items-center justify-center gap-1.5"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>{semanticFeedback.length > 0 ? 'Re-run calibration' : 'Run calibration'}</span>
+              </button>
 
-                <div className="pt-2 border-t border-slate-900/80">
-                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">
-                    De-emphasized Reading Topics ({signals.lessTopics?.length || 0})
-                  </span>
-                  {signals.lessTopics && signals.lessTopics.length > 0 ? (
-                    <div className="flex flex-wrap gap-1.5">
-                      {signals.lessTopics.map(topic => (
-                        <span key={topic} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-rose-500/15 border border-rose-500/30 text-rose-300">
-                          <ThumbsDown className="w-3 h-3 fill-rose-400/40" />
-                          <span>{topic}</span>
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-500 italic">No muted topics. Tap thumbs-down to quietly de-prioritize specific subjects without removing any author or feed.</p>
-                  )}
+              <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300">
+                <div className="flex items-center gap-2 font-medium">
+                  <span className={`w-2 h-2 rounded-full ${embeddingProvider === 'none' || semanticServiceReady ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                  {embeddingProvider === 'none'
+                    ? 'Built-in semantic engine active · no provider calls'
+                    : semanticServiceReady
+                      ? `Built-in engine + ${embeddingProvider === 'gemini' ? 'Gemini' : 'your OpenAI-compatible endpoint'} embeddings`
+                      : 'Built-in semantic engine active · add an endpoint and key for provider vectors'}
                 </div>
+                {semanticSummary && (
+                  <p className="text-[11px] text-slate-500 mt-2">
+                    Last digest · {semanticSummary.feedbackExamples} vote examples ·{' '}
+                    {semanticSummary.providerVectors > 0
+                      ? `${semanticSummary.providerVectors} provider embeddings`
+                      : 'built-in engine only'} ·{' '}
+                    {semanticSummary.deprioritized} recently seen pieces down-weighted
+                  </p>
+                )}
+                <p className="text-[11px] text-slate-400 mt-2 leading-relaxed">
+                  Your votes and up to 40 article excerpts stay in this browser. The built-in semantic engine scores feed text on this app's server with no third-party calls and no key. Provider embeddings are optional: when enabled, feedback and candidate excerpts are also sent to the provider you choose. Nothing is synced or saved to a database, and provider vectors are cached in server memory only.
+                </p>
               </div>
             </div>
 
@@ -2799,7 +3267,7 @@ export default function App() {
                 {sources.map((src) => {
                   const isSelected = selectedFeedSource === src.title;
                   const isUnread = !readSourceIds.includes(src.id);
-                  const avatarUrl = src.avatar || getSourceAvatar(src.title, src.feedUrl);
+                  const avatarUrl = getSourceAvatar(src.feedUrl);
                   return (
                     <button
                       key={src.id}
@@ -2936,7 +3404,7 @@ export default function App() {
                       <div className="p-5 pb-3 flex items-center justify-between">
                         <div className="flex items-center gap-3">
                           {(() => {
-                            const itemAvatar = item.avatar || getSourceAvatar(item.source, item.url);
+                            const itemAvatar = getSourceAvatar(item.url);
                             return (
                               <div className="w-9 h-9 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center overflow-hidden shrink-0 relative">
                                 {itemAvatar ? (
