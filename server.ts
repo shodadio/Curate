@@ -308,7 +308,7 @@ const buildWhyLine = (
     ? [
         `New ${ageLabel || 'recently'} from ${source} · ${folder}.`,
         `${folder} from ${source}, not yet on your shelf.`,
-        `From ${source}: ${folder}, still unread here.`,
+        `From ${source}, filed under ${folder} — new to you.`,
         `${source} on ${folder} — a fresh corner of your library.`,
       ]
     : [
@@ -906,50 +906,95 @@ async function startServer() {
     { title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech' }
   ];
 
+  // Feeds mix named and numeric XML entities; anything left undecoded renders as "&amp;#8217;"
+  // style noise in the reader, so decode both, then the literal ampersand last.
+  const decodeEntities = (str: string): string =>
+    str
+      .replace(/&#x([0-9a-f]+);/gi, (entity, hex: string) => {
+        const code = parseInt(hex, 16);
+        return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
+          ? String.fromCodePoint(code)
+          : entity;
+      })
+      .replace(/&#(\d+);/g, (entity, dec: string) => {
+        const code = parseInt(dec, 10);
+        return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
+          ? String.fromCodePoint(code)
+          : entity;
+      })
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&mdash;/gi, '—')
+      .replace(/&ndash;/gi, '–')
+      .replace(/&hellip;/gi, '…')
+      .replace(/&rsquo;|&lsquo;/gi, '’')
+      .replace(/&rdquo;|&ldquo;/gi, '”')
+      .replace(/&quot;/gi, '"')
+      .replace(/&apos;|&#39;/gi, "'")
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&amp;/gi, '&');
+
   const cleanHtml = (str: string): string => {
     if (!str) return '';
-    return str
-      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;|&apos;/g, "'")
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&#8217;|&#8216;/g, "'")
-      .replace(/&#8220;|&#8221;/g, '"')
-      .replace(/&#8212;/g, '—')
-      .replace(/&#8211;/g, '–')
+    return decodeEntities(
+      str
+        .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+    )
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/[ \t\u00a0]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
   };
 
+  // Paragraph-shaped plain text for the reader: real paragraphs, no stray lines,
+  // no promo/repeated boilerplate, no unicode debris.
   const htmlToReadableText = (html: string): string => {
     if (!html) return '';
-    return html
+
+    const stripped = html
       .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1')
       .replace(/<style[\s\S]*?<\/style>/gi, '')
       .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<figcaption[\s\S]*?<\/figcaption>/gi, '')
+      .replace(/<figure[\s\S]*?<\/figure>/gi, '')
+      .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
       .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/(p|div|h[1-6]|li|blockquote)>/gi, '\n\n')
-      .replace(/<li[^>]*>/gi, '• ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;|&apos;/g, "'")
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&#8217;|&#8216;/g, "'")
-      .replace(/&#8220;|&#8221;/g, '"')
-      .replace(/&#8212;/g, '—')
-      .replace(/&#8211;/g, '–')
+      .replace(/<\/(p|div|h[1-6]|blockquote|section|article)>/gi, '\n\n')
+      .replace(/<li[^>]*>/gi, '\n• ')
+      .replace(/<\/li>/gi, '\n\n')
+      .replace(/<[^>]+>/g, ' ');
+
+    const decoded = decodeEntities(stripped);
+
+    return decoded
+      .replace(/\r\n?/g, '\n')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/\u00a0/g, ' ')
       .replace(/[ \t]+/g, ' ')
+      .replace(/ *\n */g, '\n')
+      .replace(/([,.;:!?])(?=[A-Za-z0-9“"'(])/g, '$1 ')
       .replace(/\n{3,}/g, '\n\n')
-      .trim();
+      .split(/\n{2,}/)
+      .map(paragraph => {
+        let next = paragraph
+          .replace(/\s*\n\s*/g, ' ')
+          .replace(/\s+([,.;:!?])/g, '$1')
+          .replace(/\s{2,}/g, ' ')
+          .trim();
+        // A stripped inline link can leave a paragraph starting with the punctuation that followed it.
+        if (/^[,;:.]/.test(next)) {
+          next = next.replace(/^[,;:.]+\s*/, '');
+          next = next.charAt(0).toUpperCase() + next.slice(1);
+        }
+        return next;
+      })
+      .filter(paragraph => paragraph.length > 0 && /[\p{L}\p{N}]/u.test(paragraph))
+      .filter(paragraph => !(paragraph.length < 180 && /^(click here|subscribe|sign up|follow me|read more|share this|advertisement)\b/i.test(paragraph)))
+      .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph))
+      .join('\n\n');
   };
 
   const formatPublishDate = (dateStr: string): string => {
@@ -1458,7 +1503,7 @@ CURATION RULES:
           if (activeAi) {
             try {
               const response = await activeAi.models.generateContent({
-                model: clientModel || 'gemini-4-hydrogen',
+                model: clientModel || 'gemini-2.5-flash',
                 contents: prompt,
                 config: { responseMimeType: 'application/json' }
               });
@@ -2046,7 +2091,7 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
       if (discoveryAi) {
         try {
           const response = await discoveryAi.models.generateContent({
-            model: 'gemini-4-hydrogen',
+            model: process.env.GEMINI_DISCOVERY_MODEL || 'gemini-2.5-flash',
             contents: prompt,
             config: {
               tools: [{ googleSearch: {} }],

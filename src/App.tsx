@@ -61,6 +61,66 @@ interface SemanticFeedbackItem {
   folder?: string;
 }
 
+function decodeArticleEntities(text: string): string {
+  return (text || '')
+    .replace(/&#x([0-9a-f]+);/gi, (entity, hex: string) => {
+      const code = parseInt(hex, 16);
+      return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
+        ? String.fromCodePoint(code)
+        : entity;
+    })
+    .replace(/&#(\d+);/g, (entity, dec: string) => {
+      const code = parseInt(dec, 10);
+      return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
+        ? String.fromCodePoint(code)
+        : entity;
+    })
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&mdash;/gi, '—')
+    .replace(/&ndash;/gi, '–')
+    .replace(/&hellip;/gi, '…')
+    .replace(/&rsquo;|&lsquo;/gi, '’')
+    .replace(/&rdquo;|&ldquo;/gi, '”')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;|&#39;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&');
+}
+
+// Reader-side clean-up in case cached feed text still carries markup debris.
+function buildArticleParagraphs(text: string): string[] {
+  if (!text) return [];
+  const clean = decodeArticleEntities(text)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/([,.;:!?])(?=[A-Za-z0-9“"'(])/g, '$1 ')
+    .replace(/\n{3,}/g, '\n\n');
+
+  return clean
+    .split(/\n{2,}/)
+    .map(paragraph => {
+      let next = paragraph
+        .replace(/\s*\n\s*/g, ' ')
+        .replace(/\s+([,.;:!?])/g, '$1')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+      // A stripped inline link can leave a paragraph starting with the punctuation that followed it.
+      if (/^[,;:.]/.test(next)) {
+        next = next.replace(/^[,;:.]+\s*/, '');
+        next = next.charAt(0).toUpperCase() + next.slice(1);
+      }
+      return next;
+    })
+    .filter(paragraph => paragraph.length > 0 && /[\p{L}\p{N}]/u.test(paragraph))
+    .filter(paragraph => !(paragraph.length < 180 && /^(click here|subscribe|sign up|follow me|read more|share this|advertisement)\b/i.test(paragraph)))
+    .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph));
+}
+
 function QRCodeBox({ url }: { url: string }) {
   const [svgStr, setSvgStr] = useState<string>('');
   useEffect(() => {
@@ -1318,6 +1378,7 @@ export default function App() {
   const normalDigest = digest.filter(d => !d.isOutOfBubble);
   const outOfBubbleDigest = digest.filter(d => d.isOutOfBubble);
   const currentCalibrationItem = calibrationCandidates[calibrationIndex];
+  const articleParagraphs = selectedArticle ? buildArticleParagraphs(selectedArticle.fullText) : [];
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-slate-800 selection:text-white w-full max-w-full overflow-x-hidden">
@@ -1445,9 +1506,9 @@ export default function App() {
             </h1>
 
             {/* Minimalist Editorial Context Note */}
-            <div className="mb-8 pb-5 border-b border-slate-900 flex items-baseline gap-2 text-xs text-slate-400">
-              <span className="text-amber-400/90 font-medium not-italic">Curator's Note:</span>
-              <span className="italic text-slate-300">{selectedArticle.why}</span>
+            <div className="mb-8 pb-5 border-b border-slate-900 flex items-start gap-2 text-xs text-slate-400">
+              <span className="text-amber-400/90 font-medium not-italic shrink-0 whitespace-nowrap">Curator's Note:</span>
+              <span className="italic text-slate-300 leading-relaxed">{selectedArticle.why}</span>
             </div>
 
             {/* Sleek Read Aloud bar (visible only when active) */}
@@ -1480,10 +1541,12 @@ export default function App() {
               </div>
             )}
 
-            <div className="prose prose-invert prose-slate max-w-none text-slate-300 leading-relaxed space-y-6 text-base font-reading">
-              {selectedArticle.fullText.split('\n\n').map((paragraph, idx) => (
-                <p key={idx}>{paragraph}</p>
-              ))}
+            <div className="max-w-[68ch] mx-auto text-slate-300 font-reading space-y-5 text-[1.0625rem] leading-[1.75]">
+              {articleParagraphs.length > 0 ? articleParagraphs.map((paragraph, idx) => (
+                <p key={idx} className="text-pretty">{paragraph}</p>
+              )) : (
+                <p className="text-slate-400 text-base">This feed supplied no readable body text. Use “Read original” below to open the article.</p>
+              )}
             </div>
 
             {/* Typographic End-mark */}
