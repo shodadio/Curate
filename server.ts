@@ -996,7 +996,7 @@ async function startServer() {
       if (linkHrefMatch && linkHrefMatch[1]) {
         link = linkHrefMatch[1].trim();
       } else {
-        const linkTagMatch = block.match(/<link[^>]*>([sS]*?)<\/link>/i);
+        const linkTagMatch = block.match(/<link[^>]*>([\s\S]*?)<\/link>/i);
         if (linkTagMatch && linkTagMatch[1]) {
           link = cleanHtml(linkTagMatch[1]).trim();
         }
@@ -2007,10 +2007,16 @@ CURATION RULES:
   // Google Search Grounding + RSS Feed Investigation endpoint
   app.post('/api/discover-sources', async (req, res) => {
     try {
-      const { query } = req.body;
+      const { query, apiKey: clientApiKey } = req.body;
       if (!query || typeof query !== 'string' || !query.trim()) {
         return res.status(400).json({ error: 'Search terms are required.' });
       }
+
+      const trimmedClientKey = typeof clientApiKey === 'string' ? clientApiKey.trim() : '';
+
+      const discoveryAi = trimmedClientKey
+        ? new GoogleGenAI({ apiKey: trimmedClientKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+        : ai;
 
       const prompt = `Use Google Search to find 5 to 6 high-quality independent publications, blogs, newsletters, or editorial websites relevant to this search topic: "${query.trim()}".
 
@@ -2034,9 +2040,12 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
         summary?: string;
       }> = [];
 
-      if (ai) {
+      const isValidCandidate = (item: any) =>
+        Boolean(item && typeof item.title === 'string' && typeof item.siteUrl === 'string');
+
+      if (discoveryAi) {
         try {
-          const response = await ai.models.generateContent({
+          const response = await discoveryAi.models.generateContent({
             model: 'gemini-4-hydrogen',
             contents: prompt,
             config: {
@@ -2199,8 +2208,9 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
   });
 
   if (process.env.NODE_ENV === 'production') {
+    // Serve the client built by `npm run build` instead of mounting the dev middleware
     const distDir = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distDir));
+    app.use(express.static(distDir, { index: false, maxAge: '1h' }));
     app.get('*', (_req, res) => res.sendFile(path.join(distDir, 'index.html')));
   } else {
     // Vite middleware for development (HMR disabled in cloud iframe to prevent WebSocket closed errors)

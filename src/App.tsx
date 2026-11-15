@@ -115,15 +115,7 @@ export default function App() {
 
   // App data state with localStorage persistence
   const [sources, setSources] = useState<SourceItem[]>(() => {
-    const now = Date.now();
     const defaultSources: SourceItem[] = [
-      { id: 'src_mr', title: 'Marginal Revolution', feedUrl: 'https://marginalrevolution.com/feed', folder: 'Economics', status: 'active', lastSyncedAt: now - 5 * 60 * 1000 },
-      { id: 'src_dan', title: 'Dan Luu', feedUrl: 'https://danluu.com/atom.xml', folder: 'Tech & Engineering', status: 'active', lastSyncedAt: now - 15 * 60 * 1000 },
-      { id: 'src_simon', title: 'Simon Willison', feedUrl: 'https://simonwillison.net/atom/entries/', folder: 'Software & AI', status: 'active', lastSyncedAt: now - 20 * 60 * 1000 },
-      { id: 'src_ars', title: 'Ars Technica', feedUrl: 'https://feeds.arstechnica.com/arstechnica/index', folder: 'Tech & Policy', status: 'active', lastSyncedAt: now - 25 * 60 * 1000 },
-      { id: 'src_strat', title: 'Stratechery by Ben Thompson', feedUrl: 'https://stratechery.com/feed/', folder: 'Tech & Strategy', status: 'active', lastSyncedAt: now - 35 * 60 * 1000 },
-      { id: 'src_ala', title: 'A List Apart', feedUrl: 'https://alistapart.com/main/feed/', folder: 'Design & Craft', status: 'active', lastSyncedAt: now - 45 * 60 * 1000 },
-      { id: 'src_aeon', title: 'Aeon Magazine', feedUrl: 'https://aeon.co/feed.rss', folder: 'Philosophy & Culture', status: 'active', lastSyncedAt: now - 60 * 60 * 1000 },
       { id: 'src_row', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech', status: 'active', lastSyncedAt: now - 75 * 60 * 1000 }
     ];
 
@@ -195,20 +187,15 @@ export default function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) {
+          // Older builds seeded demo history; drop only those known placeholder ids
+          const seededIds = new Set(['wh_1', 'wh_2', 'wh_3', 'wh_4', 'wh_5', 'wh_6', 'wh_7']);
+          return parsed.filter((it: WeeklyReadingItem) => !seededIds.has(it.id));
+        }
       } catch (e) { /* ignore */ }
     }
-    const now = Date.now();
-    const day = 24 * 60 * 60 * 1000;
-    return [
-      { id: 'wh_1', title: 'Saturday assorted links', source: 'Marginal Revolution', folder: 'Economics', readTime: '5 min read', minutesSpent: 5, completedAt: now - 3 * 3600 * 1000, url: 'https://marginalrevolution.com' },
-      { id: 'wh_2', title: 'Test and verification technique effectiveness with GPT-6 Astra', source: 'Dan Luu', folder: 'Tech & Engineering', readTime: '12 min read', minutesSpent: 12, completedAt: now - 1 * day, url: 'https://danluu.com' },
-      { id: 'wh_3', title: 'Locating the source of a mysterious beep with Claude', source: 'Simon Willison', folder: 'Software & AI', readTime: '6 min read', minutesSpent: 6, completedAt: now - 2 * day, url: 'https://simonwillison.net' },
-      { id: 'wh_4', title: 'Privatize Air Traffic Control, Redux', source: 'Marginal Revolution', folder: 'Economics', readTime: '8 min read', minutesSpent: 8, completedAt: now - 3 * day, url: 'https://marginalrevolution.com' },
-      { id: 'wh_5', title: 'The Unseen Geometry of Traditional Japanese Joinery', source: 'A List Apart', folder: 'Design & Craft', readTime: '7 min read', minutesSpent: 7, completedAt: now - 4 * day, url: 'https://alistapart.com' },
-      { id: 'wh_6', title: 'Deep Time and the 10,000-Year Clock', source: 'Aeon Magazine', folder: 'Philosophy & Culture', readTime: '9 min read', minutesSpent: 9, completedAt: now - 5 * day, url: 'https://aeon.co' },
-      { id: 'wh_7', title: 'The Aggregation Theory of Modern Media', source: 'Stratechery by Ben Thompson', folder: 'Tech & Strategy', readTime: '11 min read', minutesSpent: 11, completedAt: now - 6 * day, url: 'https://stratechery.com' }
-    ];
+    // Starts empty: history is only what the reader has actually finished
+    return [];
   });
   const [showWeeklyReviewModal, setShowWeeklyReviewModal] = useState<boolean>(false);
 
@@ -216,12 +203,14 @@ export default function App() {
     localStorage.setItem('curator_weekly_history', JSON.stringify(weeklyHistory));
   }, [weeklyHistory]);
 
-  const totalWeeklyMinutes = weeklyHistory.reduce((acc, it) => acc + (it.minutesSpent || 6), 0);
+  const weekCutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const weeklyRecent = weeklyHistory.filter(it => it.completedAt >= weekCutoff);
+  const totalWeeklyMinutes = weeklyRecent.reduce((acc, it) => acc + (it.minutesSpent ?? 0), 0);
   const topWeeklyTopic = (() => {
     const counts: Record<string, number> = {};
-    weeklyHistory.forEach(it => { counts[it.folder] = (counts[it.folder] || 0) + (it.minutesSpent || 6); });
+    weeklyRecent.forEach(it => { counts[it.folder] = (counts[it.folder] || 0) + (it.minutesSpent ?? 0); });
     const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-    return sorted[0]?.[0] || 'Economics';
+    return sorted[0]?.[0] || 'No reading yet';
   })();
 
   const [signals, setSignals] = useState<{
@@ -310,6 +299,13 @@ export default function App() {
     onAction?: () => void;
   } | null>(null);
   const toastTimeoutRef = React.useRef<any>(null);
+  // Screen Wake Lock held while read-aloud is playing so the phone does not sleep mid-article
+  const wakeLockRef = React.useRef<any>(null);
+  const wakeLockWantedRef = React.useRef(false);
+  // Monotonic ids so a slow, superseded response can never overwrite newer state
+  const digestRequestRef = React.useRef(0);
+  const feedStreamRequestRef = React.useRef(0);
+  const speechCancelledRef = React.useRef(false);
 
   // Muted cards state for immediate inline Undo / Redo when user clicks "Fewer"
   const [mutedCards, setMutedCards] = useState<Record<string, DigestItem>>({});
@@ -395,10 +391,6 @@ export default function App() {
   }, [itemCount]);
 
   useEffect(() => {
-    localStorage.setItem('curator_ai_provider', aiProvider);
-  }, [aiProvider]);
-
-  useEffect(() => {
     localStorage.setItem('curator_custom_api_key', customApiKey);
   }, [customApiKey]);
 
@@ -435,11 +427,16 @@ export default function App() {
   }, [readArticleIds]);
 
   useEffect(() => {
+    localStorage.setItem('curator_reading_stats', JSON.stringify(readingStats));
+  }, [readingStats]);
+
+  useEffect(() => {
     // While setup is open, calibration votes accumulate first and one digest is built at the end.
     if (showSetupWizard) return;
-    generateDigest();
+    // Debounced so dragging the serendipity slider or tapping counts issues one request, not dozens
+    const timer = setTimeout(() => { generateDigest(); }, 450);
+    return () => clearTimeout(timer);
   }, [itemCount, serendipityDial, signals, semanticFeedback, showSetupWizard]);
-
   useEffect(() => {
     if (activeTab === 'feeds') {
       fetchFeedStream(selectedFeedSource || 'all');
@@ -447,6 +444,7 @@ export default function App() {
   }, [activeTab, selectedFeedSource]);
 
   const fetchFeedStream = async (sourceTitle?: string) => {
+    const requestId = ++feedStreamRequestRef.current;
     setLoadingFeedStream(true);
     try {
       const res = await fetch('/api/feed-stream', {
@@ -455,20 +453,21 @@ export default function App() {
         body: JSON.stringify({ sourceTitle: sourceTitle || 'all', sources })
       });
       const data = await res.json();
-      if (data.articles) {
+      if (requestId !== feedStreamRequestRef.current) return;
+      if (Array.isArray(data.articles)) {
         setFeedStreamArticles(data.articles);
       }
     } catch (e) {
       // fallback
     } finally {
-      setLoadingFeedStream(false);
+      if (requestId === feedStreamRequestRef.current) setLoadingFeedStream(false);
     }
   };
 
   const handleOpenFeedStream = (sourceTitle: string, sourceId?: string) => {
+    // The tab/source effect performs the fetch; calling it here too caused a duplicate request
     setSelectedFeedSource(sourceTitle);
     setActiveTab('feeds');
-    fetchFeedStream(sourceTitle);
 
     if (sourceId) {
       if (!readSourceIds.includes(sourceId)) {
@@ -500,6 +499,7 @@ export default function App() {
   };
 
   const generateDigest = async (options?: { fresh?: boolean }) => {
+    const requestId = ++digestRequestRef.current;
     setLoadingDigest(true);
     try {
       let readingStats = {};
@@ -549,6 +549,7 @@ export default function App() {
         })
       });
       const data = await res.json().catch(() => ({}));
+      if (requestId !== digestRequestRef.current) return;
       if (!res.ok) {
         showToast(data?.error ? `Could not refresh the digest: ${data.error}` : 'Could not refresh the digest');
         return;
@@ -569,7 +570,7 @@ export default function App() {
     } catch (e) {
       showToast('Could not refresh the digest');
     } finally {
-      setLoadingDigest(false);
+      if (requestId === digestRequestRef.current) setLoadingDigest(false);
     }
   };
 
@@ -891,7 +892,7 @@ export default function App() {
       const res = await fetch('/api/discover-sources', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q, provider: aiProvider, apiKey: customApiKey })
+        body: JSON.stringify({ query: q, apiKey: customApiKey })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -964,7 +965,7 @@ export default function App() {
   };
 
   const formatSyncTime = (timestamp?: number): string => {
-    if (!timestamp) return 'Just now';
+    if (!timestamp) return 'Not synced yet';
     const diff = Math.max(0, Date.now() - timestamp);
     if (diff < 60 * 1000) return 'Just now';
     const mins = Math.floor(diff / (60 * 1000));
@@ -973,6 +974,14 @@ export default function App() {
     if (hours < 24) return `${hours}h ago`;
     const days = Math.floor(hours / 24);
     return `${days}d ago`;
+  };
+
+  const formatDeliveryTime = (value: string): string => {
+    const [hours, minutes] = value.split(':').map(Number);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return value;
+    const d = new Date();
+    d.setHours(hours, minutes, 0, 0);
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   };
 
   const getShortSourceTitle = (title: string): string => {
@@ -1005,46 +1014,110 @@ export default function App() {
   const handleRefreshSource = async (source: SourceItem) => {
     setRefreshingSourceId(source.id);
     try {
-      await fetch('/api/feed-stream', {
+      // The endpoint matches on sourceTitle, not feedUrl — sending only feedUrl refreshed the wrong feeds
+      const res = await fetch('/api/feed-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feedUrl: source.feedUrl })
-      }).catch(() => null);
+        body: JSON.stringify({ sourceTitle: source.title, sources })
+      });
+      const data = await res.json().catch(() => ({}));
+      const articles: DigestItem[] = Array.isArray(data.articles) ? data.articles : [];
+      const fetched = res.ok && articles.length > 0;
 
-      const now = Date.now();
       setSources(prev => prev.map(s => {
-        if (s.id === source.id) {
-          return {
-            ...s,
-            lastSyncedAt: now,
-            status: 'active' as const,
-            failingReason: undefined
-          };
-        }
-        return s;
+        if (s.id !== source.id) return s;
+        return fetched
+          ? { ...s, lastSyncedAt: Date.now(), status: 'active' as const, failingReason: undefined }
+          : {
+              ...s,
+              status: 'failing' as const,
+              failingReason: res.ok ? 'This feed returned no articles.' : (data.error || `Feed returned HTTP ${res.status}.`)
+            };
       }));
-      showToast(`Refreshed "${source.title}" · 100% up to date`);
+
+      if (fetched) {
+        if (selectedFeedSource === source.title) {
+          setFeedStreamArticles(articles);
+        }
+        showToast(`Fetched ${articles.length} ${articles.length === 1 ? 'article' : 'articles'} from "${source.title}"`);
+      } else {
+        showToast(`Could not refresh "${source.title}"`);
+      }
     } catch (e) {
-      showToast(`Refreshed "${source.title}"`);
+      setSources(prev => prev.map(s => s.id === source.id
+        ? { ...s, status: 'failing' as const, failingReason: 'Network error while refreshing this feed.' }
+        : s));
+      showToast(`Could not refresh "${source.title}"`);
     } finally {
       setRefreshingSourceId(null);
     }
   };
 
-  const handleToggleReadAloud = (article: DigestItem) => {
+  const releaseWakeLock = () => {
+    wakeLockWantedRef.current = false;
+    const lock = wakeLockRef.current;
+    wakeLockRef.current = null;
+    if (lock && typeof lock.release === 'function') {
+      try {
+        lock.release();
+      } catch {
+        // already released by the browser
+      }
+    }
+  };
+
+  const requestWakeLock = async () => {
+    if (typeof navigator === 'undefined' || !('wakeLock' in navigator) || wakeLockRef.current) return;
+    wakeLockWantedRef.current = true;
+    try {
+      const lock = await (navigator as any).wakeLock.request('screen');
+      if (!wakeLockWantedRef.current) {
+        // Playback stopped while the request was in flight
+        try { lock.release(); } catch { /* ignore */ }
+        return;
+      }
+      wakeLockRef.current = lock;
+      // The browser releases the lock automatically when the page is hidden
+      lock.addEventListener?.('release', () => {
+        if (wakeLockRef.current === lock) wakeLockRef.current = null;
+      });
+    } catch {
+      // Denied (e.g. Low Power Mode) or unsupported — playback continues normally
+    }
+  };
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      // Locks are dropped on tab switch; re-acquire only if audio is still running unattended
+      if (document.visibilityState === 'visible' && speechPlaying && !speechPaused) {
+        requestWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [speechPlaying, speechPaused]);
+
+  // Release the wake lock only when the app itself goes away
+  useEffect(() => () => releaseWakeLock(), []);
+
+  const handleToggleReadAloud = (article: DigestItem, restart = false, rateOverride?: number) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       showToast('Speech audio is not supported in this browser.');
       return;
     }
 
-    if (speechPlaying) {
+    if (speechPlaying && !restart) {
       if (speechPaused) {
         window.speechSynthesis.resume();
         setSpeechPaused(false);
+        requestWakeLock();
         showToast('Resumed reading aloud');
       } else {
         window.speechSynthesis.pause();
         setSpeechPaused(true);
+        releaseWakeLock();
         showToast('Paused reading aloud');
       }
       return;
@@ -1068,37 +1141,75 @@ export default function App() {
     utterance.onstart = () => {
       setSpeechPlaying(true);
       setSpeechPaused(false);
+      requestWakeLock();
       showToast('Reading aloud with your default voice');
     };
 
     utterance.onend = () => {
+      releaseWakeLock();
       setSpeechPlaying(false);
       setSpeechPaused(false);
-      const updated = {
-        ...readingStats,
+      // cancel() also fires onend — a deliberate stop must not mark the article finished
+      const cancelled = speechCancelledRef.current;
+      speechCancelledRef.current = false;
+      if (cancelled) return;
+      setReadingStats(prev => ({
+        ...prev,
         [article.id]: { maxDepth: 100, finished: true, lastRead: Date.now() }
-      };
-      setReadingStats(updated);
-      localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
+      }));
       setReadArticleIds(prev => (prev.includes(article.id) ? prev : [...prev, article.id]));
       showToast('Finished listening · Read through recorded');
     };
 
     utterance.onerror = (e) => {
       console.warn('SpeechSynthesis error:', e);
+      releaseWakeLock();
       setSpeechPlaying(false);
       setSpeechPaused(false);
     };
 
+    // Request during the user gesture; onstart confirms playback actually began
+    speechCancelledRef.current = false;
+    requestWakeLock();
     window.speechSynthesis.speak(utterance);
   };
 
   const handleStopReadAloud = () => {
+    speechCancelledRef.current = true;
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
+    releaseWakeLock();
     setSpeechPlaying(false);
     setSpeechPaused(false);
+  };
+
+  const handleSendTestNotification = async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      showToast('This browser does not support notifications.');
+      return;
+    }
+    if (!notificationsEnabled) {
+      showToast('Turn morning notifications on first.');
+      return;
+    }
+    let permission = Notification.permission;
+    if (permission === 'default') {
+      permission = await Notification.requestPermission();
+    }
+    if (permission !== 'granted') {
+      showToast('Notifications are blocked in your browser settings.');
+      return;
+    }
+    try {
+      new Notification('The Curator', {
+        body: `${digest.length || itemCount} items ready in today's digest.`,
+        icon: '/pwa-192x192.png'
+      });
+      showToast('Test notification sent');
+    } catch {
+      showToast('This browser could not show a notification.');
+    }
   };
 
   const getCardActions = (itemId: string) => {
@@ -1152,15 +1263,13 @@ export default function App() {
     // Update reading stats
     setReadingStats(prev => {
       const current = prev[item.id] || { maxDepth: 0, finished: false };
-      const updated = {
+      return {
         ...prev,
         [item.id]: {
           ...current,
           lastRead: Date.now()
         }
       };
-      localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
-      return updated;
     });
 
     // Mark corresponding source as read to dismiss its orange dot immediately
@@ -1214,7 +1323,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-slate-800 selection:text-white w-full max-w-full overflow-x-hidden">
       {/* Toast Notification with Undo / Action fallback */}
       {activeToast && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] max-w-[calc(100vw-2rem)] bg-slate-900/95 border border-slate-700/80 text-slate-200 text-xs px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-3 animate-fade-in backdrop-blur-md">
+        <div className="fixed safe-toast left-1/2 -translate-x-1/2 z-[60] max-w-[calc(100vw-2rem)] bg-slate-900/95 border border-slate-700/80 text-slate-200 text-xs px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-3 animate-fade-in backdrop-blur-md">
           <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
           <span>{activeToast.message}</span>
           {activeToast.actionLabel && activeToast.onAction && (
@@ -1242,18 +1351,20 @@ export default function App() {
             const scrollHeight = target.scrollHeight - target.clientHeight;
             if (scrollHeight > 0 && selectedArticle) {
               const progress = Math.min(100, Math.round((target.scrollTop / scrollHeight) * 100));
-              const current = readingStats[selectedArticle.id] || { maxDepth: 0, finished: false };
-              const newMax = Math.max(current.maxDepth || 0, progress);
-              const finished = newMax >= 80 || Boolean(current.finished);
-              const updated = {
-                ...readingStats,
-                [selectedArticle.id]: { maxDepth: newMax, finished, lastRead: Date.now() }
-              };
-              setReadingStats(updated);
-              localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
-              if (finished) {
+              const wasFinished = Boolean(readingStats[selectedArticle.id]?.finished);
+              setReadingStats(prev => {
+                const current = prev[selectedArticle.id] || { maxDepth: 0, finished: false };
+                const newMax = Math.max(current.maxDepth || 0, progress);
+                const finished = newMax >= 80 || Boolean(current.finished);
+                if (newMax === (current.maxDepth || 0) && finished === Boolean(current.finished)) return prev;
+                return {
+                  ...prev,
+                  [selectedArticle.id]: { maxDepth: newMax, finished, lastRead: Date.now() }
+                };
+              });
+              if (progress >= 80 || wasFinished) {
                 setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
-                const minutes = parseInt(selectedArticle.readTime) || 6;
+                const minutes = parseInt(selectedArticle.readTime) || 0;
                 setWeeklyHistory(prev => {
                   if (prev.some(it => it.id === selectedArticle.id)) return prev;
                   return [{
@@ -1271,7 +1382,7 @@ export default function App() {
             }
           }}
         >
-          <header className="sticky top-0 z-20 bg-slate-950/95 backdrop-blur-md border-b border-slate-800/80 px-6 py-4 flex items-center justify-between">
+          <header className="sticky top-0 z-20 safe-reader-header bg-slate-950/95 backdrop-blur-md border-b border-slate-800/80 px-6 pb-4 flex items-center justify-between">
             {/* Visual reading progress bar */}
             <div className="absolute top-0 left-0 right-0 h-1 bg-slate-900 overflow-hidden">
               <div 
@@ -1287,7 +1398,7 @@ export default function App() {
 
             <button 
               onClick={closeArticle}
-              className="flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors"
+              className="flex items-center gap-2 min-h-10 px-1 text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>Back to Digest</span>
@@ -1296,7 +1407,7 @@ export default function App() {
               <button 
                 type="button"
                 onClick={() => handleToggleReadAloud(selectedArticle)}
-                className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${
+                className={`px-3 py-2 min-h-10 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${
                   speechPlaying
                     ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 ring-2 ring-amber-500/30'
                     : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-amber-400 hover:border-slate-700'
@@ -1312,7 +1423,7 @@ export default function App() {
               </button>
               <button 
                 onClick={() => handleSave(selectedArticle)}
-                className={`p-2 rounded-xl border transition-colors ${savedIds.includes(selectedArticle.id) ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'border-slate-800 text-slate-400 hover:text-slate-100'}`}
+                className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition-colors ${savedIds.includes(selectedArticle.id) ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'border-slate-800 text-slate-400 hover:text-slate-100'}`}
                 title="Save for later"
               >
                 <Bookmark className="w-4 h-4" />
@@ -1389,17 +1500,14 @@ export default function App() {
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={() => {
-                    const currentStats = readingStats[selectedArticle.id] || { maxDepth: 100, finished: true };
-                    const updated = {
-                      ...readingStats,
+                    setReadingStats(prev => ({
+                      ...prev,
                       [selectedArticle.id]: {
-                        maxDepth: Math.max(currentStats.maxDepth || 0, 100),
+                        maxDepth: Math.max(prev[selectedArticle.id]?.maxDepth || 0, 100),
                         finished: true,
                         lastRead: Date.now()
                       }
-                    };
-                    setReadingStats(updated);
-                    localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
+                    }));
                     setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
                     showToast(`Opening original on ${selectedArticle.source}`);
                   }}
@@ -1414,7 +1522,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => handleMore(selectedArticle)}
-                    className={`p-2 rounded-xl transition cursor-pointer ${
+                    className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl transition cursor-pointer ${
                       signals.moreIds?.includes(selectedArticle.id)
                         ? 'text-amber-400 bg-amber-500/15 border border-amber-500/40 shadow-sm'
                         : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-transparent'
@@ -1436,7 +1544,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => handleLess(selectedArticle)}
-                    className={`p-2 rounded-xl transition cursor-pointer ${
+                    className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl transition cursor-pointer ${
                       signals.lessIds?.includes(selectedArticle.id)
                         ? 'text-rose-400 bg-rose-500/15 border border-rose-500/40 shadow-sm'
                         : 'text-slate-400 hover:text-rose-400 hover:bg-slate-900 border border-transparent'
@@ -1474,7 +1582,7 @@ export default function App() {
       )}
 
       {/* Main Top Header Bar */}
-      <header className="sticky top-0 z-40 w-full bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-4 sm:px-6 py-3 shrink-0 shadow-sm">
+      <header className="sticky top-0 z-40 w-full safe-header bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-3 sm:px-6 pb-3 shrink-0 shadow-sm">
         <div className="max-w-3xl w-full mx-auto flex items-center justify-between gap-3">
           {/* Official Brand Logo & Subtitle */}
           <button 
@@ -1483,7 +1591,7 @@ export default function App() {
             className="flex items-center gap-3 text-left focus:outline-none group cursor-pointer"
             title="The Curator — Home"
           >
-            <CuratorMark className="w-10 h-10 drop-shadow-md group-hover:scale-105 transition-transform" />
+            <CuratorMark className="w-9 h-9 sm:w-10 sm:h-10 drop-shadow-md group-hover:scale-105 transition-transform" />
             <div className="min-w-0">
               <div className="flex items-baseline gap-1.5 leading-none">
                 <span className="font-serif text-[11px] font-semibold tracking-[0.24em] text-amber-500/90">THE</span>
@@ -1498,18 +1606,17 @@ export default function App() {
             <button
               type="button"
               onClick={() => setShowWeeklyReviewModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900 border border-slate-800 hover:border-amber-500/40 text-slate-300 hover:text-amber-300 transition text-xs font-medium cursor-pointer shadow-sm group"
+              className="flex items-center justify-center gap-1.5 px-3 min-w-11 min-h-11 rounded-full bg-slate-900 border border-slate-800 hover:border-amber-500/40 text-slate-300 hover:text-amber-300 transition text-xs font-medium cursor-pointer shadow-sm group"
               title="Open Weekly Reading Review"
             >
               <BarChart3 className="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform" />
               <span className="hidden sm:inline font-mono text-[11px] text-amber-300 font-semibold">{totalWeeklyMinutes}m week</span>
-              <span className="sm:hidden font-mono text-[11px] text-amber-300">Weekly</span>
             </button>
             <button 
               type="button"
               onClick={() => generateDigest({ fresh: true })}
               disabled={loadingDigest}
-              className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-50 cursor-pointer"
+              className="w-11 h-11 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-50 cursor-pointer"
               title="Refresh today's digest"
             >
               <RefreshCw className={`w-4 h-4 ${loadingDigest ? 'animate-spin' : ''}`} />
@@ -1517,7 +1624,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setActiveTab(prev => prev === 'settings' ? 'today' : 'settings')}
-              className={`w-9 h-9 rounded-full border flex items-center justify-center transition cursor-pointer shadow-sm ${
+              className={`w-11 h-11 rounded-full border flex items-center justify-center transition cursor-pointer shadow-sm ${
                 activeTab === 'settings'
                   ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
                   : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-slate-100 hover:border-slate-700'
@@ -1531,7 +1638,7 @@ export default function App() {
       </header>
 
       {/* Content Area */}
-      <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-32 overflow-x-hidden">
+      <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-32 safe-main overflow-x-hidden">
         {/* TAB 1: TODAY */}
         {activeTab === 'today' && (
           <div className="space-y-6 animate-fade-in w-full max-w-full">
@@ -1552,7 +1659,7 @@ export default function App() {
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-400 mt-0.5 truncate">
-                    Top focus: <span className="text-slate-300 font-medium">{topWeeklyTopic}</span> · {weeklyHistory.length} articles read
+                    Top focus: <span className="text-slate-300 font-medium">{topWeeklyTopic}</span> · {weeklyRecent.length} articles read
                   </p>
                 </div>
               </div>
@@ -1562,11 +1669,11 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between border-b border-slate-900 pb-4">
+            <div className="flex flex-col items-start gap-3 border-b border-slate-900 pb-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-100">Today's Digest</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Curated at 7:00 AM · {digest.length} items worth your time
+                  Curated at {formatDeliveryTime(deliveryTime)} · {digest.length} items worth your time
                   {semanticSummary && semanticSummary.feedbackExamples > 0
                     ? ` · ranked from ${semanticSummary.feedbackExamples} vote examples`
                     : ''}
@@ -1578,7 +1685,7 @@ export default function App() {
                   <button
                     key={num}
                     onClick={() => setItemCount(num)}
-                    className={`px-2.5 py-1 rounded-lg font-medium transition ${itemCount === num ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'}`}
+                    className={`px-3 py-2 min-h-9 rounded-lg font-medium transition ${itemCount === num ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'}`}
                   >
                     {num}
                   </button>
@@ -1744,7 +1851,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                              className={`p-2.5 rounded-xl backdrop-blur-md border transition shadow-lg ${
+                              className={`p-2.5 min-w-11 min-h-11 flex items-center justify-center rounded-xl backdrop-blur-md border transition shadow-lg ${
                                 savedIds.includes(item.id)
                                   ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
                                   : 'bg-slate-950/70 border-slate-700/60 text-slate-200 hover:text-amber-400 hover:bg-slate-900/90'
@@ -1811,7 +1918,7 @@ export default function App() {
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                              className={`p-2 rounded-xl border transition ${
+                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
                                 actions.isVotedMore
                                   ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
                                   : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
@@ -1826,7 +1933,7 @@ export default function App() {
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                              className={`p-2 rounded-xl border transition ${
+                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
                                 actions.isVotedLess
                                   ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
                                   : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
@@ -1980,7 +2087,7 @@ export default function App() {
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                                  className={`p-2.5 rounded-xl backdrop-blur-md border transition shadow-lg ${
+                                  className={`p-2.5 min-w-11 min-h-11 flex items-center justify-center rounded-xl backdrop-blur-md border transition shadow-lg ${
                                     savedIds.includes(item.id)
                                       ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
                                       : 'bg-slate-950/70 border-rose-800/60 text-slate-200 hover:text-amber-400'
@@ -2046,7 +2153,7 @@ export default function App() {
                                 <button 
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                                  className={`p-2 rounded-xl border transition ${
+                                  className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
                                     signals.moreIds?.includes(item.id)
                                       ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
                                       : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
@@ -2061,7 +2168,7 @@ export default function App() {
                                 <button 
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                                  className={`p-2 rounded-xl border transition ${
+                                  className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
                                     signals.lessIds?.includes(item.id)
                                       ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
                                       : 'bg-slate-900 border border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
@@ -2468,7 +2575,7 @@ export default function App() {
                               type="button"
                               onClick={() => handleRefreshSource(src)}
                               disabled={isRefreshing}
-                              className="p-2 text-slate-400 hover:text-amber-400 transition"
+                              className="p-2 min-w-10 min-h-10 flex items-center justify-center text-slate-400 hover:text-amber-400 transition"
                               title="Force refresh this feed"
                             >
                               <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-amber-400' : ''}`} />
@@ -2476,7 +2583,7 @@ export default function App() {
                             <button 
                               type="button"
                               onClick={() => handleDeleteSource(src.id)}
-                              className="p-2 text-slate-500 hover:text-rose-400 transition"
+                              className="p-2 min-w-10 min-h-10 flex items-center justify-center text-slate-500 hover:text-rose-400 transition"
                               title="Remove source"
                             >
                               <Trash2 className="w-4 h-4" />
@@ -2492,8 +2599,8 @@ export default function App() {
 
             {/* Add Source Modal */}
             {showAddSourceModal && (
-              <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
-                <div className="w-full max-w-md rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4">
+              <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 safe-modal">
+                <div className="w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold text-slate-100">Add New Source</h3>
                     <button onClick={() => setShowAddSourceModal(false)} className="text-slate-400 hover:text-slate-100">
@@ -2755,8 +2862,8 @@ export default function App() {
 
             {/* OPML Import Modal */}
             {showImportModal && (
-              <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
-                <div className="w-full max-w-lg rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+              <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 safe-modal">
+                <div className="w-full max-w-lg rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4 max-h-[calc(100dvh-2rem)] overflow-y-auto">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold text-slate-100">Import Subscription List (OPML)</h3>
                     <button onClick={() => setShowImportModal(false)} className="text-slate-400 hover:text-slate-100">
@@ -2899,7 +3006,7 @@ export default function App() {
                     <span>Weekly Reading Retrospective</span>
                   </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    {totalWeeklyMinutes} minutes read across {weeklyHistory.length} articles over the past 7 days.
+                    {totalWeeklyMinutes} minutes read across {weeklyRecent.length} articles over the past 7 days.
                   </p>
                 </div>
                 <button
@@ -2919,11 +3026,11 @@ export default function App() {
                 </div>
                 <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center">
                   <span className="text-[11px] text-slate-400 block mb-0.5">Completed</span>
-                  <span className="text-base font-bold font-serif text-slate-100">{weeklyHistory.length}</span>
+                  <span className="text-base font-bold font-serif text-slate-100">{weeklyRecent.length}</span>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center truncate">
                   <span className="text-[11px] text-slate-400 block mb-0.5">Lead Focus</span>
-                  <span className="text-xs font-bold text-amber-300 truncate block">{topWeeklyTopic}</span>
+                  <span className="text-[11px] font-bold text-amber-300 block leading-tight whitespace-normal">{topWeeklyTopic}</span>
                 </div>
               </div>
             </div>
@@ -3131,9 +3238,8 @@ export default function App() {
 
               <div className="pt-2">
                 <button 
-                  onClick={() => {
-                    showToast('Test notification sent: 6 items ready, 1 stretch item');
-                  }}
+                  type="button"
+                  onClick={handleSendTestNotification}
                   className="px-4 py-2 text-xs font-medium rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-slate-100 transition"
                 >
                   Send me a test notification
@@ -3480,7 +3586,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                              className={`p-2.5 rounded-xl backdrop-blur-md border transition shadow-lg ${
+                              className={`p-2.5 min-w-11 min-h-11 flex items-center justify-center rounded-xl backdrop-blur-md border transition shadow-lg ${
                                 savedIds.includes(item.id)
                                   ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
                                   : 'bg-slate-950/70 border-slate-700/60 text-slate-200 hover:text-amber-400 hover:bg-slate-900/90'
@@ -3540,7 +3646,7 @@ export default function App() {
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                              className={`p-2 rounded-xl border transition ${
+                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
                                 actions.isVotedMore
                                   ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
                                   : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
@@ -3555,7 +3661,7 @@ export default function App() {
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                              className={`p-2 rounded-xl border transition ${
+                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
                                 actions.isVotedLess
                                   ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
                                   : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
@@ -3581,12 +3687,12 @@ export default function App() {
 
 
       {/* Bottom Dock Navigation */}
-      <nav className="fixed bottom-3 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-lg bg-slate-900/90 backdrop-blur-xl border border-slate-800/80 rounded-2xl py-2.5 px-3 shadow-2xl">
+      <nav className="fixed safe-dock left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-lg bg-slate-900/90 backdrop-blur-xl border border-slate-800/80 rounded-2xl py-2.5 px-3 shadow-2xl">
         <div className="flex items-center justify-around">
           <button 
             type="button"
             onClick={() => setActiveTab('today')}
-            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'today' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'today' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Home className="w-5 h-5" />
             <span className="text-[10px] tracking-tight">Today</span>
@@ -3595,7 +3701,7 @@ export default function App() {
           <button 
             type="button"
             onClick={() => setActiveTab('feeds')}
-            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'feeds' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'feeds' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <div className="relative">
               <Rss className="w-5 h-5" />
@@ -3609,7 +3715,7 @@ export default function App() {
           <button 
             type="button"
             onClick={() => setActiveTab('saved')}
-            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'saved' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'saved' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <div className="relative">
               <Bookmark className="w-5 h-5" />
@@ -3623,7 +3729,7 @@ export default function App() {
           <button 
             type="button"
             onClick={() => setActiveTab('sources')}
-            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'sources' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'sources' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Compass className="w-5 h-5" />
             <span className="text-[10px] tracking-tight">Sources</span>
