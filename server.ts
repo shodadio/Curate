@@ -285,7 +285,7 @@ const recencyPhrase = (item: { publishedAtMs?: number }): string => {
 const buildWhyLine = (
   item: any,
   index: number,
-  context: { liked: boolean; preferredTopic: boolean; semanticScore: number },
+  context: { liked: boolean; interest?: string; semanticScore: number },
 ): string => {
   const source = String(item.source || 'your feeds').trim();
   const folder = String(item.folder || '').trim();
@@ -294,8 +294,8 @@ const buildWhyLine = (
   if (context.liked) {
     return `Selected for your reading interest in ${folder || source}.`;
   }
-  if (context.preferredTopic) {
-    return `Selected because you keep returning to ${folder || source}.`;
+  if (context.interest) {
+    return `Selected because you asked for more of ${context.interest}.`;
   }
   if (context.semanticScore > 0.28) {
     return 'A close match to the pieces you have been upvoting.';
@@ -359,23 +359,34 @@ const selectDiverse = (
   return chosen.slice(0, count);
 };
 
+// The reply text of an OpenAI-style chat completion, whether the provider returns a
+// plain string or an array of content parts.
+const readOpenAIChatText = (data: any): string => {
+  const content = data?.choices?.[0]?.message?.content;
+  return typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content.map((part: any) => typeof part?.text === 'string' ? part.text : '').join('')
+      : '';
+};
+
 async function callOpenAICompatible(config: ProviderRequestConfig, prompt: string): Promise<any> {
   const data = await postProviderJson(
     providerEndpoint(config.baseUrl, 'chat/completions'),
     { Authorization: `Bearer ${config.apiKey}` },
     { model: config.model, messages: [{ role: 'user', content: prompt }], max_tokens: 4096 },
   );
-  const content = data.choices?.[0]?.message?.content;
-  const text = typeof content === 'string'
-    ? content
-    : Array.isArray(content)
-      ? content.map((part: any) => typeof part?.text === 'string' ? part.text : '').join('')
-      : '';
+  const text = readOpenAIChatText(data);
   if (!text) throw new Error('AI provider returned no message content.');
   return parseModelJson(text);
 }
 
-async function callAnthropic(apiKey: string, prompt: string, model: string): Promise<any> {
+async function postAnthropicMessage(
+  apiKey: string,
+  prompt: string,
+  model: string,
+  maxTokens: number,
+): Promise<string> {
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -385,7 +396,7 @@ async function callAnthropic(apiKey: string, prompt: string, model: string): Pro
     },
     body: JSON.stringify({
       model,
-      max_tokens: 4096,
+      max_tokens: maxTokens,
       messages: [{ role: 'user', content: prompt }]
     })
   });
@@ -396,7 +407,11 @@ async function callAnthropic(apiKey: string, prompt: string, model: string): Pro
   const data = await resp.json();
   const text = data.content?.[0]?.text;
   if (typeof text !== 'string') throw new Error('Anthropic returned no message content.');
-  return parseModelJson(text);
+  return text;
+}
+
+async function callAnthropic(apiKey: string, prompt: string, model: string): Promise<any> {
+  return parseModelJson(await postAnthropicMessage(apiKey, prompt, model, 4096));
 }
 
 const BLOCKED_HOSTNAMES = new Set(['localhost', 'metadata.google.internal']);
@@ -686,6 +701,105 @@ async function startServer() {
       geminiConfigured: Boolean(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY),
       localEngine: true,
     });
+  });
+
+  // "Test API": one minimal request with the settings shown in the app, so a wrong key,
+  // URL or model surfaces in Settings instead of silently falling back during a digest.
+  app.post('/api/test-provider', async (req, res) => {
+    const started = Date.now();
+    const kind = req.body?.kind === 'embedding' ? 'embedding' : 'chat';
+    const provider = String(req.body?.provider || '').trim();
+    const apiKey = String(req.body?.apiKey || '').trim();
+    const baseUrl = String(req.body?.baseUrl || '').trim();
+    const requestedModel = String(req.body?.model || '').trim();
+    const pingPrompt = 'Reply with the single word: pong';
+
+    try {
+      if (kind === 'chat') {
+        if (provider === 'deterministic') {
+          return res.json({ ok: true, provider, model: 'built-in', latencyMs: 0, reply: 'Built-in engine — nothing to reach.' });
+        }
+
+        if (provider === 'openai-compatible') {
+          if (!apiKey) throw new Error('Add a chat API key first.');
+          if (!baseUrl) throw new Error('Add a chat API base URL first.');
+          const model = requestedModel || 'gpt-4o-mini';
+          const data = await postProviderJson(
+            providerEndpoint(baseUrl, 'chat/completions'),
+            { Authorization: `Bearer ${apiKey}` },
+            { model, messages: [{ role: 'user', content: pingPrompt }], max_tokens: 16 },
+          );
+          const reply = readOpenAIChatText(data).trim();
+          if (!reply) throw new Error('The provider answered but returned no text.');
+          return res.json({ ok: true, provider, model, latencyMs: Date.now() - started, reply });
+        }
+
+        if (provider === 'anthropic') {
+          if (!apiKey) throw new Error('Add an Anthropic API key first.');
+          const model = requestedModel || 'claude-3-5-sonnet-20241022';
+          const reply = (await postAnthropicMessage(apiKey, pingPrompt, model, 16)).trim();
+          return res.json({ ok: true, provider, model, latencyMs: Date.now() - started, reply });
+        }
+
+        if (provider === 'gemini') {
+          const gemini = apiKey
+            ? new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+            : ai;
+          if (!gemini) throw new Error('Add a Gemini key here or set GEMINI_API_KEY on the server.');
+          const model = requestedModel || 'gemini-2.5-flash';
+          const response = await gemini.models.generateContent({
+            model,
+            contents: pingPrompt,
+            config: { maxOutputTokens: 16 },
+          });
+          const reply = String(response.text || '').trim();
+          if (!reply) throw new Error('Gemini answered but returned no text.');
+          return res.json({ ok: true, provider, model, latencyMs: Date.now() - started, reply });
+        }
+
+        throw new Error(`Unknown provider “${provider}”.`);
+      }
+
+      // Embeddings ping: verifies the key, endpoint and model, and reports vector width.
+      if (provider === 'none') {
+        return res.json({ ok: true, provider, model: 'built-in', latencyMs: 0 });
+      }
+      if (provider !== 'openai-compatible' && provider !== 'gemini') {
+        throw new Error(`Unknown embeddings provider “${provider}”.`);
+      }
+      if (provider === 'gemini' && !apiKey && !ai) {
+        throw new Error('Add a Gemini key here or set GEMINI_API_KEY on the server.');
+      }
+      if (provider === 'openai-compatible') {
+        if (!apiKey) throw new Error('Add an embeddings API key, or reuse the chat key, first.');
+        if (!baseUrl) throw new Error('Add an embeddings API base URL first.');
+      }
+
+      const vectors = await embedSemanticTexts(['Curator ping'], {
+        provider,
+        apiKey,
+        baseUrl,
+        model: requestedModel,
+      });
+      const vector = vectors[0];
+      if (!vector || vector.length === 0) {
+        throw new Error('No embedding came back — check the key, base URL and model.');
+      }
+
+      return res.json({
+        ok: true,
+        provider,
+        model: requestedModel || (provider === 'gemini' ? 'gemini-embedding-001' : 'text-embedding-3-small'),
+        latencyMs: Date.now() - started,
+        dimensions: vector.length,
+      });
+    } catch (err: any) {
+      return res.json({
+        ok: false,
+        error: err?.message || 'The test request failed.',
+        latencyMs: Date.now() - started,
+      });
+    }
   });
 
   // OPML Parser endpoint
@@ -1270,16 +1384,22 @@ async function startServer() {
         : Array.isArray(signals?.less) ? signals.less : [];
       const moreIds: string[] = Array.isArray(signals?.moreIds) ? signals.moreIds : [];
       const lessIds: string[] = Array.isArray(signals?.lessIds) ? signals.lessIds : [];
-      const matchesTopicSignal = (item: any, topicList: string[]) =>
-        topicList.some(sig => {
-          const s = sig.toLowerCase().trim();
-          if (!s) return false;
-          return (
-            (item.folder && item.folder.toLowerCase().includes(s)) ||
-            (item.title && item.title.toLowerCase().includes(s)) ||
-            (item.summary && item.summary.toLowerCase().includes(s))
-          );
-        });
+      // A declared interest is matched whole-word and case-insensitively, with the folder
+      // compared as an exact label first, so a chip named "Art" never fires on "artificial".
+      const normalizeInterestLabel = (value: string): string =>
+        String(value || '')
+          .toLowerCase()
+          .replace(/[^a-z0-9&+]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+      const matchesInterest = (item: any, label: string): boolean => {
+        const needle = normalizeInterestLabel(label);
+        if (!needle) return false;
+        if (normalizeInterestLabel(item.folder || '') === needle) return true;
+        const haystack = ` ${normalizeInterestLabel(`${item.title || ''} ${item.summary || ''}`)} `;
+        return haystack.includes(` ${needle} `);
+      };
 
       // Older votes carry ids but no stored excerpt. Recover the article text from the live
       // pool so the semantic engine has examples to learn from straight away.
@@ -1307,10 +1427,9 @@ async function startServer() {
         recover(lessIds, 'dislike');
       }
 
-      // Apply explicit negative feedback before either AI or deterministic curation.
-      candidatePool = candidatePool.filter(item =>
-        !lessIds.includes(item.id) && !matchesTopicSignal(item, lessTopics)
-      );
+      // Downvoted articles are dropped outright. Interest-level "less" chips only down-weight
+      // further below, because one broad chip must not be able to empty the digest.
+      candidatePool = candidatePool.filter(item => !lessIds.includes(item.id));
 
       // Freshness: what the browser already showed, so a refresh never repeats itself.
       const recentlyShown: Array<{ id: string; shownAt: number }> = Array.isArray(req.body.recentlyShown)
@@ -1389,7 +1508,8 @@ async function startServer() {
         .map((item: any) => {
           const semanticScore = semanticScores.get(item.id) || 0;
           const liked = moreIds.includes(item.id);
-          const preferredTopic = matchesTopicSignal(item, moreTopics);
+          const interestLabel = moreTopics.find((label: string) => matchesInterest(item, label)) || '';
+          const lessLabel = lessTopics.find((label: string) => matchesInterest(item, label)) || '';
           const penalty = exposurePenalty.get(item.id) || 0;
           if (penalty > 0) deprioritizedIds.add(item.id);
 
@@ -1398,10 +1518,18 @@ async function startServer() {
             + stableJitter(seed, item.id) * 12
             - penalty;
           if (liked) score += 30;
-          if (preferredTopic) score += 15;
+          if (interestLabel) score += 25;
+          if (lessLabel) score -= 40;
           if (readingStats && readingStats[item.id]?.finished) score += 8;
 
-          return { ...item, isOutOfBubble: false, _score: score, _semantic: semanticScore };
+          return {
+            ...item,
+            isOutOfBubble: false,
+            _score: score,
+            _semantic: semanticScore,
+            _interest: interestLabel,
+            _less: lessLabel,
+          };
         })
         .sort((a, b) => b._score - a._score);
 
@@ -1409,12 +1537,12 @@ async function startServer() {
       scoredPool.forEach((entry: any, index: number) => {
         entry.why = buildWhyLine(entry, index, {
           liked: moreIds.includes(entry.id),
-          preferredTopic: matchesTopicSignal(entry, moreTopics),
+          interest: String(entry._interest || ''),
           semanticScore: Number(entry._semantic) || 0,
         });
       });
 
-      const rankedItems = scoredPool.map(({ _score, _semantic, ...rest }: any) => rest);
+      const rankedItems = scoredPool.map(({ _score, _semantic, _interest, _less, ...rest }: any) => rest);
 
       const distinctSources = new Set(
         rankedItems.map(item => item.source).filter((value): value is string => Boolean(value))
@@ -1447,7 +1575,8 @@ async function startServer() {
           summary: item.summary,
           readTime: item.readTime,
           isLiked: moreIds.includes(item.id),
-          matchesPreferredTopic: matchesTopicSignal(item, moreTopics),
+          matchesPreferredTopic: Boolean(item._interest),
+          matchesLessTopic: Boolean(item._less),
           semanticScore: Number((item._semantic || 0).toFixed(3))
         }));
 
@@ -1459,7 +1588,7 @@ ${JSON.stringify(candidatesForAi)}
 User Reading Preferences:
 - Prioritized Topics (MORE): ${JSON.stringify(moreTopics)}
 - De-emphasized Topics (LESS): ${JSON.stringify(lessTopics)}
-- Candidate isLiked and matchesPreferredTopic flags reflect exact article/topic feedback.
+- Candidate isLiked and matchesPreferredTopic flags reflect exact article/topic feedback; matchesLessTopic marks a topic the reader asked for less of.
 - semanticScore is a relevance score built from your recent positive minus negative article votes (Curator's built-in semantic engine, plus your embeddings provider when configured); higher values are a better match.
 - Articles thumbs-up: ${JSON.stringify(moreIds)}
 - Articles thumbs-down: ${JSON.stringify(lessIds)} (exact downvoted articles and any legacy less topics are already excluded)
@@ -1467,7 +1596,7 @@ Serendipity Dial: ${serendipityDial}% (0% = stay close to established interests;
 
 CURATION RULES:
 1. Select exactly ${itemCount} unique items from the candidate pool using their "idx".
-2. Strongly prioritize candidates marked isLiked, matchesPreferredTopic, or with higher semanticScore; avoid negative semanticScore candidates when similar alternatives exist.
+2. Strongly prioritize candidates marked isLiked, matchesPreferredTopic, or with higher semanticScore; avoid candidates marked matchesLessTopic and negative semanticScore candidates when similar alternatives exist.
 3. At least 1 (or 2 if serendipity >= 40) should be an "isOutOfBubble": true stretch item from a folder different from the user's top interests.
 4. For each selected item, write a 1-sentence editorial "why" rationale explaining why this piece was selected (e.g. "Selected for your reading interest in Economics", "A thoughtful design retrospective", "Deliberate stretch: outside your usual tech routine").
 5. Candidates are already ordered by publication recency, topic fit and semantic match, and pieces shown in recent digests are down-ranked. Prefer items nearer the top of the list.

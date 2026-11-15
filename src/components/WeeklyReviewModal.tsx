@@ -37,6 +37,9 @@ export function WeeklyReviewModal({
 }: WeeklyReviewModalProps) {
   if (!isOpen) return null;
 
+  const displayFolder = (folder?: string) =>
+    (!folder || folder.trim().toLowerCase() === 'uncategorized') ? 'General' : folder;
+
   // Every statistic below is derived from recorded reading — no placeholders, smoothing or defaults
   const dayMs = 24 * 60 * 60 * 1000;
   const todayStart = new Date();
@@ -61,7 +64,7 @@ export function WeeklyReviewModal({
   // Topic breakdown
   const topicMap = new Map<string, { minutes: number; count: number }>();
   recentItems.forEach(it => {
-    const topic = it.folder || 'General';
+    const topic = displayFolder(it.folder);
     const curr = topicMap.get(topic) || { minutes: 0, count: 0 };
     topicMap.set(topic, {
       minutes: curr.minutes + (it.minutesSpent ?? 0),
@@ -80,7 +83,7 @@ export function WeeklyReviewModal({
 
   const topTopic = sortedTopics[0]?.topic;
   const stretchCount = topTopic
-    ? recentItems.filter(it => (it.folder || 'General') !== topTopic).length
+    ? recentItems.filter(it => displayFolder(it.folder) !== topTopic).length
     : 0;
 
   // Minutes per real calendar day over the last 7 days, labelled with each day's actual weekday
@@ -130,15 +133,15 @@ export function WeeklyReviewModal({
 
   return (
     <div 
-      className="fixed inset-0 z-50 flex items-start sm:items-center justify-center p-3 sm:p-6 safe-modal bg-slate-950/85 backdrop-blur-md overflow-y-auto animate-fade-in"
+      className="fixed inset-0 z-50 flex items-start sm:items-center justify-center p-3 sm:p-6 safe-modal bg-slate-950/85 backdrop-blur-md overflow-hidden animate-fade-in"
       onClick={onClose}
     >
       <div 
-        className="w-full max-w-2xl max-h-[calc(100dvh-1.5rem)] flex flex-col bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl overflow-hidden my-auto relative text-slate-100"
+        className="w-full max-w-2xl max-h-[calc(100dvh-1.5rem)] overflow-y-auto overscroll-contain bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl my-auto relative text-slate-100"
         onClick={e => e.stopPropagation()}
       >
         {/* Subtle warm ambient header banner */}
-        <div className="relative shrink-0 p-6 sm:p-8 bg-gradient-to-b from-amber-500/10 via-slate-900/90 to-slate-900 border-b border-slate-800/80">
+        <div className="relative sticky top-0 z-10 p-6 sm:p-8 bg-slate-900 bg-[linear-gradient(180deg,rgba(245,158,11,0.10),rgba(15,23,42,0)_55%)] border-b border-slate-800/80">
           <button 
             type="button"
             onClick={onClose}
@@ -148,7 +151,7 @@ export function WeeklyReviewModal({
             <X className="w-4 h-4" />
           </button>
 
-          <div className="flex items-center gap-3.5 mb-3">
+          <div className="flex items-center gap-3.5 mb-3 pr-14">
             <CuratorMark className="w-11 h-11 shadow-lg drop-shadow-[0_4px_12px_rgba(245,158,11,0.25)]" />
             <div>
               <div className="flex items-center gap-2">
@@ -169,7 +172,7 @@ export function WeeklyReviewModal({
         </div>
 
         {/* Modal Body */}
-        <div className="p-6 sm:p-8 space-y-8 flex-1 min-h-0 overflow-y-auto">
+        <div className="p-6 sm:p-8 space-y-8">
           {totalArticles === 0 && (
             <div className="p-5 rounded-2xl bg-slate-950/60 border border-slate-800/80 text-xs text-slate-400 leading-relaxed">
               No reading has been recorded in the last 7 days yet. Finish an article and the time you spend will appear here.
@@ -376,7 +379,7 @@ export function WeeklyReviewModal({
                     <div className="flex items-center gap-2 text-slate-400 text-[11px] mt-0.5">
                       <span className="text-slate-300">{item.source}</span>
                       <span>·</span>
-                      <span className="text-amber-400/90">{item.folder}</span>
+                      <span className="text-amber-400/90">{displayFolder(item.folder)}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -409,7 +412,7 @@ export function WeeklyReviewModal({
         </div>
 
         {/* Modal Footer Actions */}
-        <div className="shrink-0 p-4 sm:p-6 bg-slate-950/80 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
+        <div className="sticky bottom-0 z-10 p-4 sm:p-6 bg-slate-950 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
           <button 
             type="button"
             onClick={handleShare}

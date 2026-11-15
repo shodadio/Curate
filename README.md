@@ -100,7 +100,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Export Anytime**: Download a clean, standardized `.opml` XML file containing your complete watch list.
 
 ### 8. Distraction-Free Reader & iOS Web Speech Read Aloud
-- **Typographic Discipline**: One self-hosted variable font for the interface (*Plus Jakarta Sans*, 27 KB woff2, `font-display: optional`), with system serif for reading bodies and system mono for metadata — no Google Fonts requests, so text never reflows or changes face after first paint.
+- **Typographic Discipline**: One self-hosted variable family, *Inter* (roman 47 KB + italic 51 KB woff2, `font-display: optional`), used for the interface, reading bodies, wordmark and metadata alike — no Google Fonts requests, so text never reflows or changes face after first paint.
 - **Native Web Speech Read Aloud**:
   - Integrated text-to-speech audio player powered by the browser's native `window.speechSynthesis`.
   - Fully compatible with iOS Safari and modern mobile browsers.
@@ -126,7 +126,7 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                       Client (React 19)                         │
-│  - Plus Jakarta Sans (self-hosted) + system serif/mono            │
+│  - Inter (self-hosted, sole family)                                │
 │  - Top Header Navigation with Refresh & Settings Controls       │
 │  - Bottom Dock Navigation (Today, Feeds, Saved, Sources)        │
 │  - Signal Tuning with Undo/Redo Fallbacks                       │

@@ -7,8 +7,12 @@ import {
   RotateCcw, EyeOff, BarChart3, Clock, ArrowRight
 } from 'lucide-react';
 import QRCode from 'qrcode';
-import { CuratorMark, CuratorFullLogo } from './components/CuratorLogo';
+import { CuratorMark } from './components/CuratorLogo';
 import { WeeklyReviewModal, WeeklyReadingItem } from './components/WeeklyReviewModal';
+import { InterestsEditor } from './components/InterestsEditor';
+import { ProviderTestButton } from './components/ProviderTestButton';
+import { FeedbackActions } from './components/FeedbackActions';
+import { loadInterests, saveInterests, suggestionsFromFolders, type InterestSet } from './interests';
 
 interface DiscoveredSource {
   title: string;
@@ -176,7 +180,7 @@ export default function App() {
   // App data state with localStorage persistence
   const [sources, setSources] = useState<SourceItem[]>(() => {
     const defaultSources: SourceItem[] = [
-      { id: 'src_row', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech', status: 'active', lastSyncedAt: now - 75 * 60 * 1000 }
+      { id: 'src_row', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech', status: 'active', lastSyncedAt: Date.now() - 75 * 60 * 1000 }
     ];
 
     const saved = localStorage.getItem('curator_sources');
@@ -266,9 +270,15 @@ export default function App() {
   const weekCutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
   const weeklyRecent = weeklyHistory.filter(it => it.completedAt >= weekCutoff);
   const totalWeeklyMinutes = weeklyRecent.reduce((acc, it) => acc + (it.minutesSpent ?? 0), 0);
+  const displayFolder = (folder?: string) =>
+    (!folder || folder.trim().toLowerCase() === 'uncategorized') ? 'General' : folder;
+
   const topWeeklyTopic = (() => {
     const counts: Record<string, number> = {};
-    weeklyRecent.forEach(it => { counts[it.folder] = (counts[it.folder] || 0) + (it.minutesSpent ?? 0); });
+    weeklyRecent.forEach(it => {
+      const key = displayFolder(it.folder);
+      counts[key] = (counts[key] || 0) + (it.minutesSpent ?? 0);
+    });
     const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
     return sorted[0]?.[0] || 'No reading yet';
   })();
@@ -299,6 +309,14 @@ export default function App() {
     }
     return { moreTopics: [], lessTopics: [], moreIds: [], lessIds: [], more: [], less: [] };
   });
+
+  // Declared interests are settings the reader edits, not learned feedback, so they live
+  // beside the vote profile and are sent as topic signals on every digest request.
+  const [interests, setInterests] = useState<InterestSet>(() => loadInterests());
+  useEffect(() => {
+    saveInterests(interests);
+  }, [interests]);
+
   const [semanticFeedback, setSemanticFeedback] = useState<SemanticFeedbackItem[]>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('curator_semantic_feedback') || '[]');
@@ -329,6 +347,7 @@ export default function App() {
     const saved = localStorage.getItem('curator_item_count');
     return saved ? Number(saved) : 6;
   });
+  const [compactCards, setCompactCards] = useState<boolean>(() => localStorage.getItem('curator_compact_cards') === '1');
   const [aiProvider, setAiProvider] = useState<string>(() => {
     const saved = localStorage.getItem('curator_ai_provider');
     if (saved === 'openai') return 'openai-compatible';
@@ -351,7 +370,9 @@ export default function App() {
       ? Boolean(embeddingApiKey || (embeddingKeyMatchesChatProvider && customApiKey) || serverGeminiAvailable)
       : false;
 
-  const [loadingDigest, setLoadingDigest] = useState<boolean>(false);
+  // Starts true: the first digest request is queued by an effect right after mount, so the
+  // view opens on the "synthesizing" state instead of flashing "no new items today".
+  const [loadingDigest, setLoadingDigest] = useState<boolean>(true);
   const [activeToast, setActiveToast] = useState<{
     id: string;
     message: string;
@@ -375,6 +396,7 @@ export default function App() {
   const [newSourceTitle, setNewSourceTitle] = useState<string>('');
   const [newSourceUrl, setNewSourceUrl] = useState<string>('');
   const [newSourceFolder, setNewSourceFolder] = useState<string>('General');
+  const [newSourceFolderCustom, setNewSourceFolderCustom] = useState(false);
 
   // OPML Import state
   const [importText, setImportText] = useState<string>('');
@@ -393,6 +415,7 @@ export default function App() {
 
   // Google Search & RSS investigation state
   const [discoverQuery, setDiscoverQuery] = useState<string>('');
+  const [sourceSearch, setSourceSearch] = useState<string>('');
   const [isDiscovering, setIsDiscovering] = useState<boolean>(false);
   const [discoverError, setDiscoverError] = useState<string | null>(null);
   const [discoverResults, setDiscoverResults] = useState<DiscoveredSource[]>([]);
@@ -451,6 +474,10 @@ export default function App() {
   }, [itemCount]);
 
   useEffect(() => {
+    localStorage.setItem('curator_compact_cards', compactCards ? '1' : '0');
+  }, [compactCards]);
+
+  useEffect(() => {
     localStorage.setItem('curator_custom_api_key', customApiKey);
   }, [customApiKey]);
 
@@ -496,7 +523,7 @@ export default function App() {
     // Debounced so dragging the serendipity slider or tapping counts issues one request, not dozens
     const timer = setTimeout(() => { generateDigest(); }, 450);
     return () => clearTimeout(timer);
-  }, [itemCount, serendipityDial, signals, semanticFeedback, showSetupWizard]);
+  }, [itemCount, serendipityDial, signals, semanticFeedback, interests, showSetupWizard]);
   useEffect(() => {
     if (activeTab === 'feeds') {
       fetchFeedStream(selectedFeedSource || 'all');
@@ -589,7 +616,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sources,
-          signals,
+          signals: { ...signals, moreTopics: interests.more, lessTopics: interests.less },
           feedback: semanticFeedback,
           readingStats,
           serendipityDial,
@@ -633,6 +660,15 @@ export default function App() {
       if (requestId === digestRequestRef.current) setLoadingDigest(false);
     }
   };
+
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [pendingReset, setPendingReset] = useState(false);
+
+  useEffect(() => {
+    if (!pendingDeleteId && !pendingReset) return;
+    const t = setTimeout(() => { setPendingDeleteId(null); setPendingReset(false); }, 5000);
+    return () => clearTimeout(t);
+  }, [pendingDeleteId, pendingReset]);
 
   const showToast = (msg: string, actionLabel?: string, onAction?: () => void) => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
@@ -842,7 +878,10 @@ export default function App() {
     if (isSaved) {
       setSavedIds(prev => prev.filter(id => id !== item.id));
       setSavedArticles(prev => prev.filter(a => a.id !== item.id));
-      showToast('Removed from saved items');
+      showToast('Removed from saved items', 'Undo', () => {
+        setSavedIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
+        setSavedArticles(prev => [item, ...prev.filter(a => a.id !== item.id)]);
+      });
     } else {
       setSavedIds(prev => [...prev, item.id]);
       setSavedArticles(prev => [item, ...prev.filter(a => a.id !== item.id)]);
@@ -853,14 +892,20 @@ export default function App() {
   const handleAddSource = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newSourceTitle || !newSourceUrl) return;
+    const requestedFolder = newSourceFolder.trim();
+    const chosenFolder = sources
+      .map(src => displayFolder(src.folder))
+      .find(folder => folder.toLowerCase() === requestedFolder.toLowerCase()) || requestedFolder || 'General';
     const newSrc: SourceItem = {
       id: 'src_' + Date.now(),
       title: newSourceTitle,
       feedUrl: newSourceUrl,
-      folder: newSourceFolder || 'General',
+      folder: chosenFolder,
       status: 'active'
     };
     setSources(prev => [newSrc, ...prev]);
+    setNewSourceFolder(newSrc.folder);
+    setNewSourceFolderCustom(false);
     setNewSourceTitle('');
     setNewSourceUrl('');
     setShowAddSourceModal(false);
@@ -868,8 +913,21 @@ export default function App() {
   };
 
   const handleDeleteSource = (id: string) => {
+    if (pendingDeleteId !== id) {
+      setPendingDeleteId(id);
+      showToast('Tap the trash again to confirm removal');
+      return;
+    }
+    setPendingDeleteId(null);
+    const removed = sources.find(s => s.id === id);
     setSources(prev => prev.filter(s => s.id !== id));
-    showToast('Source removed');
+    showToast(
+      `Removed "${removed?.title ?? 'source'}"`,
+      'Undo',
+      () => {
+        if (removed) setSources(prev => (prev.some(s => s.id === removed.id) ? prev : [removed, ...prev]));
+      }
+    );
   };
 
   const processOpmlText = async (rawText: string) => {
@@ -1364,11 +1422,22 @@ export default function App() {
   }, [digest, feedStreamArticles, savedIds]);
 
   const sourcesByFolder = sources.reduce((acc, src) => {
-    const folder = src.folder || 'Uncategorized';
+    const folder = displayFolder(src.folder);
     if (!acc[folder]) acc[folder] = [];
     acc[folder].push(src);
     return acc;
   }, {} as Record<string, SourceItem[]>);
+  const sourceFolders = Array.from(new Set(['General', ...sources.map(src => displayFolder(src.folder))])).sort((a, b) => a.localeCompare(b));
+  const filteredSourcesByFolder = Object.entries(sourcesByFolder).reduce((acc, [folder, folderSources]) => {
+    const matching = folderSources
+      .filter(src => `${src.title} ${src.feedUrl} ${folder}`.toLowerCase().includes(sourceSearch.trim().toLowerCase()))
+      .sort((a, b) => a.title.localeCompare(b.title));
+    if (matching.length > 0) acc[folder] = matching;
+    return acc;
+  }, {} as Record<string, SourceItem[]>);
+
+  // Folder names are the categories the reader already keeps, so they seed the interest chips.
+  const interestSuggestions = suggestionsFromFolders(sources.map(src => src.folder));
 
   const savedDigestItems = [
     ...savedArticles,
@@ -1505,10 +1574,10 @@ export default function App() {
               {selectedArticle.title}
             </h1>
 
-            {/* Minimalist Editorial Context Note */}
-            <div className="mb-8 pb-5 border-b border-slate-900 flex items-start gap-2 text-xs text-slate-400">
-              <span className="text-amber-400/90 font-medium not-italic shrink-0 whitespace-nowrap">Curator's Note:</span>
-              <span className="italic text-slate-300 leading-relaxed">{selectedArticle.why}</span>
+            {/* Clear editorial context note */}
+            <div className="mb-8 pb-5 border-b border-slate-900 text-xs text-slate-400">
+              <div className="text-amber-400/90 font-medium mb-1">Curator's Note</div>
+              <p className="text-slate-300 italic leading-relaxed">{selectedArticle.why}</p>
             </div>
 
             {/* Sleek Read Aloud bar (visible only when active) */}
@@ -1581,60 +1650,23 @@ export default function App() {
                 </a>
 
                 {/* Feedback Icons Aligned to Right */}
-                <div className="flex items-center gap-1.5 ml-auto">
-                  <button
-                    type="button"
-                    onClick={() => handleMore(selectedArticle)}
-                    className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl transition cursor-pointer ${
-                      signals.moreIds?.includes(selectedArticle.id)
-                        ? 'text-amber-400 bg-amber-500/15 border border-amber-500/40 shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-transparent'
-                    }`}
-                    title={
-                      signals.moreIds?.includes(selectedArticle.id)
-                        ? 'More on this topic (active)'
-                        : 'More on this topic'
-                    }
-                    aria-label="More on this topic"
-                  >
-                    <ThumbsUp className={`w-4 h-4 ${
-                      signals.moreIds?.includes(selectedArticle.id)
-                        ? 'fill-amber-400/30'
-                        : ''
-                    }`} />
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleLess(selectedArticle)}
-                    className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl transition cursor-pointer ${
-                      signals.lessIds?.includes(selectedArticle.id)
-                        ? 'text-rose-400 bg-rose-500/15 border border-rose-500/40 shadow-sm'
-                        : 'text-slate-400 hover:text-rose-400 hover:bg-slate-900 border border-transparent'
-                    }`}
-                    title={
-                      signals.lessIds?.includes(selectedArticle.id)
-                        ? 'Fewer on this topic (active)'
-                        : 'Fewer on this topic'
-                    }
-                    aria-label="Fewer on this topic"
-                  >
-                    <ThumbsDown className={`w-4 h-4 ${
-                      signals.lessIds?.includes(selectedArticle.id)
-                        ? 'fill-rose-400/30'
-                        : ''
-                    }`} />
-                  </button>
-
+                <div className="flex flex-wrap items-center gap-2 ml-auto">
+                  <FeedbackActions
+                    isMore={signals.moreIds?.includes(selectedArticle.id) || false}
+                    isLess={signals.lessIds?.includes(selectedArticle.id) || false}
+                    onMore={() => handleMore(selectedArticle)}
+                    onLess={() => handleLess(selectedArticle)}
+                  />
                   {signals.lessIds?.includes(selectedArticle.id) && (
                     <button
                       type="button"
                       onClick={() => undoHandleLess(selectedArticle.id)}
-                      className="p-1.5 text-xs text-amber-400 hover:text-amber-300 transition-colors"
+                      className="inline-flex min-h-11 items-center gap-1.5 rounded-xl px-3 text-xs font-medium text-amber-400 hover:bg-amber-500/10 hover:text-amber-300 transition-colors"
                       title="Undo fewer on this topic"
-                      aria-label="Undo"
+                      aria-label="Undo fewer on this topic"
                     >
-                      <RotateCcw className="w-3.5 h-3.5" />
+                      <RotateCcw className="w-4 h-4" />
+                      <span>Undo</span>
                     </button>
                   )}
                 </div>
@@ -1660,7 +1692,7 @@ export default function App() {
                 <span className="font-serif text-[11px] font-semibold tracking-[0.24em] text-amber-500/90">THE</span>
                 <span className="font-serif text-base font-bold tracking-[0.16em] text-slate-100">CURATOR</span>
               </div>
-              <p className="text-[11px] text-slate-400 mt-1 truncate">Your morning reading editor</p>
+              <p className="text-[11px] text-slate-400 mt-1 truncate hidden sm:block">Your morning reading editor</p>
             </div>
           </button>
 
@@ -1736,23 +1768,51 @@ export default function App() {
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-100">Today's Digest</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Curated at {formatDeliveryTime(deliveryTime)} · {digest.length} items worth your time
-                  {semanticSummary && semanticSummary.feedbackExamples > 0
-                    ? ` · ranked from ${semanticSummary.feedbackExamples} vote examples`
-                    : ''}
+                  {loadingDigest && digest.length === 0
+                    ? "Synthesizing today's list…"
+                    : `Curated at ${formatDeliveryTime(deliveryTime)} · ${digest.length} items worth your time${
+                        semanticSummary && semanticSummary.feedbackExamples > 0
+                          ? ` · ranked from ${semanticSummary.feedbackExamples} vote examples`
+                          : ''
+                      }`}
                 </p>
               </div>
-              <div className="flex items-center gap-2 text-xs text-slate-400">
-                <span>Show:</span>
-                {[5, 6, 8, 10].map(num => (
-                  <button
-                    key={num}
-                    onClick={() => setItemCount(num)}
-                    className={`px-3 py-2 min-h-9 rounded-lg font-medium transition ${itemCount === num ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'}`}
-                  >
-                    {num}
-                  </button>
-                ))}
+              <div className="flex w-full flex-wrap items-center gap-2 text-xs text-slate-400 sm:w-auto">
+                <div className="flex items-center gap-1.5">
+                  <span>Show:</span>
+                  {[5, 6, 8, 10].map(num => (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() => setItemCount(num)}
+                      aria-pressed={itemCount === num}
+                      className={`min-w-11 min-h-11 rounded-lg px-3 font-medium transition ${itemCount === num ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'}`}
+                    >
+                      {num}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCompactCards(value => !value)}
+                  aria-pressed={compactCards}
+                  className={`min-h-11 rounded-xl border px-3 font-medium transition ${compactCards ? 'bg-amber-500/15 border-amber-500/40 text-amber-300' : 'border-slate-800 text-slate-400 hover:text-slate-200'}`}
+                >
+                  Compact cards
+                </button>
+                <label className="flex min-h-11 items-center gap-2 rounded-xl border border-slate-800 px-3" title="How much of the digest should be outside your usual interests?">
+                  <span>Stretch</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={serendipityDial}
+                    onChange={e => setSerendipityDial(Number(e.target.value))}
+                    aria-label="Serendipity: how far outside your usual interests to reach"
+                    className="w-20 accent-amber-500 cursor-pointer"
+                  />
+                  <span className="min-w-8 text-right text-amber-300">{serendipityDial}%</span>
+                </label>
               </div>
             </div>
 
@@ -1826,15 +1886,15 @@ export default function App() {
                     <article 
                       key={item.id}
                       onClick={() => openArticle(item)}
-                      className={`group rounded-3xl transition-all duration-300 cursor-pointer overflow-hidden relative ${
+                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative ${
                         actions.hasAnyAction
                           ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
                           : 'bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.12)] hover:border-amber-500/60 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(245,158,11,0.35)]'
                       }`}
                     >
                       {/* Author sub-header with Substack branding and Actioned status */}
-                      <div className="p-5 pb-3 flex items-center justify-between">
-                        <div className="flex items-center gap-3">
+                      <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex items-center justify-between`}>
+                        <div className="flex items-center gap-3 min-w-0">
                           {(() => {
                             const itemAvatar = getSourceAvatar(item.url);
                             return (
@@ -1857,24 +1917,24 @@ export default function App() {
                               </div>
                             );
                           })()}
-                          <div>
+                          <div className="min-w-0">
                             <div className="text-xs font-bold text-slate-100 flex items-center gap-1.5">
-                              <span>{item.source}</span>
+                              <span className="truncate">{item.source}</span>
                             </div>
-                            <div className="text-[11px] text-slate-400">
-                              {item.publishedAt || '30m'} · {item.folder} · {item.readTime}
+                            <div className="text-[11px] text-slate-400 truncate">
+                              {item.publishedAt || '30m'} · {displayFolder(item.folder)} · {item.readTime}
                             </div>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 shrink-0">
                           {actions.isReadThrough ? (
                             <div 
                               className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-[10px] font-bold text-emerald-300 shadow-sm"
                               title="Read through completed"
                             >
                               <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
-                              <span>Read through</span>
+                              <span>Read</span>
                             </div>
                           ) : actions.isVotedMore ? (
                             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-950/90 border border-amber-500/50 text-[10px] font-bold text-amber-300">
@@ -1901,13 +1961,13 @@ export default function App() {
 
                       {/* Billboard Hero Image Card with Bookmark Save Button right on image */}
                       {item.bannerImage && (
-                        <div className="relative mx-3.5 rounded-2xl overflow-hidden h-60 md:h-72 shadow-lg border border-slate-700/60">
+                        <div className={`relative mx-3.5 rounded-2xl overflow-hidden ${compactCards ? 'h-40 md:h-48' : 'h-60 md:h-72'} shadow-lg border border-slate-700/60`}>
                           <img 
                             src={item.bannerImage} 
                             alt={item.title}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                           />
-                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/45 to-transparent" />
+                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
                           
                           {/* Bookmark button in bottom right corner of image */}
                           <div className="absolute bottom-4 right-4 z-10">
@@ -1924,33 +1984,23 @@ export default function App() {
                               <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
                             </button>
                           </div>
-
-                          {/* Title and summary overlay on bottom of image */}
-                          <div className="absolute bottom-4 left-4 right-16">
-                            <div className="text-[10px] uppercase font-bold tracking-wider text-amber-400/90 mb-1">
-                              {item.folder}
-                            </div>
-                            <h3 className="text-lg md:text-xl font-bold tracking-tight text-white leading-snug drop-shadow-sm group-hover:text-amber-300 transition-colors">
-                              {item.title}
-                            </h3>
-                            <p className="text-xs text-slate-300 mt-1 line-clamp-1">
-                              {item.summary}
-                            </p>
-                          </div>
                         </div>
                       )}
 
-                      <div className="p-5 space-y-4 pt-4">
-                        {!item.bannerImage && (
-                          <div>
-                            <h3 className="text-xl font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors">
-                              {item.title}
-                            </h3>
-                            <p className="text-sm text-slate-400 mt-1 line-clamp-2">
-                              {item.summary}
-                            </p>
-                          </div>
-                        )}
+                      <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
+                        <div>
+                          {item.bannerImage && (
+                            <div className="text-[10px] uppercase font-bold tracking-wider text-amber-400/90 mb-1">
+                              {displayFolder(item.folder)}
+                            </div>
+                          )}
+                          <h3 className={`${compactCards ? 'text-lg' : 'text-xl'} font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors`}>
+                            {item.title}
+                          </h3>
+                          <p className={`${compactCards ? 'text-xs line-clamp-1' : 'text-sm line-clamp-2'} text-slate-400 mt-1`}>
+                            {item.summary}
+                          </p>
+                        </div>
 
                         {/* Quiet editorial why note */}
                         <p className="text-xs text-slate-400 italic">
@@ -1959,56 +2009,36 @@ export default function App() {
 
                         {/* Card Curation & Reading Actions */}
                         <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
-                          {/* Read More Link directly to original source */}
-                          <a
-                            href={item.url || '#'}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                              showToast(`Opening source on ${item.source}`);
-                            }}
-                            className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-amber-300 transition-colors"
-                            title={`Read more on ${item.source} (opens external browser or app)`}
-                          >
-                            <span>Read original on {item.source}</span>
-                            <ExternalLink className="w-3 h-3 text-slate-500" />
-                          </a>
-
-                          {/* Curation actions: More, Less (icon-only, reading preferences) */}
-                          <div className="flex items-center gap-1.5">
-                            <button 
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
                               type="button"
-                              onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
-                                actions.isVotedMore
-                                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
-                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
-                              }`}
-                              title={actions.isVotedMore ? `More on ${item.folder || 'this topic'} (voted)` : `More on ${item.folder || 'this topic'}`}
-                              aria-label={`More on ${item.folder || 'this topic'}`}
+                              onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                              className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 px-3 text-xs font-semibold text-amber-300 hover:bg-amber-500/25 transition"
                             >
-                              <ThumbsUp className={`w-3.5 h-3.5 ${
-                                actions.isVotedMore ? 'fill-amber-400/30' : ''
-                              }`} />
+                              Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                             </button>
-                            <button 
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
-                                actions.isVotedLess
-                                  ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
-                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
-                              }`}
-                              title={actions.isVotedLess ? `Fewer on ${item.folder || 'this topic'} (voted)` : `Fewer on ${item.folder || 'this topic'}`}
-                              aria-label={`Fewer on ${item.folder || 'this topic'}`}
+                            <a
+                              href={item.url || '#'}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
+                                showToast(`Opening source on ${item.source}`);
+                              }}
+                              className="inline-flex min-h-11 items-center gap-1.5 px-2 text-xs text-slate-400 hover:text-amber-300 transition-colors"
+                              title={`Read more on ${item.source} (opens external browser or app)`}
                             >
-                              <ThumbsDown className={`w-3.5 h-3.5 ${
-                                actions.isVotedLess ? 'fill-rose-400/30' : ''
-                              }`} />
-                            </button>
+                              <span>Read original</span>
+                              <ExternalLink className="w-3 h-3 text-slate-500" />
+                            </a>
                           </div>
+                          <FeedbackActions
+                            isMore={actions.isVotedMore}
+                            isLess={actions.isVotedLess}
+                            onMore={() => handleMore(item)}
+                            onLess={() => handleLess(item)}
+                          />
                         </div>
                       </div>
                     </article>
@@ -2067,14 +2097,14 @@ export default function App() {
                         <article 
                           key={item.id}
                           onClick={() => openArticle(item)}
-                          className={`group rounded-3xl transition-all duration-300 cursor-pointer overflow-hidden relative ${
+                          className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative ${
                             actions.hasAnyAction
                               ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
                               : 'bg-slate-900/95 border-2 border-rose-600/70 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(244,63,94,0.3)] hover:border-rose-500 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(244,63,94,0.45)]'
                           }`}
                         >
-                          <div className="p-5 pb-3 flex items-center justify-between">
-                            <div className="flex items-center gap-3">
+                          <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex flex-wrap items-center justify-between gap-x-3 gap-y-2`}>
+                            <div className="flex items-center gap-3 min-w-0 max-w-full">
                             {(() => {
                             const itemAvatar = getSourceAvatar(item.url);
                             return (
@@ -2097,19 +2127,19 @@ export default function App() {
                               </div>
                             );
                           })()}
-                              <div>
-                                <div className="text-xs font-bold text-rose-200">{item.source}</div>
-                                <div className="text-[11px] text-rose-400/80">{item.folder} · {item.readTime}</div>
+                              <div className="min-w-0">
+                                <div className="text-xs font-bold text-rose-200 truncate">{item.source}</div>
+                                <div className="text-[11px] text-rose-400/80 truncate">{displayFolder(item.folder)} · {item.readTime}</div>
                               </div>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 shrink-0 min-w-0 flex-wrap justify-end">
                               {actions.isReadThrough ? (
                                 <div 
                                   className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-[10px] font-bold text-emerald-300 shadow-sm"
                                   title="Read through completed"
                                 >
                                   <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
-                                  <span>Read through</span>
+                                  <span>Read</span>
                                 </div>
                               ) : actions.isVotedMore ? (
                                 <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-950/90 border border-amber-500/50 text-[10px] font-bold text-amber-300">
@@ -2138,13 +2168,13 @@ export default function App() {
                           </div>
 
                           {item.bannerImage && (
-                            <div className="relative mx-3.5 rounded-2xl overflow-hidden h-60 md:h-64 shadow-lg border border-rose-800/40">
+                            <div className={`relative mx-3.5 rounded-2xl overflow-hidden ${compactCards ? 'h-40 md:h-48' : 'h-60 md:h-64'} shadow-lg border border-rose-800/40`}>
                               <img 
                                 src={item.bannerImage} 
                                 alt={item.title} 
                                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                               />
-                              <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent" />
+                              <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
                               
                               <div className="absolute bottom-4 right-4 z-10">
                                 <button
@@ -2160,32 +2190,23 @@ export default function App() {
                                   <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
                                 </button>
                               </div>
-
-                              <div className="absolute bottom-4 left-4 right-16">
-                                <div className="text-[10px] uppercase font-bold tracking-wider text-rose-400/90 mb-1">
-                                  Deliberate Stretch · {item.folder}
-                                </div>
-                                <h3 className="text-lg md:text-xl font-bold tracking-tight text-white leading-snug group-hover:text-rose-300 transition-colors">
-                                  {item.title}
-                                </h3>
-                                <p className="text-xs text-rose-200/80 mt-1 line-clamp-1">
-                                  {item.summary}
-                                </p>
-                              </div>
                             </div>
                           )}
 
-                          <div className="p-5 space-y-4 pt-4">
-                            {!item.bannerImage && (
-                              <div>
-                                <h3 className="text-xl font-bold tracking-tight text-slate-100 group-hover:text-rose-300 transition-colors">
-                                  {item.title}
-                                </h3>
-                                <p className="text-sm text-slate-400 mt-1 line-clamp-2">
-                                  {item.summary}
-                                </p>
-                              </div>
-                            )}
+                          <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
+                            <div>
+                              {item.bannerImage && (
+                                <div className="text-[10px] uppercase font-bold tracking-wider text-rose-400/90 mb-1">
+                                  Deliberate Stretch
+                                </div>
+                              )}
+                              <h3 className={`${compactCards ? 'text-lg' : 'text-xl'} font-bold tracking-tight text-slate-100 group-hover:text-rose-300 transition-colors`}>
+                                {item.title}
+                              </h3>
+                              <p className={`${compactCards ? 'text-xs line-clamp-1' : 'text-sm line-clamp-2'} text-slate-400 mt-1`}>
+                                {item.summary}
+                              </p>
+                            </div>
 
                             {/* Quiet editorial why note */}
                             <p className="text-xs text-rose-300/80 italic">
@@ -2194,56 +2215,36 @@ export default function App() {
 
                             {/* Stretch Card Actions: Read more, More, Less */}
                             <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
-                              {/* Read More Link directly to original source */}
-                              <a
-                                href={item.url || '#'}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                                  showToast(`Opening source on ${item.source}`);
-                                }}
-                                className="inline-flex items-center gap-1.5 text-xs text-rose-400 hover:text-rose-300 transition-colors"
-                                title={`Read more on ${item.source} (opens external browser or app)`}
-                              >
-                                <span>Read original on {item.source}</span>
-                                <ExternalLink className="w-3 h-3 text-rose-500/70" />
-                              </a>
-
-                              {/* Curation actions: More, Less (icon-only) */}
-                              <div className="flex items-center gap-1.5">
-                                <button 
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button
                                   type="button"
-                                  onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                                  className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
-                                    signals.moreIds?.includes(item.id)
-                                      ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
-                                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
-                                  }`}
-                                  title={signals.moreIds?.includes(item.id) ? `More on ${item.folder || 'this topic'} (voted)` : `More on ${item.folder || 'this topic'}`}
-                                  aria-label={`More on ${item.folder || 'this topic'}`}
+                                  onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                                  className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-rose-500/15 border border-rose-500/30 px-3 text-xs font-semibold text-rose-300 hover:bg-rose-500/25 transition"
                                 >
-                                  <ThumbsUp className={`w-3.5 h-3.5 ${
-                                    signals.moreIds?.includes(item.id) ? 'fill-amber-400/30' : ''
-                                  }`} />
+                                  Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                                 </button>
-                                <button 
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                                  className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
-                                    signals.lessIds?.includes(item.id)
-                                      ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
-                                      : 'bg-slate-900 border border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
-                                  }`}
-                                  title={signals.lessIds?.includes(item.id) ? `Fewer on ${item.folder || 'this topic'} (voted)` : `Fewer on ${item.folder || 'this topic'}`}
-                                  aria-label={`Fewer on ${item.folder || 'this topic'}`}
+                                <a
+                                  href={item.url || '#'}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
+                                    showToast(`Opening source on ${item.source}`);
+                                  }}
+                                  className="inline-flex min-h-11 items-center gap-1.5 px-2 text-xs text-rose-400 hover:text-rose-300 transition-colors"
+                                  title={`Read more on ${item.source} (opens external browser or app)`}
                                 >
-                                  <ThumbsDown className={`w-3.5 h-3.5 ${
-                                    signals.lessIds?.includes(item.id) ? 'fill-rose-400/30' : ''
-                                  }`} />
-                                </button>
+                                  <span>Read original</span>
+                                  <ExternalLink className="w-3 h-3 text-rose-500/70" />
+                                </a>
                               </div>
+                              <FeedbackActions
+                                isMore={actions.isVotedMore}
+                                isLess={actions.isVotedLess}
+                                onMore={() => handleMore(item)}
+                                onLess={() => handleLess(item)}
+                              />
                             </div>
                           </div>
                         </article>
@@ -2284,25 +2285,33 @@ export default function App() {
                           : 'bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_16px_40px_-6px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.1)] hover:border-amber-500/50'
                       }`}
                     >
-                      <div className="flex items-center justify-between text-xs text-slate-400">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-slate-200">{item.source}</span>
-                          <span aria-hidden="true">·</span>
-                          <span>{item.readTime}</span>
-                          <span aria-hidden="true">·</span>
-                          <span className="text-amber-400 font-semibold flex items-center gap-1">
-                            <Bookmark className="w-3 h-3 fill-amber-400" /> Saved
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+                        <span title={item.source} className="font-semibold text-slate-200 min-w-0 truncate">{item.source}</span>
+                        <span>{item.readTime}</span>
+                        <span className="text-amber-400 font-semibold inline-flex items-center gap-1">
+                          <Bookmark className="w-3 h-3 fill-amber-400" /> Saved
+                        </span>
+                        {actions.isReadThrough && (
+                          <span className="text-emerald-400 font-semibold inline-flex items-center gap-1">
+                            <Check className="w-3 h-3 stroke-[3]" /> Read through
                           </span>
-                          {actions.isReadThrough && (
-                            <>
-                              <span aria-hidden="true">·</span>
-                              <span className="text-emerald-400 font-semibold flex items-center gap-1">
-                                <Check className="w-3 h-3 stroke-[3]" /> Read through
-                              </span>
-                            </>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2.5">
+                        )}
+                      </div>
+
+                      <h3 className="text-base font-semibold text-slate-100 hover:text-amber-300 transition">
+                        {item.title}
+                      </h3>
+                      <p className="text-xs text-slate-400 line-clamp-2">{item.summary}</p>
+
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80 pt-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                            className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 px-3 text-xs font-semibold text-amber-300 hover:bg-amber-500/25 transition"
+                          >
+                            Read in Curator <ArrowRight className="w-3.5 h-3.5" />
+                          </button>
                           <a
                             href={item.url || '#'}
                             target="_blank"
@@ -2312,27 +2321,22 @@ export default function App() {
                               setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
                               showToast(`Opening source on ${item.source}`);
                             }}
-                            className="text-xs text-amber-400 hover:text-amber-300 font-medium flex items-center gap-1 transition"
-                            title={`Read more on ${item.source} (opens external browser or app)`}
+                            className="inline-flex min-h-11 items-center gap-1.5 px-2 text-xs text-slate-400 hover:text-amber-300 font-medium transition"
+                            title={`Open the original article on ${item.source}`}
                           >
-                            <span>Read more</span>
-                            <ExternalLink className="w-3 h-3" />
+                            Read original <ExternalLink className="w-3 h-3" />
                           </a>
-
-                          <button 
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                            className="text-xs text-rose-400 hover:text-rose-300 font-medium transition"
-                          >
-                            Unsave
-                          </button>
                         </div>
-                      </div>
 
-                      <h3 className="text-base font-semibold text-slate-100 hover:text-amber-300 transition">
-                        {item.title}
-                      </h3>
-                      <p className="text-xs text-slate-400 line-clamp-1">{item.summary}</p>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleSave(item); }}
+                          className="inline-flex min-h-11 items-center rounded-xl px-3 text-xs text-rose-300 hover:bg-rose-500/10 hover:text-rose-200 font-medium transition"
+                          aria-label={`Unsave ${item.title}`}
+                        >
+                          Unsave
+                        </button>
+                      </div>
                     </article>
                   );
                 })}
@@ -2348,7 +2352,7 @@ export default function App() {
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-100">Watched Sources</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  {sources.length} sources across {Object.keys(sourcesByFolder).length} folders · {sources.filter(s => s.status === 'failing').length} failing
+                  {sources.length} {sources.length === 1 ? 'source' : 'sources'} across {Object.keys(sourcesByFolder).length} {Object.keys(sourcesByFolder).length === 1 ? 'folder' : 'folders'} · {sources.some(s => s.status === 'failing') ? `${sources.filter(s => s.status === 'failing').length} need attention` : 'all feeds healthy'}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -2382,10 +2386,10 @@ export default function App() {
                 <div>
                   <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
                     <Search className="w-4 h-4 text-amber-400" />
-                    <span>Find Sources &amp; Check RSS Availability</span>
+                    <span>Discover new sources</span>
                   </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Search the web for writers or publications. Each result is checked for native RSS/Atom feeds or whether an RSS feed can be generated.
+Search for writers, publications, or topics. Curator checks whether each result has a feed you can follow.
                   </p>
                 </div>
                 {hasSearchedSources && (
@@ -2411,7 +2415,7 @@ export default function App() {
                     type="text"
                     value={discoverQuery}
                     onChange={e => setDiscoverQuery(e.target.value)}
-                    placeholder="Search topics or publications (e.g. Byzantine history, urban water)"
+                    placeholder="Search writers, publications, or topics"
                     className="w-full rounded-xl bg-slate-950 border border-slate-800 pl-10 pr-3 py-2.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
                   />
                 </div>
@@ -2428,7 +2432,7 @@ export default function App() {
                   ) : (
                     <>
                       <Globe className="w-3.5 h-3.5" />
-                      <span>Search &amp; Check RSS</span>
+                      <span>Find sources</span>
                     </>
                   )}
                 </button>
@@ -2582,8 +2586,20 @@ export default function App() {
               </div>
             )}
 
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="search"
+                value={sourceSearch}
+                onChange={e => setSourceSearch(e.target.value)}
+                placeholder="Search your sources"
+                aria-label="Search sources by name, feed URL, or folder"
+                className="w-full rounded-xl bg-slate-950 border border-slate-800 pl-10 pr-3 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+              />
+            </div>
+
             <div className="space-y-6 w-full max-w-full">
-              {Object.entries(sourcesByFolder).map(([folder, folderSources]: [string, SourceItem[]]) => (
+              {Object.entries(filteredSourcesByFolder).sort(([a], [b]) => a.localeCompare(b)).map(([folder, folderSources]: [string, SourceItem[]]) => (
                 <div key={folder} className="space-y-3 w-full max-w-full">
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-900 pb-2">
                     {folder} ({folderSources.length})
@@ -2622,10 +2638,19 @@ export default function App() {
                                   <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded shrink-0">Active</span>
                                 )}
                               </div>
-                              <span className="text-xs text-slate-400 truncate block mt-0.5">{src.feedUrl}</span>
+                              <span title={src.feedUrl} className="text-xs text-slate-400 line-clamp-2 break-all block mt-0.5">{src.feedUrl}</span>
                               <div className="flex items-center gap-1.5 text-[11px] text-slate-400 mt-1">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                                <span>Synced {formatSyncTime(src.lastSyncedAt)}</span>
+                                {src.lastSyncedAt ? (
+                                  <>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                                    <span>Synced · {formatSyncTime(src.lastSyncedAt)}</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-600 shrink-0" />
+                                    <span>Not synced yet</span>
+                                  </>
+                                )}
                               </div>
                               {src.failingReason && (
                                 <span className="text-xs text-rose-400 block mt-1 break-words">{src.failingReason}</span>
@@ -2646,10 +2671,14 @@ export default function App() {
                             <button 
                               type="button"
                               onClick={() => handleDeleteSource(src.id)}
-                              className="p-2 min-w-10 min-h-10 flex items-center justify-center text-slate-500 hover:text-rose-400 transition"
-                              title="Remove source"
+                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
+                                pendingDeleteId === src.id
+                                  ? 'bg-rose-500/15 border-rose-500/50 text-rose-300'
+                                  : 'border-transparent text-slate-500 hover:text-rose-400'
+                              }`}
+                              title={pendingDeleteId === src.id ? 'Tap again to confirm removal' : 'Remove source'}
                             >
-                              <Trash2 className="w-4 h-4" />
+                              {pendingDeleteId === src.id ? <AlertCircle className="w-4 h-4" /> : <Trash2 className="w-4 h-4" />}
                             </button>
                           </div>
                         </div>
@@ -2658,6 +2687,11 @@ export default function App() {
                   </div>
                 </div>
               ))}
+              {sourceSearch.trim() && Object.keys(filteredSourcesByFolder).length === 0 && (
+                <p className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-5 text-center text-sm text-slate-400">
+                  No sources match “{sourceSearch.trim()}”. Try another name, folder, or feed URL.
+                </p>
+              )}
             </div>
 
             {/* Add Source Modal */}
@@ -2694,14 +2728,34 @@ export default function App() {
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-slate-400 mb-1">Folder Grouping</label>
-                      <input 
-                        type="text" 
-                        placeholder="e.g. Economics"
-                        value={newSourceFolder}
-                        onChange={e => setNewSourceFolder(e.target.value)}
+                      <label className="block text-xs font-medium text-slate-400 mb-1">Folder</label>
+                      <select
+                        value={newSourceFolderCustom ? '__new__' : newSourceFolder}
+                        onChange={e => {
+                          if (e.target.value === '__new__') {
+                            setNewSourceFolderCustom(true);
+                            setNewSourceFolder('');
+                          } else {
+                            setNewSourceFolderCustom(false);
+                            setNewSourceFolder(e.target.value);
+                          }
+                        }}
                         className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
-                      />
+                      >
+                        {sourceFolders.map(folder => <option key={folder} value={folder}>{folder}</option>)}
+                        <option value="__new__">Create a new folder…</option>
+                      </select>
+                      {newSourceFolderCustom && (
+                        <input
+                          type="text"
+                          required
+                          autoFocus
+                          placeholder="New folder name"
+                          value={newSourceFolder}
+                          onChange={e => setNewSourceFolder(e.target.value)}
+                          className="mt-2 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
+                        />
+                      )}
                     </div>
                     <div className="flex justify-end gap-2 pt-2">
                       <button 
@@ -3052,12 +3106,9 @@ export default function App() {
         {/* TAB 4: SETTINGS */}
         {activeTab === 'settings' && (
           <div className="space-y-8 animate-fade-in">
-            {/* Brand Logo Banner */}
-            <CuratorFullLogo className="w-full mx-auto" />
-
             <div className="border-b border-slate-900 pb-4">
               <h2 className="text-xl font-semibold tracking-tight text-slate-100">Settings</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Preferences & delivery configuration</p>
+              <p className="text-xs text-slate-400 mt-0.5">Tune your digest and manage your reading preferences.</p>
             </div>
 
             {/* Weekly Reading Activity Summary in Settings */}
@@ -3101,28 +3152,28 @@ export default function App() {
             {/* Provider-configurable AI services */}
             <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-5">
               <div>
-                <h3 className="text-sm font-semibold text-slate-200">AI Providers</h3>
-                <p className="text-xs text-slate-400 mt-0.5">Chat and embeddings are configured independently. A built-in semantic engine always ranks your feeds by similarity to what you vote on; an embeddings provider is optional.</p>
+                <h3 className="text-sm font-semibold text-slate-200">Optional AI services</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Curator works without an external AI service. Connect one if you want AI-assisted digest writing or richer topic matching.</p>
               </div>
 
               <div className="space-y-3 pt-1">
                 <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1.5">Digest curation provider</label>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">Digest writing service</label>
                   <select
                     value={aiProvider}
                     onChange={e => setAiProvider(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
                   >
-                    <option value="deterministic">Deterministic (no external AI)</option>
-                    <option value="openai-compatible">OpenAI-compatible API</option>
-                    <option value="anthropic">Anthropic Messages API</option>
-                    <option value="gemini">Google Gemini (optional)</option>
+                    <option value="deterministic">Built-in (no external AI)</option>
+                    <option value="openai-compatible">OpenAI or compatible service</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="gemini">Google Gemini</option>
                   </select>
                 </div>
 
                 {aiProvider === 'openai-compatible' && (
                   <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1.5">Chat API base URL</label>
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">Provider URL</label>
                     <input
                       type="url"
                       value={aiBaseUrl}
@@ -3130,14 +3181,14 @@ export default function App() {
                       placeholder="https://api.openai.com/v1"
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
                     />
-                    <p className="text-[11px] text-slate-500 mt-1">Use an HTTPS OpenAI-compatible base URL, such as an OpenAI, OpenRouter, or compatible gateway endpoint.</p>
+                    <p className="text-[11px] text-slate-500 mt-1">Use the HTTPS API URL from your provider. OpenAI, OpenRouter, and compatible services are supported.</p>
                   </div>
                 )}
 
                 {aiProvider !== 'deterministic' && (
                   <>
                     <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Chat model</label>
+                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Model name</label>
                       <input
                         type="text"
                         value={aiModel}
@@ -3147,7 +3198,7 @@ export default function App() {
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Chat API key</label>
+                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Provider API key</label>
                       <input
                         type="password"
                         value={customApiKey}
@@ -3155,13 +3206,22 @@ export default function App() {
                         placeholder="Your provider API key"
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
                       />
-                      <p className="text-[11px] text-slate-500 mt-1">Stored in this browser and sent to the selected provider over HTTPS.</p>
+                      <p className="text-[11px] text-slate-500 mt-1">Stored in this browser, sent securely to Curator, then forwarded to your chosen provider.</p>
                     </div>
+
+                    <ProviderTestButton
+                      kind="chat"
+                      provider={aiProvider}
+                      apiKey={customApiKey}
+                      baseUrl={aiBaseUrl}
+                      model={aiModel}
+                      disabled={loadingDigest}
+                    />
                   </>
                 )}
 
                 <div className="pt-3 border-t border-slate-800">
-                  <label className="block text-xs font-medium text-slate-300 mb-1.5">Semantic embeddings provider</label>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">Topic-matching service</label>
                   <select
                     value={embeddingProvider}
                     onChange={e => {
@@ -3176,16 +3236,17 @@ export default function App() {
                     }}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
                   >
-                    <option value="openai-compatible">OpenAI-compatible embeddings API</option>
-                    <option value="gemini">Google Gemini embeddings (optional)</option>
-                    <option value="none">Off — built-in semantic engine only</option>
+                    <option value="openai-compatible">OpenAI or compatible service</option>
+                    <option value="gemini">Google Gemini</option>
+                    <option value="none">Off — use built-in matching</option>
                   </select>
+                  <p className="text-[11px] text-slate-500 mt-1">Optional: helps match articles by meaning, not just shared words. The built-in matcher remains available.</p>
                 </div>
 
                 {embeddingProvider === 'openai-compatible' && (
                   <>
                     <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Embeddings API base URL</label>
+                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Provider URL</label>
                       <input
                         type="url"
                         value={embeddingBaseUrl}
@@ -3195,7 +3256,7 @@ export default function App() {
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Embeddings model</label>
+                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Matching model name</label>
                       <input
                         type="text"
                         value={embeddingModel}
@@ -3209,7 +3270,7 @@ export default function App() {
 
                 {embeddingProvider === 'gemini' && (
                   <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1.5">Gemini embedding model</label>
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">Matching model name</label>
                     <input
                       type="text"
                       value={embeddingModel}
@@ -3222,7 +3283,7 @@ export default function App() {
 
                 {embeddingProvider !== 'none' && (
                   <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1.5">Embeddings API key (optional)</label>
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">Provider API key (optional)</label>
                     <input
                       type="password"
                       value={embeddingApiKey}
@@ -3230,8 +3291,19 @@ export default function App() {
                       placeholder="Leave blank to reuse the chat key for the same provider"
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
                     />
-                    <p className="text-[11px] text-slate-500 mt-1">Keys are stored in this browser and sent only with requests. Provider endpoints must use HTTPS.</p>
+                    <p className="text-[11px] text-slate-500 mt-1">Stored in this browser and sent securely to Curator with matching requests. URLs must use HTTPS.</p>
                   </div>
+                )}
+
+                {embeddingProvider !== 'none' && (
+                  <ProviderTestButton
+                    kind="embedding"
+                    provider={embeddingProvider}
+                    apiKey={embeddingApiKey || (embeddingKeyMatchesChatProvider ? customApiKey : '')}
+                    baseUrl={embeddingBaseUrl || (embeddingKeyMatchesChatProvider ? aiBaseUrl : '')}
+                    model={embeddingModel}
+                    disabled={loadingDigest}
+                  />
                 )}
               </div>
               <button
@@ -3245,30 +3317,6 @@ export default function App() {
               >
                 Apply providers & refresh digest
               </button>
-            </div>
-
-            {/* Serendipity Dial */}
-            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-200">The Serendipity Dial</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">How far outside your bubble should your daily stretch be?</p>
-                </div>
-                <span className="text-sm font-mono font-bold text-amber-400">{serendipityDial}%</span>
-              </div>
-              <input 
-                type="range" 
-                min="0" 
-                max="100" 
-                value={serendipityDial}
-                onChange={e => setSerendipityDial(Number(e.target.value))}
-                className="w-full accent-amber-500 cursor-pointer"
-              />
-              <div className="flex justify-between text-[11px] text-slate-400">
-                <span>Stay close</span>
-                <span>Balanced</span>
-                <span>Push me</span>
-              </div>
             </div>
 
             {/* Delivery Time & Notifications */}
@@ -3314,22 +3362,32 @@ export default function App() {
             <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-200">Semantic Reading Profile</h3>
+                  <h3 className="text-sm font-semibold text-slate-200">Your reading preferences</h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    {semanticFeedback.length} of 40 feedback examples · {semanticFeedback.filter(item => item.vote === 'like').length} liked · {semanticFeedback.filter(item => item.vote === 'dislike').length} disliked
+                    {semanticFeedback.length} of 40 votes saved · {semanticFeedback.filter(item => item.vote === 'like').length} liked · {semanticFeedback.filter(item => item.vote === 'dislike').length} disliked
                   </p>
                 </div>
                 {(semanticFeedback.length > 0 || signals.moreIds.length > 0 || signals.lessIds.length > 0) && (
                   <button
                     type="button"
                     onClick={() => {
+                      if (!pendingReset) {
+                        setPendingReset(true);
+                        showToast('Tap Reset again to confirm — this clears your votes and signals');
+                        return;
+                      }
+                      setPendingReset(false);
                       setSemanticFeedback([]);
                       setSignals({ moreTopics: [], lessTopics: [], moreIds: [], lessIds: [], more: [], less: [] });
                       showToast('Semantic reading profile reset');
                     }}
-                    className="text-xs text-slate-400 hover:text-rose-400 transition shrink-0"
+                    className={`text-xs transition shrink-0 ${
+                      pendingReset
+                        ? 'text-rose-400 font-semibold'
+                        : 'text-slate-400 hover:text-rose-400'
+                    }`}
                   >
-                    Reset profile
+                    {pendingReset ? 'Tap again to confirm reset' : 'Reset profile'}
                   </button>
                 )}
               </div>
@@ -3340,51 +3398,54 @@ export default function App() {
                 className="w-full px-3 py-2 rounded-xl bg-slate-950/70 border border-slate-800 text-xs font-medium text-amber-300 hover:border-amber-500/40 hover:text-amber-200 transition flex items-center justify-center gap-1.5"
               >
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>{semanticFeedback.length > 0 ? 'Re-run calibration' : 'Run calibration'}</span>
+                <span>{semanticFeedback.length > 0 ? 'Teach Curator with more articles' : 'Teach Curator with articles'}</span>
               </button>
 
               <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300">
                 <div className="flex items-center gap-2 font-medium">
                   <span className={`w-2 h-2 rounded-full ${embeddingProvider === 'none' || semanticServiceReady ? 'bg-emerald-400' : 'bg-amber-400'}`} />
                   {embeddingProvider === 'none'
-                    ? 'Built-in semantic engine active · no provider calls'
+                    ? 'Built-in topic matching is active'
                     : semanticServiceReady
-                      ? `Built-in engine + ${embeddingProvider === 'gemini' ? 'Gemini' : 'your OpenAI-compatible endpoint'} embeddings`
-                      : 'Built-in semantic engine active · add an endpoint and key for provider vectors'}
+                      ? `Built-in matching + ${embeddingProvider === 'gemini' ? 'Google Gemini' : 'external'} topic matching`
+                      : 'Built-in matching is active · add a service URL and key for richer topic matching'}
                 </div>
                 {semanticSummary && (
                   <p className="text-[11px] text-slate-500 mt-2">
                     Last digest · {semanticSummary.feedbackExamples} vote examples ·{' '}
                     {semanticSummary.providerVectors > 0
-                      ? `${semanticSummary.providerVectors} provider embeddings`
-                      : 'built-in engine only'} ·{' '}
-                    {semanticSummary.deprioritized} recently seen pieces down-weighted
+                      ? `${semanticSummary.providerVectors} external topic vectors`
+                      : 'built-in matching only'} ·{' '}
+                    {semanticSummary.deprioritized} recently seen articles down-ranked
                   </p>
                 )}
-                <p className="text-[11px] text-slate-400 mt-2 leading-relaxed">
-                  Your votes and up to 40 article excerpts stay in this browser. The built-in semantic engine scores feed text on this app's server with no third-party calls and no key. Provider embeddings are optional: when enabled, feedback and candidate excerpts are also sent to the provider you choose. Nothing is synced or saved to a database, and provider vectors are cached in server memory only.
-                </p>
+                <details className="mt-2 text-[11px] text-slate-400">
+                  <summary className="cursor-pointer font-medium text-slate-300">What happens to my data?</summary>
+                  <p className="mt-2 leading-relaxed">
+                    Your votes and excerpts are stored in this browser and sent to Curator's server for ranking. Built-in matching does not call an outside AI provider. If you enable external matching, relevant excerpts are also sent to that provider; they are not saved to a database, and cached vectors are temporary.
+                  </p>
+                </details>
               </div>
             </div>
 
-            {/* Mobile Access QR Code Card */}
-            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-200">Open on Your Phone</h3>
-                <p className="text-xs text-slate-400 mt-0.5">Scan this QR code with your iPhone camera to open Curator instantly.</p>
-              </div>
-              <div className="flex flex-col sm:flex-row items-center gap-6 pt-2">
-                <QRCodeBox url={typeof window !== 'undefined' ? window.location.origin : 'https://ais-dev-szra6uvq22i3o7dvcof5go-706549575453.europe-west2.run.app'} />
-                <div className="space-y-2 text-xs text-slate-300">
-                  <p className="font-medium text-slate-200">Quick Setup Instructions:</p>
-                  <ol className="list-decimal list-inside space-y-1 text-slate-400">
-                    <li>Open your iPhone Camera app and point it at the QR code.</li>
-                    <li>Tap the notification banner to open Curator in Safari.</li>
-                    <li>Tap the <strong>Share</strong> button and select <strong>Add to Home Screen</strong>.</li>
-                  </ol>
+            {/* Declared interests: nudges for the semantic ranking, never a filter */}
+            <InterestsEditor
+              value={interests}
+              suggestions={interestSuggestions}
+              onChange={setInterests}
+            />
+
+            {/* Optional install instructions stay collapsed until needed */}
+            <details className="rounded-2xl bg-slate-900/40 border border-slate-900 p-4">
+              <summary className="cursor-pointer text-sm font-semibold text-slate-200">Install Curator on your iPhone</summary>
+              <div className="pt-3">
+                <p className="text-xs text-slate-400">Scan the code, open Curator in Safari, then use Share → Add to Home Screen.</p>
+                <div className="flex flex-col sm:flex-row items-center gap-6 pt-3">
+                  <QRCodeBox url={typeof window !== 'undefined' ? window.location.origin : 'https://ais-dev-szra6uvq22i3o7dvcof5go-706549575453.europe-west2.run.app'} />
+                  <div className="text-xs text-slate-400">The Home Screen shortcut opens Curator like an app.</div>
                 </div>
               </div>
-            </div>
+            </details>
 
             {/* Subscription Export */}
             <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
@@ -3501,7 +3562,9 @@ export default function App() {
                   )}
                 </div>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Traditional chronological reading stream · {feedStreamArticles.length} entries
+                  {loadingFeedStream
+                    ? 'Loading stream…'
+                    : `Traditional chronological reading stream · ${feedStreamArticles.length} ${feedStreamArticles.length === 1 ? 'entry' : 'entries'}`}
                 </p>
               </div>
 
@@ -3564,14 +3627,14 @@ export default function App() {
                     <article
                       key={item.id}
                       onClick={() => openArticle(item)}
-                      className={`group rounded-3xl transition-all duration-300 cursor-pointer overflow-hidden relative ${
+                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative ${
                         actions.hasAnyAction
                           ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
                           : 'bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.12)] hover:border-amber-500/60 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(245,158,11,0.35)]'
                       }`}
                     >
-                      <div className="p-5 pb-3 flex items-center justify-between">
-                        <div className="flex items-center gap-3">
+                      <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex items-center justify-between`}>
+                        <div className="flex items-center gap-3 min-w-0">
                           {(() => {
                             const itemAvatar = getSourceAvatar(item.url);
                             return (
@@ -3594,24 +3657,24 @@ export default function App() {
                               </div>
                             );
                           })()}
-                          <div>
+                          <div className="min-w-0">
                             <div className="text-xs font-bold text-slate-100 flex items-center gap-1.5">
-                              <span>{item.source}</span>
+                              <span className="truncate">{item.source}</span>
                             </div>
-                            <div className="text-[11px] text-slate-400">
-                              {item.publishedAt ? `${item.publishedAt} · ` : ''}{item.folder} · {item.readTime}
+                            <div className="text-[11px] text-slate-400 truncate">
+                              {item.publishedAt ? `${item.publishedAt} · ` : ''}{displayFolder(item.folder)} · {item.readTime}
                             </div>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 shrink-0">
                           {actions.isReadThrough ? (
                             <div 
                               className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-[10px] font-bold text-emerald-300 shadow-sm"
                               title="Read through completed"
                             >
                               <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
-                              <span>Read through</span>
+                              <span>Read</span>
                             </div>
                           ) : actions.isVotedMore ? (
                             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-950/90 border border-amber-500/50 text-[10px] font-bold text-amber-300">
@@ -3637,13 +3700,13 @@ export default function App() {
                       </div>
 
                       {item.bannerImage && (
-                        <div className="relative mx-3.5 rounded-2xl overflow-hidden h-56 md:h-64 shadow-lg border border-slate-700/60">
+                        <div className={`relative mx-3.5 rounded-2xl overflow-hidden ${compactCards ? 'h-40 md:h-48' : 'h-56 md:h-64'} shadow-lg border border-slate-700/60`}>
                           <img 
                             src={item.bannerImage} 
                             alt={item.title} 
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                           />
-                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/45 to-transparent" />
+                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
                           
                           <div className="absolute bottom-4 right-4 z-10">
                             <button
@@ -3659,84 +3722,55 @@ export default function App() {
                               <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
                             </button>
                           </div>
-
-                          <div className="absolute bottom-4 left-4 right-16">
-                            <div className="text-[10px] uppercase font-bold tracking-wider text-amber-400/90 mb-1">
-                              {item.folder}
-                            </div>
-                            <h3 className="text-lg md:text-xl font-bold tracking-tight text-white leading-snug drop-shadow-sm group-hover:text-amber-300 transition-colors">
-                              {item.title}
-                            </h3>
-                            <p className="text-xs text-slate-300 mt-1 line-clamp-1">
-                              {item.summary}
-                            </p>
-                          </div>
                         </div>
                       )}
 
-                      <div className="p-5 space-y-4 pt-4">
-                        {!item.bannerImage && (
-                          <div>
-                            <h3 className="text-xl font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors">
-                              {item.title}
-                            </h3>
-                            <p className="text-sm text-slate-400 mt-1 line-clamp-2">
-                              {item.summary}
-                            </p>
-                          </div>
-                        )}
+                      <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
+                        <div>
+                          {item.bannerImage && (
+                            <div className="text-[10px] uppercase font-bold tracking-wider text-amber-400/90 mb-1">
+                              {displayFolder(item.folder)}
+                            </div>
+                          )}
+                          <h3 className={`${compactCards ? 'text-lg' : 'text-xl'} font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors`}>
+                            {item.title}
+                          </h3>
+                          <p className={`${compactCards ? 'text-xs line-clamp-1' : 'text-sm line-clamp-2'} text-slate-400 mt-1`}>
+                            {item.summary}
+                          </p>
+                        </div>
 
-                        <div className="pt-2 flex items-center justify-between border-t border-slate-800/80">
-                          {/* Read More Link directly to original source */}
-                          <a
-                            href={item.url || '#'}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                              showToast(`Opening source on ${item.source}`);
-                            }}
-                            className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-amber-300 transition-colors"
-                            title={`Read more on ${item.source} (opens external browser or app)`}
-                          >
-                            <span>Read original on {item.source}</span>
-                            <ExternalLink className="w-3 h-3 text-slate-500" />
-                          </a>
-
-                          {/* Curation actions: More, Less (icon-only, reading preferences) */}
-                          <div className="flex items-center gap-1.5">
-                            <button 
+                        <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
                               type="button"
-                              onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
-                                actions.isVotedMore
-                                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
-                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
-                              }`}
-                              title={actions.isVotedMore ? `More on ${item.folder || 'this topic'} (voted)` : `More on ${item.folder || 'this topic'}`}
-                              aria-label={`More on ${item.folder || 'this topic'}`}
+                              onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                              className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 px-3 text-xs font-semibold text-amber-300 hover:bg-amber-500/25 transition"
                             >
-                              <ThumbsUp className={`w-3.5 h-3.5 ${
-                                actions.isVotedMore ? 'fill-amber-400/30' : ''
-                              }`} />
+                              Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                             </button>
-                            <button 
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
-                                actions.isVotedLess
-                                  ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
-                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
-                              }`}
-                              title={actions.isVotedLess ? `Fewer on ${item.folder || 'this topic'} (voted)` : `Fewer on ${item.folder || 'this topic'}`}
-                              aria-label={`Fewer on ${item.folder || 'this topic'}`}
+                            <a
+                              href={item.url || '#'}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
+                                showToast(`Opening source on ${item.source}`);
+                              }}
+                              className="inline-flex min-h-11 items-center gap-1.5 px-2 text-xs text-slate-400 hover:text-amber-300 transition-colors"
+                              title={`Read more on ${item.source} (opens external browser or app)`}
                             >
-                              <ThumbsDown className={`w-3.5 h-3.5 ${
-                                actions.isVotedLess ? 'fill-rose-400/30' : ''
-                              }`} />
-                            </button>
+                              <span>Read original</span>
+                              <ExternalLink className="w-3 h-3 text-slate-500" />
+                            </a>
                           </div>
+                          <FeedbackActions
+                            isMore={actions.isVotedMore}
+                            isLess={actions.isVotedLess}
+                            onMore={() => handleMore(item)}
+                            onLess={() => handleLess(item)}
+                          />
                         </div>
                       </div>
                     </article>
@@ -3796,6 +3830,15 @@ export default function App() {
           >
             <Compass className="w-5 h-5" />
             <span className="text-[10px] tracking-tight">Sources</span>
+          </button>
+
+          <button 
+            type="button"
+            onClick={() => setActiveTab('settings')}
+            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'settings' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+          >
+            <Sliders className="w-5 h-5" />
+            <span className="text-[10px] tracking-tight">Settings</span>
           </button>
         </div>
       </nav>

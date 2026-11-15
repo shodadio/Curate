@@ -1,14 +1,31 @@
 @import "tailwindcss";
 
-/* One self-hosted variable font, one file, no third-party requests.
+/* One self-hosted variable family, Inter, used for everything — interface, reading body,
+   wordmark and numerals — in two files (roman + italic). No third-party requests.
    `font-display: optional` means the browser either has it within ~100ms or keeps the
    fallback for that page load — the text never changes face after it is painted. */
 @font-face {
-  font-family: 'Plus Jakarta Sans';
+  font-family: 'Inter';
   font-style: normal;
-  font-weight: 200 800;
+  font-weight: 100 900;
   font-display: optional;
-  src: url('/fonts/plus-jakarta-sans-latin-wght-normal.woff2') format('woff2');
+  src: url('/fonts/inter-latin-wght-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: optional;
+  src: url('/fonts/inter-latin-wght-italic.woff2') format('woff2');
+}
+
+/* Inter is the site's only family: the sans, serif and mono utilities all resolve to it,
+   so a `font-serif` wordmark or a `font-mono` timestamp stays on the same typeface. */
+@theme {
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+  --font-serif: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+  --font-mono: 'Inter', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 html,
@@ -25,7 +42,7 @@ body,
 }
 
 :root {
-  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
   letter-spacing: -0.012em;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   background-color: #020617;
@@ -33,7 +50,7 @@ body,
 }
 
 body {
-  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -66,11 +83,11 @@ body {
 }
 
 .font-reading {
-  font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, Cambria, 'Times New Roman', serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
   letter-spacing: -0.003em;
 }
 
 .font-mono {
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-family: 'Inter', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
   font-feature-settings: "tnum";
 }
