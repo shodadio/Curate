@@ -6,6 +6,7 @@ import dns from 'dns';
 import http from 'http';
 import https from 'https';
 import net from 'net';
+import path from 'path';
 
 dotenv.config();
 
@@ -449,7 +450,7 @@ async function startServer() {
       if (linkHrefMatch && linkHrefMatch[1]) {
         link = linkHrefMatch[1].trim();
       } else {
-        const linkTagMatch = block.match(/<link[^>]*>([sS]*?)<\/link>/i);
+        const linkTagMatch = block.match(/<link[^>]*>([\s\S]*?)<\/link>/i);
         if (linkTagMatch && linkTagMatch[1]) {
           link = cleanHtml(linkTagMatch[1]).trim();
         }
@@ -1305,16 +1306,22 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
     }
   });
 
-  // Vite middleware for development (HMR disabled in cloud iframe to prevent WebSocket closed errors)
-  const vite = await createViteServer({
-    server: {
-      middlewareMode: true,
-      hmr: false,
-      allowedHosts: true,
-    }
-  });
-
-  app.use(vite.middlewares);
+  if (process.env.NODE_ENV === 'production') {
+    // Serve the client built by `npm run build` instead of mounting the dev middleware
+    const distDir = path.resolve(process.cwd(), 'dist');
+    app.use(express.static(distDir, { index: false, maxAge: '1h' }));
+    app.get('*', (_req, res) => res.sendFile(path.join(distDir, 'index.html')));
+  } else {
+    // Vite middleware for development (HMR disabled in cloud iframe to prevent WebSocket closed errors)
+    const vite = await createViteServer({
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        allowedHosts: true,
+      }
+    });
+    app.use(vite.middlewares);
+  }
 
   app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);

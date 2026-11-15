@@ -245,6 +245,10 @@ export default function App() {
   // Screen Wake Lock held while read-aloud is playing so the phone does not sleep mid-article
   const wakeLockRef = React.useRef<any>(null);
   const wakeLockWantedRef = React.useRef(false);
+  // Monotonic ids so a slow, superseded response can never overwrite newer state
+  const digestRequestRef = React.useRef(0);
+  const feedStreamRequestRef = React.useRef(0);
+  const speechCancelledRef = React.useRef(false);
 
   // Muted cards state for immediate inline Undo / Redo when user clicks "Fewer"
   const [mutedCards, setMutedCards] = useState<Record<string, DigestItem>>({});
@@ -351,7 +355,13 @@ export default function App() {
   }, [readArticleIds]);
 
   useEffect(() => {
-    generateDigest();
+    localStorage.setItem('curator_reading_stats', JSON.stringify(readingStats));
+  }, [readingStats]);
+
+  useEffect(() => {
+    // Debounced so dragging the serendipity slider or tapping counts issues one request, not dozens
+    const timer = setTimeout(() => { generateDigest(); }, 450);
+    return () => clearTimeout(timer);
   }, [itemCount, serendipityDial]);
 
   useEffect(() => {
@@ -361,6 +371,7 @@ export default function App() {
   }, [activeTab, selectedFeedSource]);
 
   const fetchFeedStream = async (sourceTitle?: string) => {
+    const requestId = ++feedStreamRequestRef.current;
     setLoadingFeedStream(true);
     try {
       const res = await fetch('/api/feed-stream', {
@@ -369,20 +380,21 @@ export default function App() {
         body: JSON.stringify({ sourceTitle: sourceTitle || 'all', sources })
       });
       const data = await res.json();
-      if (data.articles) {
+      if (requestId !== feedStreamRequestRef.current) return;
+      if (Array.isArray(data.articles)) {
         setFeedStreamArticles(data.articles);
       }
     } catch (e) {
       // fallback
     } finally {
-      setLoadingFeedStream(false);
+      if (requestId === feedStreamRequestRef.current) setLoadingFeedStream(false);
     }
   };
 
   const handleOpenFeedStream = (sourceTitle: string, sourceId?: string) => {
+    // The tab/source effect performs the fetch; calling it here too caused a duplicate request
     setSelectedFeedSource(sourceTitle);
     setActiveTab('feeds');
-    fetchFeedStream(sourceTitle);
 
     if (sourceId) {
       if (!readSourceIds.includes(sourceId)) {
@@ -414,6 +426,7 @@ export default function App() {
   };
 
   const generateDigest = async () => {
+    const requestId = ++digestRequestRef.current;
     setLoadingDigest(true);
     try {
       let readingStats = {};
@@ -427,6 +440,11 @@ export default function App() {
         body: JSON.stringify({ sources, signals, readingStats, serendipityDial, itemCount, apiKey: customApiKey })
       });
       const data = await res.json();
+      if (requestId !== digestRequestRef.current) return;
+      if (!res.ok) {
+        showToast(data.error || 'Could not build a digest right now.');
+        return;
+      }
       if (data.digest) {
         // Attach realistic imagery matching the design aesthetic
         const enhanced = data.digest.map((item: DigestItem, idx: number) => {
@@ -449,7 +467,7 @@ export default function App() {
     } catch (e) {
       // fallback
     } finally {
-      setLoadingDigest(false);
+      if (requestId === digestRequestRef.current) setLoadingDigest(false);
     }
   };
 
@@ -788,6 +806,14 @@ export default function App() {
     return `${days}d ago`;
   };
 
+  const formatDeliveryTime = (value: string): string => {
+    const [hours, minutes] = value.split(':').map(Number);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return value;
+    const d = new Date();
+    d.setHours(hours, minutes, 0, 0);
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  };
+
   const getShortSourceTitle = (title: string): string => {
     if (!title) return '';
     let clean = title.trim();
@@ -818,27 +844,40 @@ export default function App() {
   const handleRefreshSource = async (source: SourceItem) => {
     setRefreshingSourceId(source.id);
     try {
-      await fetch('/api/feed-stream', {
+      // The endpoint matches on sourceTitle, not feedUrl — sending only feedUrl refreshed the wrong feeds
+      const res = await fetch('/api/feed-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feedUrl: source.feedUrl })
-      }).catch(() => null);
+        body: JSON.stringify({ sourceTitle: source.title, sources })
+      });
+      const data = await res.json().catch(() => ({}));
+      const articles: DigestItem[] = Array.isArray(data.articles) ? data.articles : [];
+      const fetched = res.ok && articles.length > 0;
 
-      const now = Date.now();
       setSources(prev => prev.map(s => {
-        if (s.id === source.id) {
-          return {
-            ...s,
-            lastSyncedAt: now,
-            status: 'active' as const,
-            failingReason: undefined
-          };
-        }
-        return s;
+        if (s.id !== source.id) return s;
+        return fetched
+          ? { ...s, lastSyncedAt: Date.now(), status: 'active' as const, failingReason: undefined }
+          : {
+              ...s,
+              status: 'failing' as const,
+              failingReason: res.ok ? 'This feed returned no articles.' : (data.error || `Feed returned HTTP ${res.status}.`)
+            };
       }));
-      showToast(`Refreshed "${source.title}" · 100% up to date`);
+
+      if (fetched) {
+        if (selectedFeedSource === source.title) {
+          setFeedStreamArticles(articles);
+        }
+        showToast(`Fetched ${articles.length} ${articles.length === 1 ? 'article' : 'articles'} from "${source.title}"`);
+      } else {
+        showToast(`Could not refresh "${source.title}"`);
+      }
     } catch (e) {
-      showToast(`Refreshed "${source.title}"`);
+      setSources(prev => prev.map(s => s.id === source.id
+        ? { ...s, status: 'failing' as const, failingReason: 'Network error while refreshing this feed.' }
+        : s));
+      showToast(`Could not refresh "${source.title}"`);
     } finally {
       setRefreshingSourceId(null);
     }
@@ -893,13 +932,13 @@ export default function App() {
   // Release the wake lock only when the app itself goes away
   useEffect(() => () => releaseWakeLock(), []);
 
-  const handleToggleReadAloud = (article: DigestItem) => {
+  const handleToggleReadAloud = (article: DigestItem, restart = false, rateOverride?: number) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       showToast('Speech audio is not supported in this browser.');
       return;
     }
 
-    if (speechPlaying) {
+    if (speechPlaying && !restart) {
       if (speechPaused) {
         window.speechSynthesis.resume();
         setSpeechPaused(false);
@@ -941,7 +980,7 @@ export default function App() {
       utterance.voice = iosVoice;
     }
 
-    utterance.rate = speechRate;
+    utterance.rate = rateOverride ?? speechRate;
     utterance.pitch = 1.0;
 
     utterance.onstart = () => {
@@ -955,12 +994,14 @@ export default function App() {
       releaseWakeLock();
       setSpeechPlaying(false);
       setSpeechPaused(false);
-      const updated = {
-        ...readingStats,
+      // cancel() also fires onend — a deliberate stop must not mark the article finished
+      const cancelled = speechCancelledRef.current;
+      speechCancelledRef.current = false;
+      if (cancelled) return;
+      setReadingStats(prev => ({
+        ...prev,
         [article.id]: { maxDepth: 100, finished: true, lastRead: Date.now() }
-      };
-      setReadingStats(updated);
-      localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
+      }));
       setReadArticleIds(prev => (prev.includes(article.id) ? prev : [...prev, article.id]));
       showToast('Finished listening · Read through recorded');
     };
@@ -973,11 +1014,13 @@ export default function App() {
     };
 
     // Request during the user gesture; onstart confirms playback actually began
+    speechCancelledRef.current = false;
     requestWakeLock();
     window.speechSynthesis.speak(utterance);
   };
 
   const handleStopReadAloud = () => {
+    speechCancelledRef.current = true;
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
@@ -988,14 +1031,44 @@ export default function App() {
 
   const handleCycleSpeechRate = (article: DigestItem) => {
     const nextRate = speechRate === 1.0 ? 1.25 : speechRate === 1.25 ? 1.5 : 1.0;
+    const wasPlaying = speechPlaying;
     setSpeechRate(nextRate);
-    if (speechPlaying) {
+    if (wasPlaying) {
       handleStopReadAloud();
+      // Force a fresh utterance: the old closure still reports playing, so a plain toggle would just pause
       setTimeout(() => {
-        handleToggleReadAloud(article);
+        handleToggleReadAloud(article, true, nextRate);
       }, 50);
     }
     showToast(`Speed set to ${nextRate}x`);
+  };
+
+  const handleSendTestNotification = async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      showToast('This browser does not support notifications.');
+      return;
+    }
+    if (!notificationsEnabled) {
+      showToast('Turn morning notifications on first.');
+      return;
+    }
+    let permission = Notification.permission;
+    if (permission === 'default') {
+      permission = await Notification.requestPermission();
+    }
+    if (permission !== 'granted') {
+      showToast('Notifications are blocked in your browser settings.');
+      return;
+    }
+    try {
+      new Notification('The Curator', {
+        body: `${digest.length || itemCount} items ready in today's digest.`,
+        icon: '/pwa-192x192.png'
+      });
+      showToast('Test notification sent');
+    } catch {
+      showToast('This browser could not show a notification.');
+    }
   };
 
   const getCardActions = (itemId: string) => {
@@ -1049,15 +1122,13 @@ export default function App() {
     // Update reading stats
     setReadingStats(prev => {
       const current = prev[item.id] || { maxDepth: 0, finished: false };
-      const updated = {
+      return {
         ...prev,
         [item.id]: {
           ...current,
           lastRead: Date.now()
         }
       };
-      localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
-      return updated;
     });
 
     // Mark corresponding source as read to dismiss its orange dot immediately
@@ -1138,16 +1209,18 @@ export default function App() {
             const scrollHeight = target.scrollHeight - target.clientHeight;
             if (scrollHeight > 0 && selectedArticle) {
               const progress = Math.min(100, Math.round((target.scrollTop / scrollHeight) * 100));
-              const current = readingStats[selectedArticle.id] || { maxDepth: 0, finished: false };
-              const newMax = Math.max(current.maxDepth || 0, progress);
-              const finished = newMax >= 80 || Boolean(current.finished);
-              const updated = {
-                ...readingStats,
-                [selectedArticle.id]: { maxDepth: newMax, finished, lastRead: Date.now() }
-              };
-              setReadingStats(updated);
-              localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
-              if (finished) {
+              const wasFinished = Boolean(readingStats[selectedArticle.id]?.finished);
+              setReadingStats(prev => {
+                const current = prev[selectedArticle.id] || { maxDepth: 0, finished: false };
+                const newMax = Math.max(current.maxDepth || 0, progress);
+                const finished = newMax >= 80 || Boolean(current.finished);
+                if (newMax === (current.maxDepth || 0) && finished === Boolean(current.finished)) return prev;
+                return {
+                  ...prev,
+                  [selectedArticle.id]: { maxDepth: newMax, finished, lastRead: Date.now() }
+                };
+              });
+              if (progress >= 80 || wasFinished) {
                 setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
                 const minutes = parseInt(selectedArticle.readTime) || 0;
                 setWeeklyHistory(prev => {
@@ -1293,17 +1366,14 @@ export default function App() {
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={() => {
-                    const currentStats = readingStats[selectedArticle.id] || { maxDepth: 100, finished: true };
-                    const updated = {
-                      ...readingStats,
+                    setReadingStats(prev => ({
+                      ...prev,
                       [selectedArticle.id]: {
-                        maxDepth: Math.max(currentStats.maxDepth || 0, 100),
+                        maxDepth: Math.max(prev[selectedArticle.id]?.maxDepth || 0, 100),
                         finished: true,
                         lastRead: Date.now()
                       }
-                    };
-                    setReadingStats(updated);
-                    localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
+                    }));
                     setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
                     showToast(`Opening original on ${selectedArticle.source}`);
                   }}
@@ -1468,7 +1538,7 @@ export default function App() {
             <div className="flex flex-col items-start gap-3 border-b border-slate-900 pb-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-100">Today's Digest</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Curated at 7:00 AM · {digest.length} items worth your time</p>
+                <p className="text-xs text-slate-400 mt-0.5">Curated at {formatDeliveryTime(deliveryTime)} · {digest.length} items worth your time</p>
               </div>
               <div className="flex items-center gap-2 text-xs text-slate-400">
                 <span>Show:</span>
@@ -2687,9 +2757,8 @@ export default function App() {
 
               <div className="pt-2">
                 <button 
-                  onClick={() => {
-                    showToast('Test notification sent: 6 items ready, 1 stretch item');
-                  }}
+                  type="button"
+                  onClick={handleSendTestNotification}
                   className="px-4 py-2 text-xs font-medium rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-slate-100 transition"
                 >
                   Send me a test notification
