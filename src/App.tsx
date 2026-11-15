@@ -4,9 +4,11 @@ import {
   Download, Upload, Sliders, ExternalLink, ArrowLeft, Sparkles, 
   AlertCircle, X, Home, Compass,
   ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square,
-  RotateCcw, EyeOff
+  RotateCcw, EyeOff, BarChart3, Clock, ArrowRight
 } from 'lucide-react';
 import QRCode from 'qrcode';
+import { CuratorMark, CuratorFullLogo } from './components/CuratorLogo';
+import { WeeklyReviewModal, WeeklyReadingItem } from './components/WeeklyReviewModal';
 
 interface DiscoveredSource {
   title: string;
@@ -150,6 +152,40 @@ export default function App() {
     }
     return [];
   });
+
+  const [weeklyHistory, setWeeklyHistory] = useState<WeeklyReadingItem[]>(() => {
+    const saved = localStorage.getItem('curator_weekly_history');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch (e) { /* ignore */ }
+    }
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+    return [
+      { id: 'wh_1', title: 'Saturday assorted links', source: 'Marginal Revolution', folder: 'Economics', readTime: '5 min read', minutesSpent: 5, completedAt: now - 3 * 3600 * 1000, url: 'https://marginalrevolution.com' },
+      { id: 'wh_2', title: 'Test and verification technique effectiveness with GPT-6 Astra', source: 'Dan Luu', folder: 'Tech & Engineering', readTime: '12 min read', minutesSpent: 12, completedAt: now - 1 * day, url: 'https://danluu.com' },
+      { id: 'wh_3', title: 'Locating the source of a mysterious beep with Claude', source: 'Simon Willison', folder: 'Software & AI', readTime: '6 min read', minutesSpent: 6, completedAt: now - 2 * day, url: 'https://simonwillison.net' },
+      { id: 'wh_4', title: 'Privatize Air Traffic Control, Redux', source: 'Marginal Revolution', folder: 'Economics', readTime: '8 min read', minutesSpent: 8, completedAt: now - 3 * day, url: 'https://marginalrevolution.com' },
+      { id: 'wh_5', title: 'The Unseen Geometry of Traditional Japanese Joinery', source: 'A List Apart', folder: 'Design & Craft', readTime: '7 min read', minutesSpent: 7, completedAt: now - 4 * day, url: 'https://alistapart.com' },
+      { id: 'wh_6', title: 'Deep Time and the 10,000-Year Clock', source: 'Aeon Magazine', folder: 'Philosophy & Culture', readTime: '9 min read', minutesSpent: 9, completedAt: now - 5 * day, url: 'https://aeon.co' },
+      { id: 'wh_7', title: 'The Aggregation Theory of Modern Media', source: 'Stratechery by Ben Thompson', folder: 'Tech & Strategy', readTime: '11 min read', minutesSpent: 11, completedAt: now - 6 * day, url: 'https://stratechery.com' }
+    ];
+  });
+  const [showWeeklyReviewModal, setShowWeeklyReviewModal] = useState<boolean>(false);
+
+  useEffect(() => {
+    localStorage.setItem('curator_weekly_history', JSON.stringify(weeklyHistory));
+  }, [weeklyHistory]);
+
+  const totalWeeklyMinutes = weeklyHistory.reduce((acc, it) => acc + (it.minutesSpent || 6), 0);
+  const topWeeklyTopic = (() => {
+    const counts: Record<string, number> = {};
+    weeklyHistory.forEach(it => { counts[it.folder] = (counts[it.folder] || 0) + (it.minutesSpent || 6); });
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    return sorted[0]?.[0] || 'Economics';
+  })();
 
   const [signals, setSignals] = useState<{
     moreTopics: string[];
@@ -1062,6 +1098,20 @@ export default function App() {
               localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
               if (finished) {
                 setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
+                const minutes = parseInt(selectedArticle.readTime) || 6;
+                setWeeklyHistory(prev => {
+                  if (prev.some(it => it.id === selectedArticle.id)) return prev;
+                  return [{
+                    id: selectedArticle.id,
+                    title: selectedArticle.title,
+                    source: selectedArticle.source,
+                    folder: selectedArticle.folder,
+                    readTime: selectedArticle.readTime,
+                    minutesSpent: minutes,
+                    completedAt: Date.now(),
+                    url: selectedArticle.url
+                  }, ...prev];
+                });
               }
             }
           }}
@@ -1279,24 +1329,35 @@ export default function App() {
       {/* Main Top Header Bar */}
       <header className="sticky top-0 z-40 w-full bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-4 sm:px-6 py-3 shrink-0 shadow-sm">
         <div className="max-w-3xl w-full mx-auto flex items-center justify-between gap-3">
-          {/* Logo & Subtitle */}
+          {/* Official Brand Logo & Subtitle */}
           <button 
             type="button" 
             onClick={() => setActiveTab('today')}
             className="flex items-center gap-3 text-left focus:outline-none group cursor-pointer"
-            title="Curator — Home"
+            title="The Curator — Home"
           >
-            <div className="w-10 h-10 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-orange-500 shadow-sm group-hover:border-amber-500/40 transition shrink-0">
-              <Bookmark className="w-5 h-5 fill-orange-500 text-orange-500" />
-            </div>
+            <CuratorMark className="w-10 h-10 drop-shadow-md group-hover:scale-105 transition-transform" />
             <div className="min-w-0">
-              <h1 className="text-base font-semibold tracking-tight text-slate-100 leading-none">Curator</h1>
-              <p className="text-xs text-slate-400 mt-1 truncate">Your morning reading editor</p>
+              <div className="flex items-baseline gap-1.5 leading-none">
+                <span className="font-serif text-[11px] font-semibold tracking-[0.24em] text-amber-500/90">THE</span>
+                <span className="font-serif text-base font-bold tracking-[0.16em] text-slate-100">CURATOR</span>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1 truncate">Your morning reading editor</p>
             </div>
           </button>
 
-          {/* Right Action Icons: Refresh and Settings */}
+          {/* Right Action Icons: Weekly Review, Refresh and Settings */}
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowWeeklyReviewModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900 border border-slate-800 hover:border-amber-500/40 text-slate-300 hover:text-amber-300 transition text-xs font-medium cursor-pointer shadow-sm group"
+              title="Open Weekly Reading Review"
+            >
+              <BarChart3 className="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform" />
+              <span className="hidden sm:inline font-mono text-[11px] text-amber-300 font-semibold">{totalWeeklyMinutes}m week</span>
+              <span className="sm:hidden font-mono text-[11px] text-amber-300">Weekly</span>
+            </button>
             <button 
               type="button"
               onClick={generateDigest}
@@ -1327,6 +1388,33 @@ export default function App() {
         {/* TAB 1: TODAY */}
         {activeTab === 'today' && (
           <div className="space-y-6 animate-fade-in w-full max-w-full">
+            {/* Weekly Intellectual Summary Banner Card */}
+            <div 
+              onClick={() => setShowWeeklyReviewModal(true)}
+              className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/10 via-slate-900/80 to-slate-900/60 border border-amber-500/20 flex items-center justify-between gap-3 text-xs cursor-pointer hover:border-amber-500/40 hover:bg-slate-900 transition-all shadow-sm group"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0">
+                  <BarChart3 className="w-4 h-4 text-amber-400" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 font-semibold text-slate-200 truncate">
+                    <span>Weekly Reading Retrospective</span>
+                    <span className="text-[10px] font-mono font-normal text-amber-300 bg-amber-500/20 px-1.5 py-0.5 rounded shrink-0">
+                      {totalWeeklyMinutes} mins
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5 truncate">
+                    Top focus: <span className="text-slate-300 font-medium">{topWeeklyTopic}</span> · {weeklyHistory.length} articles read
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 text-amber-400 group-hover:translate-x-0.5 transition-transform shrink-0 font-medium text-[11px]">
+                <span className="hidden sm:inline">View Review</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </div>
+            </div>
+
             <div className="flex items-center justify-between border-b border-slate-900 pb-4">
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-100">Today's Digest</h2>
@@ -2427,9 +2515,50 @@ export default function App() {
         {/* TAB 4: SETTINGS */}
         {activeTab === 'settings' && (
           <div className="space-y-8 animate-fade-in">
+            {/* Brand Logo Banner */}
+            <CuratorFullLogo className="w-full mx-auto" />
+
             <div className="border-b border-slate-900 pb-4">
               <h2 className="text-xl font-semibold tracking-tight text-slate-100">Settings</h2>
               <p className="text-xs text-slate-400 mt-0.5">Preferences & delivery configuration</p>
+            </div>
+
+            {/* Weekly Reading Activity Summary in Settings */}
+            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                    <BarChart3 className="w-4 h-4 text-amber-400" />
+                    <span>Weekly Reading Retrospective</span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {totalWeeklyMinutes} minutes read across {weeklyHistory.length} articles over the past 7 days.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowWeeklyReviewModal(true)}
+                  className="px-3.5 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <span>Open Full Review</span>
+                  <ArrowRight className="w-3 h-3" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 pt-1">
+                <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center">
+                  <span className="text-[11px] text-slate-400 block mb-0.5">Time Spent</span>
+                  <span className="text-base font-bold font-serif text-slate-100">{totalWeeklyMinutes}m</span>
+                </div>
+                <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center">
+                  <span className="text-[11px] text-slate-400 block mb-0.5">Completed</span>
+                  <span className="text-base font-bold font-serif text-slate-100">{weeklyHistory.length}</span>
+                </div>
+                <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center truncate">
+                  <span className="text-[11px] text-slate-400 block mb-0.5">Lead Focus</span>
+                  <span className="text-xs font-bold text-amber-300 truncate block">{topWeeklyTopic}</span>
+                </div>
+              </div>
             </div>
 
             {/* AI Provider & Custom API Key */}
@@ -3033,6 +3162,21 @@ export default function App() {
           </button>
         </div>
       </nav>
+
+      {/* Weekly Reading Review Modal */}
+      <WeeklyReviewModal
+        isOpen={showWeeklyReviewModal}
+        onClose={() => setShowWeeklyReviewModal(false)}
+        readingItems={weeklyHistory}
+        onOpenArticle={(id) => {
+          const item = digest.find(d => d.id === id) || savedArticles.find(s => s.id === id) || feedStreamArticles.find(f => f.id === id);
+          if (item) setSelectedArticle(item);
+        }}
+        onOpenSettings={() => {
+          setActiveTab('settings');
+        }}
+        showToast={showToast}
+      />
 
     </div>
   );
