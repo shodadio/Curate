@@ -82,7 +82,7 @@ export default function App() {
     if (saved) {
       try { return JSON.parse(saved); } catch (e) { /* ignore */ }
     }
-    return ['src_0', 'src_1'];
+    return ['src_mr', 'src_dan'];
   });
   const [readArticleIds, setReadArticleIds] = useState<string[]>(() => {
     const saved = localStorage.getItem('curator_read_articles');
@@ -103,24 +103,33 @@ export default function App() {
 
   // App data state with localStorage persistence
   const [sources, setSources] = useState<SourceItem[]>(() => {
+    const now = Date.now();
+    const defaultSources: SourceItem[] = [
+      { id: 'src_mr', title: 'Marginal Revolution', feedUrl: 'https://marginalrevolution.com/feed', folder: 'Economics', status: 'active', lastSyncedAt: now - 5 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_dan', title: 'Dan Luu', feedUrl: 'https://danluu.com/atom.xml', folder: 'Tech & Engineering', status: 'active', lastSyncedAt: now - 15 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_simon', title: 'Simon Willison', feedUrl: 'https://simonwillison.net/atom/entries/', folder: 'Software & AI', status: 'active', lastSyncedAt: now - 20 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_ars', title: 'Ars Technica', feedUrl: 'https://feeds.arstechnica.com/arstechnica/index', folder: 'Tech & Policy', status: 'active', lastSyncedAt: now - 25 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_strat', title: 'Stratechery by Ben Thompson', feedUrl: 'https://stratechery.com/feed/', folder: 'Tech & Strategy', status: 'active', lastSyncedAt: now - 35 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_ala', title: 'A List Apart', feedUrl: 'https://alistapart.com/main/feed/', folder: 'Design & Craft', status: 'active', lastSyncedAt: now - 45 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_aeon', title: 'Aeon Magazine', feedUrl: 'https://aeon.co/feed.rss', folder: 'Philosophy & Culture', status: 'active', lastSyncedAt: now - 60 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_row', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech', status: 'active', lastSyncedAt: now - 75 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=160&auto=format&fit=crop&q=80' }
+    ];
+
     const saved = localStorage.getItem('curator_sources');
     if (saved) {
-      try { return JSON.parse(saved); } catch (e) { /* ignore */ }
+      try {
+        const parsed: SourceItem[] = JSON.parse(saved);
+        const hasStaleDummy = parsed.some(s =>
+          s.feedUrl.includes('pmresearcher') ||
+          s.feedUrl.includes('bhaskar.econ') ||
+          s.feedUrl.includes('worldhistory.com')
+        );
+        if (!hasStaleDummy && Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      } catch (e) { /* ignore */ }
     }
-    const now = Date.now();
-    return [
-      { id: 'src_0', title: 'Nicole Williams', feedUrl: 'https://pmresearcher.substack.com/feed', folder: 'Strategy & Craft', status: 'active', lastSyncedAt: now - 4 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_1', title: 'The Anthropic Stack', feedUrl: 'https://anthropic.com/feed', folder: 'Tech & AI', status: 'active', lastSyncedAt: now - 12 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_2', title: 'World Politics & History', feedUrl: 'https://worldhistory.com/feed', folder: 'History', status: 'active', lastSyncedAt: now - 22 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_3', title: 'Prospect Magazine', feedUrl: 'https://prospectmagazine.co.uk/feed', folder: 'Culture', status: 'active', lastSyncedAt: now - 35 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_4', title: 'Dr. Bhaskar Economics', feedUrl: 'https://bhaskar.econ/feed', folder: 'Economics', status: 'active', lastSyncedAt: now - 48 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_5', title: 'Stratechery by Ben Thompson', feedUrl: 'https://stratechery.com/feed/', folder: 'Tech & Strategy', status: 'active', lastSyncedAt: now - 65 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_6', title: 'Marginal Revolution', feedUrl: 'https://marginalrevolution.com/feed', folder: 'Economics', status: 'active', lastSyncedAt: now - 80 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_7', title: 'Dan Luu', feedUrl: 'https://danluu.com/atom.xml', folder: 'Tech & Engineering', status: 'active', lastSyncedAt: now - 95 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_8', title: 'A List Apart', feedUrl: 'https://alistapart.com/main/feed/', folder: 'Design', status: 'active', lastSyncedAt: now - 110 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_9', title: 'Long Now Foundation', feedUrl: 'https://longnow.org/feed/', folder: 'Philosophy & Long-term', status: 'active', lastSyncedAt: now - 140 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_10', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/', folder: 'Global Tech', status: 'failing', failingReason: 'Not responding (HTTP 503)', lastSyncedAt: now - 180 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=160&auto=format&fit=crop&q=80' }
-    ];
+    return defaultSources;
   });
 
   const [digest, setDigest] = useState<DigestItem[]>([]);
@@ -327,7 +336,7 @@ export default function App() {
       const res = await fetch('/api/feed-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceTitle: sourceTitle || 'all' })
+        body: JSON.stringify({ sourceTitle: sourceTitle || 'all', sources })
       });
       const data = await res.json();
       if (data.articles) {
@@ -1345,7 +1354,7 @@ export default function App() {
             ) : digest.length === 0 ? (
               <div className="py-20 text-center text-slate-500 space-y-2">
                 <p className="text-sm">No new items today. Your sources are quiet.</p>
-                <button onClick={generateDigest} className="text-xs text-amber-400 underline">Generate sample digest</button>
+                <button onClick={generateDigest} className="text-xs text-amber-400 underline">Fetch today's live digest</button>
               </div>
             ) : (
               <div className="space-y-8">

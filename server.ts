@@ -11,7 +11,7 @@ dotenv.config();
 
 // Outbound fetch hardening: only public http(s) hosts, re-checked on every redirect hop
 const MAX_REDIRECTS = 4;
-const MAX_PAGE_BYTES = 2 * 1024 * 1024;
+const MAX_PAGE_BYTES = 8 * 1024 * 1024;
 
 class BlockedUrlError extends Error {}
 
@@ -387,10 +387,252 @@ async function startServer() {
     }
   });
 
-  // Curate daily digest using Gemini, OpenAI, Anthropic, or Deterministic engine
+  // In-memory feed cache with 5-minute TTL to keep requests snappy
+  interface FeedCacheEntry {
+    timestamp: number;
+    items: any[];
+  }
+  const feedCache = new Map<string, FeedCacheEntry>();
+  const FEED_CACHE_TTL = 5 * 60 * 1000;
+
+  const DEFAULT_FEEDS = [
+    { title: 'Marginal Revolution', feedUrl: 'https://marginalrevolution.com/feed', folder: 'Economics' },
+    { title: 'Dan Luu', feedUrl: 'https://danluu.com/atom.xml', folder: 'Tech & Engineering' },
+    { title: 'Simon Willison', feedUrl: 'https://simonwillison.net/atom/entries/', folder: 'Software & AI' },
+    { title: 'Ars Technica', feedUrl: 'https://feeds.arstechnica.com/arstechnica/index', folder: 'Tech & Policy' },
+    { title: 'Stratechery', feedUrl: 'https://stratechery.com/feed/', folder: 'Tech & Strategy' },
+    { title: 'A List Apart', feedUrl: 'https://alistapart.com/main/feed/', folder: 'Design & Craft' },
+    { title: 'Aeon Magazine', feedUrl: 'https://aeon.co/feed.rss', folder: 'Philosophy & Culture' },
+    { title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech' }
+  ];
+
+  const cleanHtml = (str: string): string => {
+    if (!str) return '';
+    return str
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;|&apos;/g, "'")
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&#8217;|&#8216;/g, "'")
+      .replace(/&#8220;|&#8221;/g, '"')
+      .replace(/&#8212;/g, '—')
+      .replace(/&#8211;/g, '–')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  const htmlToReadableText = (html: string): string => {
+    if (!html) return '';
+    return html
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|h[1-6]|li|blockquote)>/gi, '\n\n')
+      .replace(/<li[^>]*>/gi, '• ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;|&apos;/g, "'")
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&#8217;|&#8216;/g, "'")
+      .replace(/&#8220;|&#8221;/g, '"')
+      .replace(/&#8212;/g, '—')
+      .replace(/&#8211;/g, '–')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  };
+
+  const formatPublishDate = (dateStr: string): string => {
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr || 'Recently';
+      const now = Date.now();
+      const diffMs = now - d.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMins / 60);
+      const diffDays = Math.floor(diffHours / 24);
+
+      if (diffMins < 60 && diffMins >= 0) {
+        return `Today · ${Math.max(1, diffMins)}m ago`;
+      }
+      if (diffHours < 24 && diffHours >= 0) {
+        return `Today · ${diffHours}h ago`;
+      }
+      if (diffDays === 1) {
+        return 'Yesterday';
+      }
+      if (diffDays < 7 && diffDays > 1) {
+        return `${diffDays} days ago`;
+      }
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    } catch {
+      return 'Recently';
+    }
+  };
+
+  const parseFeedItems = (xml: string, sourceTitle: string, folder: string, baseUrl: string): any[] => {
+    const items: any[] = [];
+    const regex = /<(?:item|entry)\b[^>]*>([\s\S]*?)<\/(?:item|entry)>/gi;
+    let m: RegExpExecArray | null;
+
+    while ((m = regex.exec(xml)) !== null && items.length < 15) {
+      const block = m[1];
+      const titleMatch = block.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      const title = cleanHtml(titleMatch ? titleMatch[1] : 'Untitled');
+      if (!title || title.length < 2) continue;
+
+      let link = '';
+      const linkHrefMatch = block.match(/<link\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/i);
+      if (linkHrefMatch && linkHrefMatch[1]) {
+        link = linkHrefMatch[1].trim();
+      } else {
+        const linkTagMatch = block.match(/<link[^>]*>([sS]*?)<\/link>/i);
+        if (linkTagMatch && linkTagMatch[1]) {
+          link = cleanHtml(linkTagMatch[1]).trim();
+        }
+      }
+      if (!link) {
+        const guidMatch = block.match(/<guid[^>]*>([\s\S]*?)<\/guid>/i) || block.match(/<id[^>]*>([\s\S]*?)<\/id>/i);
+        if (guidMatch && guidMatch[1] && guidMatch[1].startsWith('http')) {
+          link = cleanHtml(guidMatch[1]).trim();
+        }
+      }
+      if (!link && baseUrl) link = baseUrl;
+      if (link.startsWith('/') && baseUrl) {
+        try { link = new URL(link, baseUrl).toString(); } catch { /* ignore */ }
+      }
+
+      const dateMatch = block.match(/<(?:pubDate|published|updated|dc:date)[^>]*>([\s\S]*?)<\/(?:pubDate|published|updated|dc:date)>/i);
+      const rawDate = dateMatch ? cleanHtml(dateMatch[1]) : '';
+      const publishedAt = formatPublishDate(rawDate);
+
+      const contentMatch = block.match(/<(?:content:encoded|content)[^>]*>([\s\S]*?)<\/(?:content:encoded|content)>/i);
+      const descMatch = block.match(/<description[^>]*>([\s\S]*?)<\/description>/i);
+      const summaryMatch = block.match(/<summary[^>]*>([\s\S]*?)<\/summary>/i);
+
+      const fullRaw = contentMatch ? contentMatch[1] : (descMatch ? descMatch[1] : (summaryMatch ? summaryMatch[1] : ''));
+      const cleanFull = htmlToReadableText(fullRaw);
+
+      const summaryRaw = summaryMatch ? summaryMatch[1] : (descMatch ? descMatch[1] : fullRaw);
+      let summary = cleanHtml(summaryRaw);
+      if (summary.length > 280) {
+        summary = summary.slice(0, 277).replace(/\s+\S*$/, '') + '...';
+      }
+      if (!summary) {
+        summary = title;
+      }
+
+      let bannerImage: string | undefined;
+      const mediaMatch = block.match(/<media:content\b[^>]*url\s*=\s*["']([^"']+)["'][^>]*>/i) ||
+                         block.match(/<enclosure\b[^>]*url\s*=\s*["']([^"']+)["'][^>]*type\s*=\s*["']image\/[^"']+["'][^>]*>/i) ||
+                         block.match(/<enclosure\b[^>]*type\s*=\s*["']image\/[^"']+["'][^>]*url\s*=\s*["']([^"']+)["'][^>]*>/i);
+      if (mediaMatch && mediaMatch[1]) {
+        bannerImage = mediaMatch[1];
+      } else {
+        const imgMatch = fullRaw.match(/<img\b[^>]*src\s*=\s*["'](https?:\/\/[^"']+)["'][^>]*>/i);
+        if (imgMatch && imgMatch[1] && !imgMatch[1].includes('feedburner') && !imgMatch[1].includes('tracking') && !imgMatch[1].includes('spacer')) {
+          bannerImage = imgMatch[1];
+        }
+      }
+
+      const words = cleanFull.split(/\s+/).filter(Boolean).length;
+      const minutes = Math.max(2, Math.round(words / 200));
+      const readTime = `${minutes} min read`;
+
+      const idHash = Buffer.from(link || title).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 16);
+      const id = `live_${idHash}`;
+
+      items.push({
+        id,
+        source: sourceTitle,
+        folder: folder || 'General',
+        title,
+        summary,
+        readTime,
+        url: link,
+        fullText: cleanFull.length > 120 ? cleanFull : (summary + '\n\n' + 'Read the complete article directly at: ' + link),
+        publishedAt,
+        bannerImage,
+        isOutOfBubble: false,
+        why: `From your ${sourceTitle} subscription.`
+      });
+    }
+    return items;
+  };
+
+  const fetchFeedArticles = async (feedUrl: string, sourceTitle: string, folder: string): Promise<any[]> => {
+    if (!feedUrl) return [];
+    const cached = feedCache.get(feedUrl);
+    if (cached && Date.now() - cached.timestamp < FEED_CACHE_TTL) {
+      return cached.items;
+    }
+    try {
+      const page = await fetchPublicPage(feedUrl, 7000);
+      if (page && page.ok && page.text) {
+        const parsed = parseFeedItems(page.text, sourceTitle, folder, feedUrl);
+        if (parsed.length > 0) {
+          feedCache.set(feedUrl, { timestamp: Date.now(), items: parsed });
+          return parsed;
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[FeedFetch] Failed to fetch feed for "${sourceTitle}" (${feedUrl}):`, err.message);
+    }
+    return [];
+  };
+
+  // Curate daily digest from live feeds using Gemini, OpenAI, Anthropic, or Deterministic engine
   app.post('/api/curate', async (req, res) => {
     try {
-      const { sources, signals, readingStats, serendipityDial, itemCount = 6, provider = 'gemini', apiKey: clientApiKey } = req.body;
+      const { sources: clientSources, signals, readingStats, serendipityDial = 30, itemCount = 6, provider = 'gemini', apiKey: clientApiKey } = req.body;
+
+      const activeSources = Array.isArray(clientSources) && clientSources.length > 0
+        ? clientSources.filter((s: any) => s.status !== 'failing')
+        : DEFAULT_FEEDS;
+
+      // 1. Fetch live articles from candidate sources in parallel
+      const feedResults = await Promise.allSettled(
+        activeSources.slice(0, 10).map((s: any) => fetchFeedArticles(s.feedUrl, s.title, s.folder))
+      );
+
+      let candidatePool: any[] = [];
+      for (const r of feedResults) {
+        if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+          candidatePool.push(...r.value);
+        }
+      }
+
+      // If pool is sparse, fetch from default verified feeds as supplement
+      if (candidatePool.length < 4) {
+        const defResults = await Promise.allSettled(
+          DEFAULT_FEEDS.map(f => fetchFeedArticles(f.feedUrl, f.title, f.folder))
+        );
+        for (const r of defResults) {
+          if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+            candidatePool.push(...r.value);
+          }
+        }
+      }
+
+      // Deduplicate candidates by url or title
+      const seenKeys = new Set<string>();
+      candidatePool = candidatePool.filter(item => {
+        if (!item || !item.title) return false;
+        const key = item.url || item.id || item.title;
+        if (seenKeys.has(key)) return false;
+        seenKeys.add(key);
+        return true;
+      });
 
       const moreTopics: string[] = Array.isArray(signals?.moreTopics)
         ? signals.moreTopics
@@ -401,56 +643,50 @@ async function startServer() {
       const moreIds: string[] = Array.isArray(signals?.moreIds) ? signals.moreIds : [];
       const lessIds: string[] = Array.isArray(signals?.lessIds) ? signals.lessIds : [];
 
-      const prompt = `You are a sophisticated personal reading editor. Your task is to curate a daily reading digest of exactly ${itemCount} items based on the user's subscriptions, recent reading signals, and a serendipity dial (${serendipityDial}% out of bubble).
+      // 2. Curate using AI if requested and candidate pool is ready
+      if (provider !== 'deterministic' && candidatePool.length >= 4) {
+        const candidatesForAi = candidatePool.slice(0, 30).map((item, idx) => ({
+          idx,
+          title: item.title,
+          source: item.source,
+          folder: item.folder,
+          summary: item.summary,
+          readTime: item.readTime
+        }));
 
-Subscriptions available: ${JSON.stringify(sources?.slice(0, 30) || [])}
-User explicit READING PREFERENCES:
-- Prioritized Reading Topics & Themes (MORE): ${JSON.stringify(moreTopics)}
-- De-emphasized Reading Topics & Themes (LESS): ${JSON.stringify(lessTopics)}
-- Specific article IDs voted thumbs-up: ${JSON.stringify(moreIds)}
-- Specific article IDs voted thumbs-down: ${JSON.stringify(lessIds)}
-Implicit reading completion stats (articles/topics finished): ${JSON.stringify(readingStats || {})}
-Serendipity Dial setting: ${serendipityDial}% (0% = stay close to established interests; 100% = strong stretch into new intellectual territories).
+        const prompt = `You are a sophisticated personal reading editor. Your task is to curate a daily reading digest of exactly ${itemCount} items by selecting the best articles from the live candidate pool below based on the user's signals and serendipity setting (${serendipityDial}%).
 
-CRITICAL CURATION PRINCIPLES (READING PREFERENCES VS. AUTHOR/FEED PREFERENCES):
-1. The user's thumbs-up and thumbs-down signals represent topical READING PREFERENCES (intellectual domains, formats, and themes such as economic history, institutional design, philosophy, or architectural craft), NOT author or feed subscription preferences.
-2. DO NOT exclude, unsubscribe, or mute entire feeds/authors when a topic is marked LESS. All subscribed feeds remain active and eligible; simply surface articles from those feeds that match the user's preferred reading topics, and avoid the de-emphasized topics.
-3. Prioritize topics in MORE across all the user's subscribed feeds and writers.
-4. Editorial "why" rationale: Explain why the piece was selected based on topical curiosity, intellectual depth, or category relevance (e.g., "In your Strategy & Craft reading queue", "Follows your interest in economic history", "A deliberate stretch into architectural history"). Never state "More from this author/feed".
-5. Generate exactly ${itemCount} articles.
-6. At least 1 (or 2 if serendipity dial is >= 40) must be an "isOutOfBubble": true stretch item from outside standard interests, clearly labelled as a stretch.
-7. Each item needs:
-   - id: unique string
-   - title: compelling article title
-   - source: source publication or author name
-   - folder: category folder/topic
-   - readTime: estimated reading time (e.g. "6 min read")
-   - why: ONE short sentence of plain English explaining the reading rationale
-   - summary: 2-3 sentence teaser
-   - url: simulated article url
-   - fullText: full article text (400-600 words of rich, thoughtful essay or long-form prose suitable for a clean reading view).
-   - isOutOfBubble: boolean (true for stretch items)
+Live Candidate Articles:
+${JSON.stringify(candidatesForAi)}
 
-Return ONLY valid JSON array of objects with these exact keys.`;
+User Reading Preferences:
+- Prioritized Topics (MORE): ${JSON.stringify(moreTopics)}
+- De-emphasized Topics (LESS): ${JSON.stringify(lessTopics)}
+- Articles thumbs-up: ${JSON.stringify(moreIds)}
+- Articles thumbs-down: ${JSON.stringify(lessIds)}
+Serendipity Dial: ${serendipityDial}% (0% = stay close to established interests; 100% = stretch into unfamiliar intellectual territories).
 
-      if (provider !== 'deterministic') {
+CURATION RULES:
+1. Select exactly ${itemCount} unique items from the candidate pool using their "idx".
+2. At least 1 (or 2 if serendipity >= 40) should be an "isOutOfBubble": true stretch item from a folder different from the user's top interests.
+3. For each selected item, write a 1-sentence editorial "why" rationale explaining why this piece was selected (e.g. "Selected for your reading interest in Economics", "A thoughtful design retrospective", "Deliberate stretch: outside your usual tech routine").
+4. Return ONLY a JSON array of objects with keys: "idx" (number), "why" (string), "isOutOfBubble" (boolean).`;
+
+        let aiSelections: Array<{ idx: number; why: string; isOutOfBubble: boolean }> | null = null;
+
         if (provider === 'openai' && clientApiKey?.trim()) {
           try {
             const parsed = await callOpenAI(clientApiKey.trim(), prompt);
-            const digestItems = Array.isArray(parsed) ? parsed : parsed?.digest;
-            if (Array.isArray(digestItems) && digestItems.length > 0) {
-              return res.json({ digest: digestItems, generatedByAI: true });
-            }
+            const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
+            if (Array.isArray(list) && list.length > 0) aiSelections = list;
           } catch (e: any) {
             console.warn('[Curator] OpenAI curation failed, falling back:', e.message);
           }
         } else if (provider === 'anthropic' && clientApiKey?.trim()) {
           try {
             const parsed = await callAnthropic(clientApiKey.trim(), prompt);
-            const digestItems = Array.isArray(parsed) ? parsed : parsed?.digest;
-            if (Array.isArray(digestItems) && digestItems.length > 0) {
-              return res.json({ digest: digestItems, generatedByAI: true });
-            }
+            const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
+            if (Array.isArray(list) && list.length > 0) aiSelections = list;
           } catch (e: any) {
             console.warn('[Curator] Anthropic curation failed, falling back:', e.message);
           }
@@ -468,254 +704,71 @@ Return ONLY valid JSON array of objects with these exact keys.`;
                   responseMimeType: 'application/json'
                 }
               });
-
               if (response.text) {
-                const data = JSON.parse(response.text);
-                if (Array.isArray(data) && data.length > 0) {
-                  return res.json({ digest: data, generatedByAI: true });
-                }
+                const parsed = JSON.parse(response.text);
+                const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
+                if (Array.isArray(list) && list.length > 0) aiSelections = list;
               }
-            } catch {
-              console.warn('[Curator] AI generation unavailable, serving high-signal editorial curation algorithm.');
+            } catch (err: any) {
+              console.warn('[Curator] Gemini curation failed:', err.message);
             }
+          }
+        }
+
+        if (aiSelections && aiSelections.length > 0) {
+          const chosenArticles: any[] = [];
+          const usedIdx = new Set<number>();
+          for (const sel of aiSelections) {
+            const candidate = candidatePool[sel.idx];
+            if (candidate && !usedIdx.has(sel.idx)) {
+              usedIdx.add(sel.idx);
+              chosenArticles.push({
+                ...candidate,
+                why: sel.why || candidate.why,
+                isOutOfBubble: Boolean(sel.isOutOfBubble)
+              });
+            }
+          }
+
+          if (chosenArticles.length >= Math.min(itemCount, candidatePool.length)) {
+            return res.json({ digest: chosenArticles.slice(0, itemCount), generatedByAI: true });
           }
         }
       }
 
-      // Curated pool with real signal-aware ranking when AI key is missing or call fails
-      const pool = [
-        {
-          id: 'item_0',
-          title: 'Nobody Ever Gets Credit for Fixing Problems that Never Happened',
-          source: 'Nicole Williams',
-          folder: 'Strategy & Craft',
-          readTime: '6 min read',
-          why: 'You finish this writer almost every time.',
-          summary: 'Working harder pays off fast; working smarter pays off with interest. The fire you put out earns a thank you; the fire you prevented earns nothing.',
-          url: 'https://substack.com/@pmresearcher/fixing-unseen-problems',
-          bannerImage: 'https://images.unsplash.com/photo-1508873696983-2df5293cb32f?auto=format&fit=crop&w=1200&q=80',
-          fullText: `What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing.
-
-In organizational dynamics, heroic firefighting is visible, dramatic, and emotionally compelling. When a server crashes at 2 AM or a supply chain breaks on a holiday weekend, the engineer or manager who stays up all night to patch the leak is celebrated. They receive public recognition, awards, and promotions because everyone witnessed the catastrophe and its subsequent resolution.
-
-Quiet prevention, by contrast, is completely invisible. The architectural refactor that eliminated the concurrency race condition before it ever triggered an outage produces no metrics, no alarms, and no drama. Nobody sends an email saying: "Congratulations, the system did not crash today."
-
-To build lasting systems—whether technical architectures, institutions, or personal intellectual routines—we must cultivate taste for the uncelebrated disciplines: calm prevention, rigorous invariants, and quiet curation.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_1',
-          title: 'The Architecture of Long-Lived Systems and Institutional Memory',
-          source: 'Dan Luu',
-          folder: 'Tech & Engineering',
-          readTime: '7 min read',
-          why: 'You finish this writer almost every time.',
-          summary: 'An exploration of how organizations maintain technical knowledge across decades without falling victim to institutional amnesia.',
-          url: 'https://danluu.com/systems-memory',
-          fullText: `When building software or large institutions, the hardest problem is rarely writing the initial code or establishing the charter. The hardest problem is ensuring that the tacit knowledge of why decisions were made survives the departure of the people who made them.
-
-In most modern engineering teams, documentation decays rapidly because it is treated as a chore rather than a living artifact. When an engineer leaves, their mental model of the system leaves with them. Over time, the codebase becomes a series of archaeological layers where current maintainers are afraid to touch certain modules because nobody remembers what load-bearing assumptions they rely on.
-
-Contrast this with organizations that treat institutional memory as a first-class engineering discipline. In these environments, every significant architectural refactoring begins with a design doc that records not just the chosen path, but the three discarded alternatives and the precise failure modes that ruled them out. When new engineers join, they do not just read the code; they read the intellectual history of the product.
-
-The lesson for individual readers and curators is similar. Our reading diets often suffer from amnesia. We consume hundreds of articles a week, retaining fleeting impressions while forgetting the foundational frameworks that connected them. Building a personal reading digest is not just about finding new things to read; it is about creating a deliberate anchor for what we choose to retain.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_2',
-          title: 'Venetian Banking Innovations and the Birth of Modern Credit',
-          source: 'Marginal Revolution',
-          folder: 'Economics',
-          readTime: '9 min read',
-          why: 'Follows on from the Byzantine trade piece you read last week.',
-          summary: 'How 14th-century merchants in the Venetian lagoon invented bills of exchange and fractional reserve practices that powered the Renaissance.',
-          url: 'https://marginalrevolution.com/venice-credit',
-          fullText: `In the crowded piazzas of 14th-century Venice, merchants faced a logistical nightmare. Transporting gold coin across pirate-infested Mediterranean trade routes was both dangerous and inefficient. Out of this necessity arose the giro bank and the bill of exchange—instruments that transformed credit from a personal favor between acquaintances into a liquid, transferable financial asset.
-
-A merchant in Constantinople could deposit silver with a banker and receive a scrap of parchment. Upon arriving in Venice, he could present that parchment to a correspondent banker and collect local currency without a single ounce of metal crossing the sea. More importantly, those parchment bills could be endorsed and passed to third parties to settle debts, effectively creating an early form of private paper money.
-
-This financial leap was not merely technical; it required a profound evolution in institutional trust. Venice established specialized maritime courts that resolved commercial disputes in days rather than months, ensuring that the velocity of capital remained high. When trust is codified into reliable legal frameworks, economies unlock unprecedented productive capacity.
-
-For the modern reader interested in economic history, the trajectory from Byzantine trade networks to Venetian banking and onward to Renaissance finance illustrates how trade routes are invariably preceded by financial innovation.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_3',
-          title: 'The Unseen Geometry of Traditional Japanese Joinery',
-          source: 'A List Apart',
-          folder: 'Design',
-          readTime: '5 min read',
-          why: 'In your design folder.',
-          summary: 'Why interlocking timber joints without nails or glue achieve seismic resilience and enduring aesthetic harmony.',
-          url: 'https://alistapart.com/japanese-joinery',
-          fullText: `In traditional Japanese timber architecture, master carpenters construct soaring temples and multi-story pagodas without a single nail, screw, or drop of glue. Instead, they rely on complex interlocking joints—such as the sashigane and kanawa tsugi—that lock tighter as wood expands and contracts with humidity and seismic tremors.
-
-This approach reflects a philosophy where structure and ornamentation are inseparable. The joint is both the engineering mechanism that bears the load and the visual signature of the craftsperson. Every angle is calculated to distribute stress across multiple vectors, allowing ancient wooden structures to sway gracefully during earthquakes rather than fracturing under rigid resistance.
-
-Digital design often suffers from the opposite impulse: adding layers of surface decoration while hiding the structural fragility underneath. When we examine how great systems are built, whether in timber or software, the most resilient designs are those where every connection is self-supporting and transparent.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_4',
-          title: 'Stratechery: The Aggregation Theory of Modern Media',
-          source: 'Stratechery by Ben Thompson',
-          folder: 'Tech & Strategy',
-          readTime: '11 min read',
-          why: 'You finish this writer almost every time.',
-          summary: 'How the internet shifted power from content producers to content aggregators, and what comes next.',
-          url: 'https://stratechery.com/aggregation-theory',
-          fullText: `For decades, media companies enjoyed local monopolies because distribution was physically constrained. If you owned the printing press, the delivery trucks, or the cable television lines, you controlled access to the audience. Content creators had to partner with distributors on unfavorable terms because there was no alternative path to the consumer.
-
-The internet inverted this power dynamic completely. Distribution marginal cost dropped to zero, and all content became instantly accessible globally. In this new paradigm, the bottleneck shifted from distribution to discovery.
-
-Enter the Aggregator. Companies like Google, Facebook, Apple, and Spotify do not produce content; they aggregate users by providing superior discovery and curation experiences. Because the aggregator owns the primary relationship with the consumer, suppliers of content—news publishers, musicians, independent writers—must compete for placement on the aggregator's terms.
-
-Understanding Aggregation Theory is essential for anyone trying to make sense of modern digital media ecosystems. It explains why traditional paywalls succeed for niche professional monopolies while general interest publications struggle to maintain independent pricing power.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_5',
-          title: 'Deep Time and the 10,000-Year Clock',
-          source: 'Long Now Foundation',
-          folder: 'Philosophy & Long-term',
-          readTime: '6 min read',
-          why: 'In your philosophy folder.',
-          summary: 'Designing mechanical artifacts intended to run accurately for millennia requires rethinking human impatience.',
-          url: 'https://longnow.org/10000-year-clock',
-          fullText: `Modern civilization suffers from a chronic temporal myopia. We plan in quarterly earnings reports, political election cycles, and 24-hour news cycles. Yet the most profound challenges facing humanity—ecological stewardship, nuclear waste management, infrastructure resilience—operate on timescales of centuries and millennia.
-
-The 10,000-Year Clock, designed to tick once a year, chime once a century, and have its cuckoo come out every millennium, is an exercise in shifting human perspective. To build an artifact that can endure for ten millennia, engineers must solve problems of material fatigue, thermal expansion, and human curiosity that most modern projects never encounter.
-
-When we force ourselves to think in deep time, our daily priorities shift. We realize that most of the urgent noise that consumes our morning attention is ephemeral, while the quiet, compounding choices we make today are what truly shape the world our descendants inherit.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_6',
-          title: 'Why Small Tools Outlast Grand Platforms',
-          source: 'Dan Luu',
-          folder: 'Tech & Engineering',
-          readTime: '8 min read',
-          why: 'Consistent with the engineering essays you read to the end.',
-          summary: 'A look at unix utilities, plain text formats, and why narrow software endures while ambitious suites collapse.',
-          url: 'https://danluu.com/small-tools',
-          fullText: `Every decade brings a wave of all-in-one platforms promising to unify communication, documents, tasks, and knowledge under a single proprietary roof. Almost inevitably, those platforms grow sluggish, accumulate conflicting workflows, and eventually vanish when corporate priorities shift.
-
-Meanwhile, small single-purpose tools built around open formats keep working quietly for thirty or forty years. Their durability comes from restraint: they do one job cleanly, expose predictable interfaces, and refuse to trap user data inside opaque silos.
-
-For anyone designing personal software, this is a liberating principle. When a tool has a narrow mandate and clear boundaries, it remains comprehensible to its user long after larger products become burdensome.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_7',
-          title: 'The Medici Ledger: Double-Entry Bookkeeping as Cultural Engine',
-          source: 'Marginal Revolution',
-          folder: 'Economics',
-          readTime: '7 min read',
-          why: 'Next step from Venetian credit into Renaissance finance.',
-          summary: 'How systematic balance sheets allowed Florentine merchants to coordinate branches across Europe without losing control.',
-          url: 'https://marginalrevolution.com/medici-ledger',
-          fullText: `Before double-entry bookkeeping spread across northern Italy, even wealthy trading houses struggled to tell whether a distant voyage had truly turned a profit or simply moved cash from one pocket to another. Luca Pacioli's codification of Venetian accounting methods turned commerce into a legible discipline.
-
-With debits and credits mirrored across every transaction, partners in Florence could audit branches in Bruges or London with confidence. Accounting did not merely record Renaissance wealth; it made long-distance trust scalable.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_8',
-          title: 'Scaling Laws and the Economics of Inference',
-          source: 'The Anthropic Stack',
-          folder: 'Tech & AI',
-          readTime: '10 min read',
-          why: 'In your Tech & AI folder.',
-          summary: 'Why the bottleneck in applied machine intelligence is shifting from training runs to latency, verification, and cost per decision.',
-          url: 'https://anthropic.com/research/inference-economics',
-          fullText: `For several years, progress in machine intelligence was measured primarily by the size of training clusters. Now the decisive engineering frontier lies in inference: how much reasoning can be delivered reliably within a tight budget of latency and compute.
-
-When intelligence becomes cheap enough to run quietly in the background—curating feeds, verifying citations, or parsing messy documents—the user interface changes. Instead of prompting a chat box, people interact with calm editorial tools that do the sifting ahead of time.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_9',
-          title: 'The Quiet Rise of Municipal Water Architects',
-          source: 'Prospect Magazine',
-          folder: 'Culture',
-          readTime: '6 min read',
-          why: 'In your Culture folder.',
-          summary: 'Inside the unglamorous civic engineering reshaping how European cities survive simultaneous droughts and flash floods.',
-          url: 'https://prospectmagazine.co.uk/water-architects',
-          fullText: `Beneath every resilient city lies an invisible choreography of retention basins, permeable stone plazas, and gravity-fed canals. While skyline towers draw headlines, urban hydrologists are quietly rewriting the rules of civic design so neighborhoods absorb sudden storms instead of channeling them into overwhelmed rivers.
-
-Walking through rebuilt squares in Rotterdam or Lyon, most residents notice only shaded trees and stepped amphitheaters—unaware that the entire plaza doubles as a flood buffer.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_10',
-          title: 'The Sonification of Stellar Nurseries: Listening to Nebulae',
-          source: 'The New Yorker - Books',
-          folder: 'Culture',
-          readTime: '8 min read',
-          why: 'Deliberate stretch: Outside your usual tech and economics routine.',
-          summary: 'How astronomers are translating James Webb Space Telescope infrared data into audible soundscapes.',
-          url: 'https://www.newyorker.com/science/stellar-sonification',
-          fullText: `For centuries, astronomy has been an overwhelmingly visual science. We chart the universe through photographs rendered in false color, mapping light waves that our eyes cannot naturally perceive. But in recent years, astrophysicists and sound artists have begun translating astronomical telescope data into audible frequencies—a process known as sonification.
-
-When the infrared emissions of the Carina Nebula or the Pillars of Creation are mapped onto pitch, tempo, and timbre, something extraordinary happens. Dense regions of collapsing gas translate into deep, resonant bass drones, while newborn stars twinkling in the cluster sound like crystalline chimes cascading across the stereo field.
-
-This auditory rendering does more than provide an artistic spectacle for planetarium visitors. It allows researchers to perceive complex spatial patterns in stellar data that might go unnoticed in visual spectrograms. The human ear is remarkably acute at discerning overlapping acoustic frequencies and rhythmic anomalies.
-
-For readers whose typical intellectual diet is anchored in economics, technology, and policy, stepping into the auditory universe of stellar sonification offers a profound reminder of the beauty of interdisciplinary perception.`,
-          isOutOfBubble: true
-        },
-        {
-          id: 'item_11',
-          title: 'How Medieval Bell Founders Tuned Bronze by Ear',
-          source: 'World Politics & History',
-          folder: 'History',
-          readTime: '7 min read',
-          why: 'Deliberate stretch: Craft acoustics from outside your usual reading trail.',
-          summary: 'Before electronic frequency analyzers, Flemish foundry families discovered how lathe-scraping inner ribs unlocked pure harmonic overtones.',
-          url: 'https://worldhistory.com/bell-acoustics',
-          fullText: `A church bell does not produce a single musical note; it rings with a complex stack of partials that can easily clash into a metallic clang. In the seventeenth century, brothers Pieter and François Hemony solved a puzzle that had stumped European metalworkers for centuries: how to cast and shave bronze profiles so five distinct overtones align in clear harmony.
-
-Working with nothing more than tuning rods and disciplined ears, they turned civic bell towers into precision instruments heard across entire valleys.`,
-          isOutOfBubble: true
-        }
-      ];
-
-      const matchesTopicSignal = (item: typeof pool[0], topicList: string[]) =>
+      // 3. Deterministic signal-aware curation over the live candidate pool
+      const matchesTopicSignal = (item: any, topicList: string[]) =>
         topicList.some(sig => {
           const s = sig.toLowerCase().trim();
           if (!s) return false;
           return (
-            item.folder.toLowerCase() === s ||
-            item.title.toLowerCase().includes(s) ||
-            item.summary.toLowerCase().includes(s)
+            (item.folder && item.folder.toLowerCase().includes(s)) ||
+            (item.title && item.title.toLowerCase().includes(s)) ||
+            (item.summary && item.summary.toLowerCase().includes(s))
           );
         });
 
-      const activeSourceNames = new Set(
-        Array.isArray(sources)
-          ? sources.filter((s: any) => s.status !== 'failing').map((s: any) => String(s.title).toLowerCase())
-          : []
-      );
-
-      const scored = pool
+      const scored = candidatePool
         .filter(item => !lessIds.includes(item.id) && !matchesTopicSignal(item, lessTopics))
         .map((item, idx) => {
           let score = 100 - idx;
-          let why = item.why;
+          let why = `Top dispatch from ${item.source}.`;
+          let isOutOfBubble = false;
 
-          if (activeSourceNames.has(item.source.toLowerCase())) {
-            score += 10;
-          }
           if (moreIds.includes(item.id) || matchesTopicSignal(item, moreTopics)) {
-            score += 35;
+            score += 40;
             why = `Selected for your reading interest in ${item.folder}.`;
           }
           if (readingStats && readingStats[item.id]?.finished) {
             score += 5;
           }
 
-          return { ...item, why, _score: score };
+          if (idx % 3 === 2) {
+            isOutOfBubble = true;
+            why = 'Deliberate stretch: outside your usual reading routine.';
+          }
+
+          return { ...item, why, isOutOfBubble, _score: score };
         });
 
       const inBubble = scored
@@ -726,7 +779,7 @@ Working with nothing more than tuning rods and disciplined ears, they turned civ
         .filter(i => i.isOutOfBubble)
         .sort((a, b) => b._score - a._score);
 
-      const stretchTarget = serendipityDial >= 50 ? Math.min(2, outBubble.length) : Math.min(1, outBubble.length);
+      const stretchTarget = serendipityDial >= 50 ? Math.min(2, outBubble.length) : (serendipityDial >= 20 ? Math.min(1, outBubble.length) : 0);
       const regularTarget = Math.max(0, itemCount - stretchTarget);
 
       const selected = [
@@ -734,337 +787,69 @@ Working with nothing more than tuning rods and disciplined ears, they turned civ
         ...outBubble.slice(0, stretchTarget)
       ].map(({ _score, ...rest }) => rest);
 
-      res.json({ digest: selected, generatedByAI: false });
+      res.json({ digest: selected.slice(0, itemCount), generatedByAI: false });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to generate digest' });
     }
   });
 
-  // Comprehensive multi-source feed stream endpoint
+  // Comprehensive multi-source live feed stream endpoint
   app.post('/api/feed-stream', async (req, res) => {
     try {
-      const { sourceTitle } = req.body;
+      const { sourceTitle, sources: clientSources } = req.body;
+      const allSources = Array.isArray(clientSources) && clientSources.length > 0
+        ? clientSources
+        : DEFAULT_FEEDS;
 
-      const feedArticles = [
-        {
-          id: 'fa_nw_1',
-          source: 'Nicole Williams',
-          folder: 'Strategy & Craft',
-          title: 'Nobody Ever Gets Credit for Fixing Problems that Never Happened',
-          publishedAt: 'Today · 30m ago',
-          readTime: '6 min read',
-          summary: 'What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing.',
-          url: 'https://substack.com/@pmresearcher/fixing-unseen-problems',
-          fullText: `What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing.
+      let targetFeeds: Array<{ title: string; feedUrl: string; folder: string }> = [];
 
-In organizational dynamics, heroic firefighting is visible, dramatic, and emotionally compelling. When a server crashes at 2 AM or a supply chain breaks on a holiday weekend, the engineer or manager who stays up all night to patch the leak is celebrated.
-
-Quiet prevention, by contrast, is completely invisible. The architectural refactor that eliminated the concurrency race condition before it ever triggered an outage produces no metrics, no alarms, and no drama.`,
-          bannerImage: 'https://images.unsplash.com/photo-1508873696983-2df5293cb32f?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Top pick from PM Researcher.'
-        },
-        {
-          id: 'fa_ant_1',
-          source: 'The Anthropic Stack',
-          folder: 'Tech & AI',
-          title: 'Scaling Laws and the Economics of Inference',
-          publishedAt: 'Today · 35m ago',
-          readTime: '10 min read',
-          summary: 'Why the engineering bottleneck in machine intelligence is shifting from massive training runs to inference throughput, verification budgets, and latency guarantees.',
-          url: 'https://anthropic.com/research/inference-economics',
-          fullText: `For several years, progress in machine intelligence was measured primarily by the scale of training compute. Today, the decisive competitive frontier is inference: how much reasoning can be executed reliably within strict latency envelopes.
-
-When inference becomes abundant and fast, applications shift from synchronous chat interfaces to quiet background editors. Instead of asking a prompt box for suggestions, tools pre-compute digests, verify citations, and organize material before the user even opens their screen.
-
-This architectural shift rewards software that exercises editorial restraint. The goal is no longer generating maximal text, but delivering dense, high-signal curation that respects human attention.`,
-          bannerImage: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'In your Tech & AI folder.'
-        },
-        {
-          id: 'fa_ant_2',
-          source: 'The Anthropic Stack',
-          folder: 'Tech & AI',
-          title: 'Constitutional Steering: Guiding Agentic Workflows with Verifiable Invariants',
-          publishedAt: 'Yesterday · 4:15 PM',
-          readTime: '8 min read',
-          summary: 'How system-level constitutions and invariant tests keep multi-step autonomous processes aligned without brittleness.',
-          url: 'https://anthropic.com/research/constitutional-steering',
-          fullText: `Autonomous agents often derail not because their core logic fails, but because small drift across sequential tool invocations compounds into hallucination.
-
-By enforcing verifiable invariants at boundary transitions, systems can maintain predictable trajectory. The key is treating every intermediate tool call as an auditable contract with strict post-conditions rather than an opaque block of text.`,
-          bannerImage: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Follows your interest in software architecture.'
-        },
-        {
-          id: 'fa_ant_3',
-          source: 'The Anthropic Stack',
-          folder: 'Tech & AI',
-          title: 'Measuring Latency Floor Reductions in Parallel Tool Invocations',
-          publishedAt: 'Nov 11 · 9:00 AM',
-          readTime: '6 min read',
-          summary: 'Benchmarking the architectural advantages of co-executing verification tools in single rounds.',
-          url: 'https://anthropic.com/research/tool-latency-floors',
-          fullText: `When client applications wait for sequential roundtrips between distributed services, latency degrades user engagement quickly.
-
-Batching queries into single parallel dispatches reduces P95 turnaround times significantly while keeping system state atomic. This design pattern proves critical for responsive mobile web applications.`,
-          bannerImage: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Engineering mechanics from The Anthropic Stack.'
-        },
-        {
-          id: 'fa_wh_1',
-          source: 'World Politics & History',
-          folder: 'History',
-          title: 'How Medieval Bell Founders Tuned Bronze by Ear',
-          publishedAt: 'Today · 1h ago',
-          readTime: '7 min read',
-          summary: 'Before electronic spectrum analyzers, Flemish foundry masters learned how shaving internal bronze ribs unlocked harmonic resonance across five octaves.',
-          url: 'https://worldhistory.com/bell-acoustics',
-          fullText: `A cast church bell produces five distinct acoustic overtones: the strike note, the hum, the tierce, the quint, and the nominal. In unmachined bells, these partials clash discordantly.
-
-In the seventeenth century, the Hemony brothers perfected vertical lathe carving on bronze bells, cutting away metal from specific inner rings until the five frequencies resonated in pure concord. This acoustic breakthrough transformed European cityscapes into harmonious musical landscapes.`,
-          bannerImage: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'In your History folder.'
-        },
-        {
-          id: 'fa_wh_2',
-          source: 'World Politics & History',
-          folder: 'History',
-          title: 'The Grain Routes of Byzantium: Logistics of Imperial Survival',
-          publishedAt: 'Yesterday · 2:30 PM',
-          readTime: '9 min read',
-          summary: 'How Constantinople survived centuries of siege through fortified granaries, maritime grain fleets, and price stabilization laws.',
-          url: 'https://worldhistory.com/byzantine-grain-routes',
-          fullText: `The survival of Byzantium was fundamentally an exercise in grain logistics. With hundreds of thousands of citizens confined behind the Theodosian walls, supply lines from Egypt and the Black Sea coasts had to remain unbroken.
-
-The empire established the praefectus annonae to oversee shipping manifests, build earthquake-resilient stone silos, and distribute bread rations during famine. When military lines broke, administrative logistics kept civilization afloat.`,
-          bannerImage: 'https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Direct continuation of the Byzantine trade series.'
-        },
-        {
-          id: 'fa_prospect_1',
-          source: 'Prospect Magazine',
-          folder: 'Culture',
-          title: 'The Quiet Rise of Municipal Water Architects',
-          publishedAt: 'Today · 2h ago',
-          readTime: '6 min read',
-          summary: 'Inside the unglamorous civic civil engineering reshaping how European cities absorb torrential storms while restoring urban biodiversity.',
-          url: 'https://prospectmagazine.co.uk/water-architects',
-          fullText: `Beneath every resilient metropolis lies a network of retention ponds, subterranean drainage channels, and porous paving stones designed to prevent street inundation.
-
-In Rotterdam, public squares serve as basketball courts in dry weather and sunken retention basins during cloudbursts. Rather than hiding storm water in concrete culverts, contemporary urban hydrologists integrate water openly into public civic life.`,
-          bannerImage: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'In your Culture folder.'
-        },
-        {
-          id: 'fa_prospect_2',
-          source: 'Prospect Magazine',
-          folder: 'Culture',
-          title: 'The Rebirth of European Night Trains and Slow Transit',
-          publishedAt: 'Nov 12 · 11:20 AM',
-          readTime: '7 min read',
-          summary: 'Why overnight sleeper lines from Vienna to Brussels are filling up with travelers who value unhurried transit over airport security lines.',
-          url: 'https://prospectmagazine.co.uk/night-trains',
-          fullText: `As aviation taxes and airport congestion mount, European travelers are returning to overnight sleeper routes. Falling asleep in Berlin and waking up in Paris offers a restorative rhythm lost in short-haul air travel.
-
-The renaissance of cross-border rail highlights a broader shift toward deliberate slowness in personal technology, travel, and media consumption.`,
-          bannerImage: 'https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'From Prospect Magazine.'
-        },
-        {
-          id: 'fa_bhaskar_1',
-          source: 'Dr. Bhaskar Economics',
-          folder: 'Economics',
-          title: 'Fractional Reserve Mechanics in Early Renaissance Trading Hubs',
-          publishedAt: 'Today · 3h ago',
-          readTime: '9 min read',
-          summary: 'How deposit receipts in Genoa and Venice evolved into liquid secondary credit instruments that bypassed papal usury restrictions.',
-          url: 'https://bhaskar.econ/fractional-reserve-genoa',
-          fullText: `Medieval merchant bankers discovered that only a small portion of deposited gold coin was ever withdrawn simultaneously. By issuing transfer receipts to settlement merchants, banks unlocked multiplier credit that fueled naval shipping.
-
-This paper analyses how maritime credit contracts evolved within commercial guilds to establish early capital reserves without central bank oversight.`,
-          bannerImage: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'In your Economics folder.'
-        },
-        {
-          id: 'fa_dan_1',
-          source: 'Dan Luu',
-          folder: 'Tech & Engineering',
-          title: 'The Architecture of Long-Lived Systems and Institutional Memory',
-          publishedAt: 'Today · 4h ago',
-          readTime: '7 min read',
-          summary: 'An exploration of how engineering organizations preserve architectural rationale across decades without succumbing to institutional amnesia.',
-          url: 'https://danluu.com/systems-memory',
-          fullText: `When building software or large institutions, the hardest problem is rarely writing the initial code or establishing the charter. The hardest problem is ensuring that the tacit knowledge of why decisions were made survives the departure of the people who made them.
-
-In most modern engineering teams, documentation decays rapidly because it is treated as a chore rather than a living artifact. When an engineer leaves, their mental model of the system leaves with them. Over time, the codebase becomes a series of archaeological layers where current maintainers are afraid to touch certain modules because nobody remembers what load-bearing assumptions they rely on.`,
-          bannerImage: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'You finish this writer almost every time.'
-        },
-        {
-          id: 'fa_dan_2',
-          source: 'Dan Luu',
-          folder: 'Tech & Engineering',
-          title: 'Why Small Tools Outlast Grand Platforms',
-          publishedAt: 'Yesterday · 10:00 AM',
-          readTime: '8 min read',
-          summary: 'A look at unix utilities, plain text formats, and why narrow software endures while ambitious suites collapse under feature bloat.',
-          url: 'https://danluu.com/small-tools',
-          fullText: `Every decade brings a wave of all-in-one platforms promising to unify communication, documents, tasks, and knowledge under a single proprietary roof. Almost inevitably, those platforms grow sluggish, accumulate conflicting workflows, and eventually vanish when corporate priorities shift.
-
-Meanwhile, small single-purpose tools built around open formats keep working quietly for thirty or forty years. Their durability comes from restraint: they do one job cleanly, expose predictable interfaces, and refuse to trap user data inside opaque silos.`,
-          bannerImage: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Dan Luu engineering archive.'
-        },
-        {
-          id: 'fa_strat_1',
-          source: 'Stratechery by Ben Thompson',
-          folder: 'Tech & Strategy',
-          title: 'Stratechery: The Aggregation Theory of Modern Media',
-          publishedAt: 'Today · 5h ago',
-          readTime: '11 min read',
-          summary: 'How zero marginal distribution cost inverted media power dynamics, and why owning discovery dominates owning supply.',
-          url: 'https://stratechery.com/aggregation-theory',
-          fullText: `For decades, media companies enjoyed local monopolies because distribution was physically constrained. If you owned the printing press, the delivery trucks, or the cable television lines, you controlled access to the audience.
-
-The internet inverted this power dynamic completely. Distribution marginal cost dropped to zero, and all content became instantly accessible globally. In this new paradigm, the bottleneck shifted from distribution to discovery.`,
-          bannerImage: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'You finish this writer almost every time.'
-        },
-        {
-          id: 'fa_mr_1',
-          source: 'Marginal Revolution',
-          folder: 'Economics',
-          title: 'Venetian Banking Innovations and the Birth of Modern Credit',
-          publishedAt: 'Today · 6h ago',
-          readTime: '9 min read',
-          summary: 'How 14th-century merchants in the Venetian lagoon invented bills of exchange and giro banking that powered the Renaissance.',
-          url: 'https://marginalrevolution.com/venice-credit',
-          fullText: `In the crowded piazzas of 14th-century Venice, merchants faced a logistical nightmare. Transporting gold coin across pirate-infested Mediterranean trade routes was both dangerous and inefficient. Out of this necessity arose the giro bank and the bill of exchange—instruments that transformed credit from a personal favor between acquaintances into a liquid, transferable financial asset.`,
-          bannerImage: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Follows on from the Byzantine trade piece.'
-        },
-        {
-          id: 'fa_mr_2',
-          source: 'Marginal Revolution',
-          folder: 'Economics',
-          title: 'The Medici Ledger: Double-Entry Bookkeeping as Cultural Engine',
-          publishedAt: 'Yesterday · 8:15 AM',
-          readTime: '7 min read',
-          summary: 'How systematic balance sheets allowed Florentine merchant houses to coordinate overseas branches with audit confidence.',
-          url: 'https://marginalrevolution.com/medici-ledger',
-          fullText: `Before double-entry bookkeeping spread across northern Italy, even wealthy trading houses struggled to tell whether a distant voyage had truly turned a profit or simply moved cash from one pocket to another. Luca Pacioli's codification of Venetian accounting methods turned commerce into a legible discipline.`,
-          bannerImage: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Next step in Renaissance financial history.'
-        },
-        {
-          id: 'fa_ala_1',
-          source: 'A List Apart',
-          folder: 'Design',
-          title: 'The Unseen Geometry of Traditional Japanese Joinery',
-          publishedAt: 'Today · 7h ago',
-          readTime: '5 min read',
-          summary: 'Why interlocking timber joints without nails or glue achieve seismic resilience and timeless aesthetic harmony.',
-          url: 'https://alistapart.com/japanese-joinery',
-          fullText: `In traditional Japanese timber architecture, master carpenters construct soaring temples and multi-story pagodas without a single nail, screw, or drop of glue. Instead, they rely on complex interlocking joints—such as the sashigane and kanawa tsugi—that lock tighter as wood expands and contracts with humidity and seismic tremors.`,
-          bannerImage: 'https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'In your Design folder.'
-        },
-        {
-          id: 'fa_longnow_1',
-          source: 'Long Now Foundation',
-          folder: 'Philosophy & Long-term',
-          title: 'Deep Time and the 10,000-Year Clock',
-          publishedAt: 'Yesterday · 5:00 PM',
-          readTime: '6 min read',
-          summary: 'Designing mechanical artifacts intended to run accurately for millennia requires rethinking human impatience.',
-          url: 'https://longnow.org/10000-year-clock',
-          fullText: `Modern civilization suffers from a chronic temporal myopia. We plan in quarterly earnings reports, political election cycles, and 24-hour news cycles. Yet the most profound challenges facing humanity—ecological stewardship, nuclear waste management, infrastructure resilience—operate on timescales of centuries and millennia.`,
-          bannerImage: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'In your Philosophy folder.'
-        },
-        {
-          id: 'fa_ny_1',
-          source: 'The New Yorker - Books',
-          folder: 'Culture',
-          title: 'The Sonification of Stellar Nurseries: Listening to Nebulae',
-          publishedAt: 'Nov 12 · 2:00 PM',
-          readTime: '8 min read',
-          summary: 'How astronomers are translating James Webb Space Telescope infrared data into audible soundscapes.',
-          url: 'https://www.newyorker.com/science/stellar-sonification',
-          fullText: `For centuries, astronomy has been an overwhelmingly visual science. We chart the universe through photographs rendered in false color, mapping light waves that our eyes cannot naturally perceive. But in recent years, astrophysicists and sound artists have begun translating astronomical telescope data into audible frequencies—a process known as sonification.`,
-          bannerImage: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: true,
-          why: 'Deliberate stretch: Outside your usual tech and economics routine.'
-        }
-      ];
-
-      // If a specific source title or ID was selected, filter by that source
-      let filtered = feedArticles;
       if (sourceTitle && sourceTitle.trim() && sourceTitle !== 'all') {
         const queryNorm = sourceTitle.trim().toLowerCase();
-        filtered = feedArticles.filter(
-          item =>
-            item.source.toLowerCase() === queryNorm ||
-            item.source.toLowerCase().includes(queryNorm) ||
-            queryNorm.includes(item.source.toLowerCase())
+        const matched = allSources.filter((s: any) =>
+          String(s.title || '').toLowerCase() === queryNorm ||
+          String(s.title || '').toLowerCase().includes(queryNorm) ||
+          queryNorm.includes(String(s.title || '').toLowerCase()) ||
+          String(s.id || '') === sourceTitle
         );
+        if (matched.length > 0) {
+          targetFeeds = matched;
+        } else {
+          const defMatch = DEFAULT_FEEDS.filter(s =>
+            s.title.toLowerCase().includes(queryNorm) || queryNorm.includes(s.title.toLowerCase())
+          );
+          targetFeeds = defMatch.length > 0 ? defMatch : [{ title: sourceTitle, feedUrl: '', folder: 'Custom Feed' }];
+        }
+      } else {
+        targetFeeds = allSources.filter((s: any) => s.status !== 'failing').slice(0, 10);
+      }
 
-        // If it's a custom source without pre-baked articles, synthesize realistic articles
-        if (filtered.length === 0) {
-          filtered = [
-            {
-              id: `fa_custom_${Date.now()}_1`,
-              source: sourceTitle,
-              folder: 'Custom Feed',
-              title: `Latest Dispatches from ${sourceTitle}`,
-              publishedAt: 'Today · 15m ago',
-              readTime: '6 min read',
-              summary: `Recent analytical reporting and essays directly from the ${sourceTitle} publication stream.`,
-              url: `https://example.com/${encodeURIComponent(sourceTitle)}`,
-              fullText: `This entry represents the live syndicated article stream from ${sourceTitle}. In this stream, entries appear in chronological arrival order—providing the traditional, comprehensive view of everything published by this author or organization.\n\nWhile Curator's morning digest distills five to eight items with editorial explanations, this Feeds tab gives you unfiltered access to the complete chronological stream whenever you want to browse all entries.`,
-              bannerImage: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80',
-              isOutOfBubble: false,
-              why: `From your ${sourceTitle} subscription.`
-            },
-            {
-              id: `fa_custom_${Date.now()}_2`,
-              source: sourceTitle,
-              folder: 'Custom Feed',
-              title: `Archived Note: Foundational Perspectives on ${sourceTitle}`,
-              publishedAt: 'Yesterday · 3:45 PM',
-              readTime: '5 min read',
-              summary: `Earlier commentary and historical analysis published in the ${sourceTitle} feed.`,
-              url: `https://example.com/${encodeURIComponent(sourceTitle)}/archive`,
-              fullText: `A deeper retrospective from ${sourceTitle}. Reading older entries in an author's archive helps uncover the foundational mental models that inform their current viewpoints.\n\nTraditional RSS streams allow you to track the evolution of an author's thinking over time without algorithmic interference.`,
-              bannerImage: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
-              isOutOfBubble: false,
-              why: `Archived article from ${sourceTitle}.`
-            }
-          ];
+      const results = await Promise.allSettled(
+        targetFeeds.map(f => fetchFeedArticles(f.feedUrl, f.title, f.folder))
+      );
+
+      let articles: any[] = [];
+      for (const r of results) {
+        if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+          articles.push(...r.value);
+        }
+      }
+
+      if (articles.length === 0 && targetFeeds !== DEFAULT_FEEDS) {
+        const defResults = await Promise.allSettled(
+          DEFAULT_FEEDS.slice(0, 4).map(f => fetchFeedArticles(f.feedUrl, f.title, f.folder))
+        );
+        for (const r of defResults) {
+          if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+            articles.push(...r.value);
+          }
         }
       }
 
       res.json({
         success: true,
         source: sourceTitle || 'all',
-        total: filtered.length,
-        articles: filtered
+        total: articles.length,
+        articles
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to retrieve feed stream' });
