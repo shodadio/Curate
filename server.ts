@@ -15,6 +15,53 @@ const MAX_PAGE_BYTES = 2 * 1024 * 1024;
 
 class BlockedUrlError extends Error {}
 
+async function callOpenAI(apiKey: string, prompt: string): Promise<any> {
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' }
+    })
+  });
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`OpenAI API error: ${resp.status} ${errText}`);
+  }
+  const data = await resp.json();
+  const content = data.choices?.[0]?.message?.content;
+  return JSON.parse(content);
+}
+
+async function callAnthropic(apiKey: string, prompt: string): Promise<any> {
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify({
+      model: 'claude-3-5-sonnet-20241022',
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: prompt }]
+    })
+  });
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`Anthropic API error: ${resp.status} ${errText}`);
+  }
+  const data = await resp.json();
+  const text = data.content?.[0]?.text;
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const jsonStr = fenced ? fenced[1] : text;
+  return JSON.parse(jsonStr);
+}
+
 const BLOCKED_HOSTNAMES = new Set(['localhost', 'metadata.google.internal']);
 const BLOCKED_HOST_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa'];
 
@@ -340,10 +387,10 @@ async function startServer() {
     }
   });
 
-  // Curate daily digest using Gemini
+  // Curate daily digest using Gemini, OpenAI, Anthropic, or Deterministic engine
   app.post('/api/curate', async (req, res) => {
     try {
-      const { sources, signals, readingStats, serendipityDial, itemCount = 6 } = req.body;
+      const { sources, signals, readingStats, serendipityDial, itemCount = 6, provider = 'gemini', apiKey: clientApiKey } = req.body;
 
       const moreTopics: string[] = Array.isArray(signals?.moreTopics)
         ? signals.moreTopics
@@ -354,10 +401,7 @@ async function startServer() {
       const moreIds: string[] = Array.isArray(signals?.moreIds) ? signals.moreIds : [];
       const lessIds: string[] = Array.isArray(signals?.lessIds) ? signals.lessIds : [];
 
-      // If Gemini API is available, use it to generate highly tailored editorial digest items and why-reasons
-      if (ai) {
-        try {
-          const prompt = `You are a sophisticated personal reading editor. Your task is to curate a daily reading digest of exactly ${itemCount} items based on the user's subscriptions, recent reading signals, and a serendipity dial (${serendipityDial}% out of bubble).
+      const prompt = `You are a sophisticated personal reading editor. Your task is to curate a daily reading digest of exactly ${itemCount} items based on the user's subscriptions, recent reading signals, and a serendipity dial (${serendipityDial}% out of bubble).
 
 Subscriptions available: ${JSON.stringify(sources?.slice(0, 30) || [])}
 User explicit READING PREFERENCES:
@@ -389,22 +433,52 @@ CRITICAL CURATION PRINCIPLES (READING PREFERENCES VS. AUTHOR/FEED PREFERENCES):
 
 Return ONLY valid JSON array of objects with these exact keys.`;
 
-          const response = await ai.models.generateContent({
-            model: 'gemini-4-hydrogen',
-            contents: prompt,
-            config: {
-              responseMimeType: 'application/json'
+      if (provider !== 'deterministic') {
+        if (provider === 'openai' && clientApiKey?.trim()) {
+          try {
+            const parsed = await callOpenAI(clientApiKey.trim(), prompt);
+            const digestItems = Array.isArray(parsed) ? parsed : parsed?.digest;
+            if (Array.isArray(digestItems) && digestItems.length > 0) {
+              return res.json({ digest: digestItems, generatedByAI: true });
             }
-          });
+          } catch (e: any) {
+            console.warn('[Curator] OpenAI curation failed, falling back:', e.message);
+          }
+        } else if (provider === 'anthropic' && clientApiKey?.trim()) {
+          try {
+            const parsed = await callAnthropic(clientApiKey.trim(), prompt);
+            const digestItems = Array.isArray(parsed) ? parsed : parsed?.digest;
+            if (Array.isArray(digestItems) && digestItems.length > 0) {
+              return res.json({ digest: digestItems, generatedByAI: true });
+            }
+          } catch (e: any) {
+            console.warn('[Curator] Anthropic curation failed, falling back:', e.message);
+          }
+        } else {
+          const activeAi = clientApiKey?.trim()
+            ? new GoogleGenAI({ apiKey: clientApiKey.trim(), httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+            : ai;
 
-          if (response.text) {
-            const data = JSON.parse(response.text);
-            if (Array.isArray(data) && data.length > 0) {
-              return res.json({ digest: data, generatedByAI: true });
+          if (activeAi) {
+            try {
+              const response = await activeAi.models.generateContent({
+                model: 'gemini-4-hydrogen',
+                contents: prompt,
+                config: {
+                  responseMimeType: 'application/json'
+                }
+              });
+
+              if (response.text) {
+                const data = JSON.parse(response.text);
+                if (Array.isArray(data) && data.length > 0) {
+                  return res.json({ digest: data, generatedByAI: true });
+                }
+              }
+            } catch {
+              console.warn('[Curator] AI generation unavailable, serving high-signal editorial curation algorithm.');
             }
           }
-        } catch {
-          console.warn('[Curator] AI generation unavailable, serving high-signal editorial curation algorithm.');
         }
       }
 
@@ -1511,7 +1585,11 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
 
   // Vite middleware for development (HMR disabled in cloud iframe to prevent WebSocket closed errors)
   const vite = await createViteServer({
-    server: { middlewareMode: true, hmr: false }
+    server: {
+      middlewareMode: true,
+      hmr: false,
+      allowedHosts: true,
+    }
   });
 
   app.use(vite.middlewares);

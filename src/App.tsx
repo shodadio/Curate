@@ -191,6 +191,8 @@ export default function App() {
     const saved = localStorage.getItem('curator_item_count');
     return saved ? Number(saved) : 6;
   });
+  const [aiProvider, setAiProvider] = useState<string>(() => localStorage.getItem('curator_ai_provider') || 'gemini');
+  const [customApiKey, setCustomApiKey] = useState<string>(() => localStorage.getItem('curator_custom_api_key') || '');
 
   const [loadingDigest, setLoadingDigest] = useState<boolean>(false);
   const [activeToast, setActiveToast] = useState<{
@@ -294,6 +296,14 @@ export default function App() {
   }, [itemCount]);
 
   useEffect(() => {
+    localStorage.setItem('curator_ai_provider', aiProvider);
+  }, [aiProvider]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_custom_api_key', customApiKey);
+  }, [customApiKey]);
+
+  useEffect(() => {
     localStorage.setItem('curator_read_sources', JSON.stringify(readSourceIds));
   }, [readSourceIds]);
 
@@ -375,7 +385,7 @@ export default function App() {
       const res = await fetch('/api/curate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sources, signals, readingStats, serendipityDial, itemCount })
+        body: JSON.stringify({ sources, signals, readingStats, serendipityDial, itemCount, provider: aiProvider, apiKey: customApiKey })
       });
       const data = await res.json();
       if (data.digest) {
@@ -625,7 +635,7 @@ export default function App() {
       const res = await fetch('/api/discover-sources', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q })
+        body: JSON.stringify({ query: q, provider: aiProvider, apiKey: customApiKey })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -2411,6 +2421,49 @@ export default function App() {
             <div className="border-b border-slate-900 pb-4">
               <h2 className="text-xl font-semibold tracking-tight text-slate-100">Settings</h2>
               <p className="text-xs text-slate-400 mt-0.5">Preferences & delivery configuration</p>
+            </div>
+
+            {/* AI Provider & Custom API Key */}
+            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-200">AI Model & Provider</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Swap out the default AI provider or plug in your own custom API key.</p>
+              </div>
+
+              <div className="space-y-4 pt-2">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">AI Provider</label>
+                  <select
+                    value={aiProvider}
+                    onChange={e => {
+                      setAiProvider(e.target.value);
+                      showToast(`Switched AI provider to ${e.target.value}`);
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
+                  >
+                    <option value="gemini">Google Gemini (Default / AI Studio)</option>
+                    <option value="openai">OpenAI (GPT-4o-mini)</option>
+                    <option value="anthropic">Anthropic (Claude 3.5 Sonnet)</option>
+                    <option value="deterministic">Deterministic Engine (No Key Needed)</option>
+                  </select>
+                </div>
+
+                {aiProvider !== 'deterministic' && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                      Custom API Key {aiProvider === 'openai' ? '(OpenAI)' : aiProvider === 'anthropic' ? '(Anthropic)' : '(Gemini)'}
+                    </label>
+                    <input
+                      type="password"
+                      value={customApiKey}
+                      onChange={e => setCustomApiKey(e.target.value)}
+                      placeholder={aiProvider === 'openai' ? 'sk-...' : aiProvider === 'anthropic' ? 'sk-ant-...' : 'AIzaSy...'}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                    />
+                    <p className="text-[11px] text-slate-500 mt-1">Stored locally in your browser and used securely for your requests.</p>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Serendipity Dial */}
