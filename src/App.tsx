@@ -105,16 +105,15 @@ export default function App() {
 
   // App data state with localStorage persistence
   const [sources, setSources] = useState<SourceItem[]>(() => {
-    const now = Date.now();
     const defaultSources: SourceItem[] = [
-      { id: 'src_mr', title: 'Marginal Revolution', feedUrl: 'https://marginalrevolution.com/feed', folder: 'Economics', status: 'active', lastSyncedAt: now - 5 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_dan', title: 'Dan Luu', feedUrl: 'https://danluu.com/atom.xml', folder: 'Tech & Engineering', status: 'active', lastSyncedAt: now - 15 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_simon', title: 'Simon Willison', feedUrl: 'https://simonwillison.net/atom/entries/', folder: 'Software & AI', status: 'active', lastSyncedAt: now - 20 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_ars', title: 'Ars Technica', feedUrl: 'https://feeds.arstechnica.com/arstechnica/index', folder: 'Tech & Policy', status: 'active', lastSyncedAt: now - 25 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_strat', title: 'Stratechery by Ben Thompson', feedUrl: 'https://stratechery.com/feed/', folder: 'Tech & Strategy', status: 'active', lastSyncedAt: now - 35 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_ala', title: 'A List Apart', feedUrl: 'https://alistapart.com/main/feed/', folder: 'Design & Craft', status: 'active', lastSyncedAt: now - 45 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_aeon', title: 'Aeon Magazine', feedUrl: 'https://aeon.co/feed.rss', folder: 'Philosophy & Culture', status: 'active', lastSyncedAt: now - 60 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_row', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech', status: 'active', lastSyncedAt: now - 75 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=160&auto=format&fit=crop&q=80' }
+      { id: 'src_mr', title: 'Marginal Revolution', feedUrl: 'https://marginalrevolution.com/feed', folder: 'Economics', status: 'active', avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_dan', title: 'Dan Luu', feedUrl: 'https://danluu.com/atom.xml', folder: 'Tech & Engineering', status: 'active', avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_simon', title: 'Simon Willison', feedUrl: 'https://simonwillison.net/atom/entries/', folder: 'Software & AI', status: 'active', avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_ars', title: 'Ars Technica', feedUrl: 'https://feeds.arstechnica.com/arstechnica/index', folder: 'Tech & Policy', status: 'active', avatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_strat', title: 'Stratechery by Ben Thompson', feedUrl: 'https://stratechery.com/feed/', folder: 'Tech & Strategy', status: 'active', avatar: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_ala', title: 'A List Apart', feedUrl: 'https://alistapart.com/main/feed/', folder: 'Design & Craft', status: 'active', avatar: 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_aeon', title: 'Aeon Magazine', feedUrl: 'https://aeon.co/feed.rss', folder: 'Philosophy & Culture', status: 'active', avatar: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=160&auto=format&fit=crop&q=80' },
+      { id: 'src_row', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech', status: 'active', avatar: 'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=160&auto=format&fit=crop&q=80' }
     ];
 
     const saved = localStorage.getItem('curator_sources');
@@ -158,20 +157,15 @@ export default function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) {
+          // Older builds seeded demo history; drop only those known placeholder ids
+          const seededIds = new Set(['wh_1', 'wh_2', 'wh_3', 'wh_4', 'wh_5', 'wh_6', 'wh_7']);
+          return parsed.filter((it: WeeklyReadingItem) => !seededIds.has(it.id));
+        }
       } catch (e) { /* ignore */ }
     }
-    const now = Date.now();
-    const day = 24 * 60 * 60 * 1000;
-    return [
-      { id: 'wh_1', title: 'Saturday assorted links', source: 'Marginal Revolution', folder: 'Economics', readTime: '5 min read', minutesSpent: 5, completedAt: now - 3 * 3600 * 1000, url: 'https://marginalrevolution.com' },
-      { id: 'wh_2', title: 'Test and verification technique effectiveness with GPT-6 Astra', source: 'Dan Luu', folder: 'Tech & Engineering', readTime: '12 min read', minutesSpent: 12, completedAt: now - 1 * day, url: 'https://danluu.com' },
-      { id: 'wh_3', title: 'Locating the source of a mysterious beep with Claude', source: 'Simon Willison', folder: 'Software & AI', readTime: '6 min read', minutesSpent: 6, completedAt: now - 2 * day, url: 'https://simonwillison.net' },
-      { id: 'wh_4', title: 'Privatize Air Traffic Control, Redux', source: 'Marginal Revolution', folder: 'Economics', readTime: '8 min read', minutesSpent: 8, completedAt: now - 3 * day, url: 'https://marginalrevolution.com' },
-      { id: 'wh_5', title: 'The Unseen Geometry of Traditional Japanese Joinery', source: 'A List Apart', folder: 'Design & Craft', readTime: '7 min read', minutesSpent: 7, completedAt: now - 4 * day, url: 'https://alistapart.com' },
-      { id: 'wh_6', title: 'Deep Time and the 10,000-Year Clock', source: 'Aeon Magazine', folder: 'Philosophy & Culture', readTime: '9 min read', minutesSpent: 9, completedAt: now - 5 * day, url: 'https://aeon.co' },
-      { id: 'wh_7', title: 'The Aggregation Theory of Modern Media', source: 'Stratechery by Ben Thompson', folder: 'Tech & Strategy', readTime: '11 min read', minutesSpent: 11, completedAt: now - 6 * day, url: 'https://stratechery.com' }
-    ];
+    // Starts empty: history is only what the reader has actually finished
+    return [];
   });
   const [showWeeklyReviewModal, setShowWeeklyReviewModal] = useState<boolean>(false);
 
@@ -179,12 +173,14 @@ export default function App() {
     localStorage.setItem('curator_weekly_history', JSON.stringify(weeklyHistory));
   }, [weeklyHistory]);
 
-  const totalWeeklyMinutes = weeklyHistory.reduce((acc, it) => acc + (it.minutesSpent || 6), 0);
+  const weekCutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const weeklyRecent = weeklyHistory.filter(it => it.completedAt >= weekCutoff);
+  const totalWeeklyMinutes = weeklyRecent.reduce((acc, it) => acc + (it.minutesSpent ?? 0), 0);
   const topWeeklyTopic = (() => {
     const counts: Record<string, number> = {};
-    weeklyHistory.forEach(it => { counts[it.folder] = (counts[it.folder] || 0) + (it.minutesSpent || 6); });
+    weeklyRecent.forEach(it => { counts[it.folder] = (counts[it.folder] || 0) + (it.minutesSpent ?? 0); });
     const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-    return sorted[0]?.[0] || 'Economics';
+    return sorted[0]?.[0] || 'No reading yet';
   })();
 
   const [signals, setSignals] = useState<{
@@ -236,7 +232,6 @@ export default function App() {
     const saved = localStorage.getItem('curator_item_count');
     return saved ? Number(saved) : 6;
   });
-  const [aiProvider, setAiProvider] = useState<string>(() => localStorage.getItem('curator_ai_provider') || 'gemini');
   const [customApiKey, setCustomApiKey] = useState<string>(() => localStorage.getItem('curator_custom_api_key') || '');
 
   const [loadingDigest, setLoadingDigest] = useState<boolean>(false);
@@ -247,6 +242,9 @@ export default function App() {
     onAction?: () => void;
   } | null>(null);
   const toastTimeoutRef = React.useRef<any>(null);
+  // Screen Wake Lock held while read-aloud is playing so the phone does not sleep mid-article
+  const wakeLockRef = React.useRef<any>(null);
+  const wakeLockWantedRef = React.useRef(false);
 
   // Muted cards state for immediate inline Undo / Redo when user clicks "Fewer"
   const [mutedCards, setMutedCards] = useState<Record<string, DigestItem>>({});
@@ -341,10 +339,6 @@ export default function App() {
   }, [itemCount]);
 
   useEffect(() => {
-    localStorage.setItem('curator_ai_provider', aiProvider);
-  }, [aiProvider]);
-
-  useEffect(() => {
     localStorage.setItem('curator_custom_api_key', customApiKey);
   }, [customApiKey]);
 
@@ -430,7 +424,7 @@ export default function App() {
       const res = await fetch('/api/curate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sources, signals, readingStats, serendipityDial, itemCount, provider: aiProvider, apiKey: customApiKey })
+        body: JSON.stringify({ sources, signals, readingStats, serendipityDial, itemCount, apiKey: customApiKey })
       });
       const data = await res.json();
       if (data.digest) {
@@ -680,7 +674,7 @@ export default function App() {
       const res = await fetch('/api/discover-sources', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q, provider: aiProvider, apiKey: customApiKey })
+        body: JSON.stringify({ query: q, apiKey: customApiKey })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -783,7 +777,7 @@ export default function App() {
   };
 
   const formatSyncTime = (timestamp?: number): string => {
-    if (!timestamp) return 'Just now';
+    if (!timestamp) return 'Not synced yet';
     const diff = Math.max(0, Date.now() - timestamp);
     if (diff < 60 * 1000) return 'Just now';
     const mins = Math.floor(diff / (60 * 1000));
@@ -850,6 +844,55 @@ export default function App() {
     }
   };
 
+  const releaseWakeLock = () => {
+    wakeLockWantedRef.current = false;
+    const lock = wakeLockRef.current;
+    wakeLockRef.current = null;
+    if (lock && typeof lock.release === 'function') {
+      try {
+        lock.release();
+      } catch {
+        // already released by the browser
+      }
+    }
+  };
+
+  const requestWakeLock = async () => {
+    if (typeof navigator === 'undefined' || !('wakeLock' in navigator) || wakeLockRef.current) return;
+    wakeLockWantedRef.current = true;
+    try {
+      const lock = await (navigator as any).wakeLock.request('screen');
+      if (!wakeLockWantedRef.current) {
+        // Playback stopped while the request was in flight
+        try { lock.release(); } catch { /* ignore */ }
+        return;
+      }
+      wakeLockRef.current = lock;
+      // The browser releases the lock automatically when the page is hidden
+      lock.addEventListener?.('release', () => {
+        if (wakeLockRef.current === lock) wakeLockRef.current = null;
+      });
+    } catch {
+      // Denied (e.g. Low Power Mode) or unsupported — playback continues normally
+    }
+  };
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      // Locks are dropped on tab switch; re-acquire only if audio is still running unattended
+      if (document.visibilityState === 'visible' && speechPlaying && !speechPaused) {
+        requestWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [speechPlaying, speechPaused]);
+
+  // Release the wake lock only when the app itself goes away
+  useEffect(() => () => releaseWakeLock(), []);
+
   const handleToggleReadAloud = (article: DigestItem) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       showToast('Speech audio is not supported in this browser.');
@@ -860,10 +903,12 @@ export default function App() {
       if (speechPaused) {
         window.speechSynthesis.resume();
         setSpeechPaused(false);
+        requestWakeLock();
         showToast('Resumed reading aloud');
       } else {
         window.speechSynthesis.pause();
         setSpeechPaused(true);
+        releaseWakeLock();
         showToast('Paused reading aloud');
       }
       return;
@@ -902,10 +947,12 @@ export default function App() {
     utterance.onstart = () => {
       setSpeechPlaying(true);
       setSpeechPaused(false);
+      requestWakeLock();
       showToast('Reading aloud with iOS voice...');
     };
 
     utterance.onend = () => {
+      releaseWakeLock();
       setSpeechPlaying(false);
       setSpeechPaused(false);
       const updated = {
@@ -920,10 +967,13 @@ export default function App() {
 
     utterance.onerror = (e) => {
       console.warn('SpeechSynthesis error:', e);
+      releaseWakeLock();
       setSpeechPlaying(false);
       setSpeechPaused(false);
     };
 
+    // Request during the user gesture; onstart confirms playback actually began
+    requestWakeLock();
     window.speechSynthesis.speak(utterance);
   };
 
@@ -931,6 +981,7 @@ export default function App() {
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
+    releaseWakeLock();
     setSpeechPlaying(false);
     setSpeechPaused(false);
   };
@@ -1059,7 +1110,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-slate-800 selection:text-white w-full max-w-full overflow-x-hidden">
       {/* Toast Notification with Undo / Action fallback */}
       {activeToast && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] max-w-[calc(100vw-2rem)] bg-slate-900/95 border border-slate-700/80 text-slate-200 text-xs px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-3 animate-fade-in backdrop-blur-md">
+        <div className="fixed safe-toast left-1/2 -translate-x-1/2 z-[60] max-w-[calc(100vw-2rem)] bg-slate-900/95 border border-slate-700/80 text-slate-200 text-xs px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-3 animate-fade-in backdrop-blur-md">
           <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
           <span>{activeToast.message}</span>
           {activeToast.actionLabel && activeToast.onAction && (
@@ -1098,7 +1149,7 @@ export default function App() {
               localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
               if (finished) {
                 setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
-                const minutes = parseInt(selectedArticle.readTime) || 6;
+                const minutes = parseInt(selectedArticle.readTime) || 0;
                 setWeeklyHistory(prev => {
                   if (prev.some(it => it.id === selectedArticle.id)) return prev;
                   return [{
@@ -1116,7 +1167,7 @@ export default function App() {
             }
           }}
         >
-          <header className="sticky top-0 z-20 bg-slate-950/95 backdrop-blur-md border-b border-slate-800/80 px-6 py-4 flex items-center justify-between">
+          <header className="sticky top-0 z-20 safe-reader-header bg-slate-950/95 backdrop-blur-md border-b border-slate-800/80 px-6 pb-4 flex items-center justify-between">
             {/* Visual reading progress bar */}
             <div className="absolute top-0 left-0 right-0 h-1 bg-slate-900 overflow-hidden">
               <div 
@@ -1132,7 +1183,7 @@ export default function App() {
 
             <button 
               onClick={closeArticle}
-              className="flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors"
+              className="flex items-center gap-2 min-h-10 px-1 text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>Back to Digest</span>
@@ -1141,7 +1192,7 @@ export default function App() {
               <button 
                 type="button"
                 onClick={() => handleToggleReadAloud(selectedArticle)}
-                className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${
+                className={`px-3 py-2 min-h-10 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${
                   speechPlaying
                     ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 ring-2 ring-amber-500/30'
                     : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-amber-400 hover:border-slate-700'
@@ -1157,7 +1208,7 @@ export default function App() {
               </button>
               <button 
                 onClick={() => handleSave(selectedArticle)}
-                className={`p-2 rounded-xl border transition-colors ${savedIds.includes(selectedArticle.id) ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'border-slate-800 text-slate-400 hover:text-slate-100'}`}
+                className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition-colors ${savedIds.includes(selectedArticle.id) ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'border-slate-800 text-slate-400 hover:text-slate-100'}`}
                 title="Save for later"
               >
                 <Bookmark className="w-4 h-4" />
@@ -1267,7 +1318,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => handleMore(selectedArticle)}
-                    className={`p-2 rounded-xl transition cursor-pointer ${
+                    className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl transition cursor-pointer ${
                       signals.moreIds?.includes(selectedArticle.id)
                         ? 'text-amber-400 bg-amber-500/15 border border-amber-500/40 shadow-sm'
                         : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-transparent'
@@ -1289,7 +1340,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => handleLess(selectedArticle)}
-                    className={`p-2 rounded-xl transition cursor-pointer ${
+                    className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl transition cursor-pointer ${
                       signals.lessIds?.includes(selectedArticle.id)
                         ? 'text-rose-400 bg-rose-500/15 border border-rose-500/40 shadow-sm'
                         : 'text-slate-400 hover:text-rose-400 hover:bg-slate-900 border border-transparent'
@@ -1327,7 +1378,7 @@ export default function App() {
       )}
 
       {/* Main Top Header Bar */}
-      <header className="sticky top-0 z-40 w-full bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-4 sm:px-6 py-3 shrink-0 shadow-sm">
+      <header className="sticky top-0 z-40 w-full safe-header bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-3 sm:px-6 pb-3 shrink-0 shadow-sm">
         <div className="max-w-3xl w-full mx-auto flex items-center justify-between gap-3">
           {/* Official Brand Logo & Subtitle */}
           <button 
@@ -1336,7 +1387,7 @@ export default function App() {
             className="flex items-center gap-3 text-left focus:outline-none group cursor-pointer"
             title="The Curator — Home"
           >
-            <CuratorMark className="w-10 h-10 drop-shadow-md group-hover:scale-105 transition-transform" />
+            <CuratorMark className="w-9 h-9 sm:w-10 sm:h-10 drop-shadow-md group-hover:scale-105 transition-transform" />
             <div className="min-w-0">
               <div className="flex items-baseline gap-1.5 leading-none">
                 <span className="font-serif text-[11px] font-semibold tracking-[0.24em] text-amber-500/90">THE</span>
@@ -1351,18 +1402,17 @@ export default function App() {
             <button
               type="button"
               onClick={() => setShowWeeklyReviewModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900 border border-slate-800 hover:border-amber-500/40 text-slate-300 hover:text-amber-300 transition text-xs font-medium cursor-pointer shadow-sm group"
+              className="flex items-center justify-center gap-1.5 px-3 min-w-11 min-h-11 rounded-full bg-slate-900 border border-slate-800 hover:border-amber-500/40 text-slate-300 hover:text-amber-300 transition text-xs font-medium cursor-pointer shadow-sm group"
               title="Open Weekly Reading Review"
             >
               <BarChart3 className="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform" />
               <span className="hidden sm:inline font-mono text-[11px] text-amber-300 font-semibold">{totalWeeklyMinutes}m week</span>
-              <span className="sm:hidden font-mono text-[11px] text-amber-300">Weekly</span>
             </button>
             <button 
               type="button"
               onClick={generateDigest}
               disabled={loadingDigest}
-              className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-50 cursor-pointer"
+              className="w-11 h-11 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-50 cursor-pointer"
               title="Refresh today's digest"
             >
               <RefreshCw className={`w-4 h-4 ${loadingDigest ? 'animate-spin' : ''}`} />
@@ -1370,7 +1420,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setActiveTab(prev => prev === 'settings' ? 'today' : 'settings')}
-              className={`w-9 h-9 rounded-full border flex items-center justify-center transition cursor-pointer shadow-sm ${
+              className={`w-11 h-11 rounded-full border flex items-center justify-center transition cursor-pointer shadow-sm ${
                 activeTab === 'settings'
                   ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
                   : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-slate-100 hover:border-slate-700'
@@ -1384,7 +1434,7 @@ export default function App() {
       </header>
 
       {/* Content Area */}
-      <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-32 overflow-x-hidden">
+      <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-32 safe-main overflow-x-hidden">
         {/* TAB 1: TODAY */}
         {activeTab === 'today' && (
           <div className="space-y-6 animate-fade-in w-full max-w-full">
@@ -1405,7 +1455,7 @@ export default function App() {
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-400 mt-0.5 truncate">
-                    Top focus: <span className="text-slate-300 font-medium">{topWeeklyTopic}</span> · {weeklyHistory.length} articles read
+                    Top focus: <span className="text-slate-300 font-medium">{topWeeklyTopic}</span> · {weeklyRecent.length} articles read
                   </p>
                 </div>
               </div>
@@ -1415,7 +1465,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between border-b border-slate-900 pb-4">
+            <div className="flex flex-col items-start gap-3 border-b border-slate-900 pb-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-100">Today's Digest</h2>
                 <p className="text-xs text-slate-400 mt-0.5">Curated at 7:00 AM · {digest.length} items worth your time</p>
@@ -1426,7 +1476,7 @@ export default function App() {
                   <button
                     key={num}
                     onClick={() => setItemCount(num)}
-                    className={`px-2.5 py-1 rounded-lg font-medium transition ${itemCount === num ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'}`}
+                    className={`px-3 py-2 min-h-9 rounded-lg font-medium transition ${itemCount === num ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'}`}
                   >
                     {num}
                   </button>
@@ -1577,7 +1627,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                              className={`p-2.5 rounded-xl backdrop-blur-md border transition shadow-lg ${
+                              className={`p-2.5 min-w-11 min-h-11 flex items-center justify-center rounded-xl backdrop-blur-md border transition shadow-lg ${
                                 savedIds.includes(item.id)
                                   ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
                                   : 'bg-slate-950/70 border-slate-700/60 text-slate-200 hover:text-amber-400 hover:bg-slate-900/90'
@@ -1644,7 +1694,7 @@ export default function App() {
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                              className={`p-2 rounded-xl border transition ${
+                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
                                 actions.isVotedMore
                                   ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
                                   : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
@@ -1659,7 +1709,7 @@ export default function App() {
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                              className={`p-2 rounded-xl border transition ${
+                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
                                 actions.isVotedLess
                                   ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
                                   : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
@@ -1813,7 +1863,7 @@ export default function App() {
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                                  className={`p-2.5 rounded-xl backdrop-blur-md border transition shadow-lg ${
+                                  className={`p-2.5 min-w-11 min-h-11 flex items-center justify-center rounded-xl backdrop-blur-md border transition shadow-lg ${
                                     savedIds.includes(item.id)
                                       ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
                                       : 'bg-slate-950/70 border-rose-800/60 text-slate-200 hover:text-amber-400'
@@ -1879,7 +1929,7 @@ export default function App() {
                                 <button 
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                                  className={`p-2 rounded-xl border transition ${
+                                  className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
                                     signals.moreIds?.includes(item.id)
                                       ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
                                       : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
@@ -1894,7 +1944,7 @@ export default function App() {
                                 <button 
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                                  className={`p-2 rounded-xl border transition ${
+                                  className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
                                     signals.lessIds?.includes(item.id)
                                       ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
                                       : 'bg-slate-900 border border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
@@ -2301,7 +2351,7 @@ export default function App() {
                               type="button"
                               onClick={() => handleRefreshSource(src)}
                               disabled={isRefreshing}
-                              className="p-2 text-slate-400 hover:text-amber-400 transition"
+                              className="p-2 min-w-10 min-h-10 flex items-center justify-center text-slate-400 hover:text-amber-400 transition"
                               title="Force refresh this feed"
                             >
                               <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-amber-400' : ''}`} />
@@ -2309,7 +2359,7 @@ export default function App() {
                             <button 
                               type="button"
                               onClick={() => handleDeleteSource(src.id)}
-                              className="p-2 text-slate-500 hover:text-rose-400 transition"
+                              className="p-2 min-w-10 min-h-10 flex items-center justify-center text-slate-500 hover:text-rose-400 transition"
                               title="Remove source"
                             >
                               <Trash2 className="w-4 h-4" />
@@ -2325,8 +2375,8 @@ export default function App() {
 
             {/* Add Source Modal */}
             {showAddSourceModal && (
-              <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
-                <div className="w-full max-w-md rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4">
+              <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 safe-modal">
+                <div className="w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold text-slate-100">Add New Source</h3>
                     <button onClick={() => setShowAddSourceModal(false)} className="text-slate-400 hover:text-slate-100">
@@ -2388,8 +2438,8 @@ export default function App() {
 
             {/* OPML Import Modal */}
             {showImportModal && (
-              <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
-                <div className="w-full max-w-lg rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+              <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 safe-modal">
+                <div className="w-full max-w-lg rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4 max-h-[calc(100dvh-2rem)] overflow-y-auto">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold text-slate-100">Import Subscription List (OPML)</h3>
                     <button onClick={() => setShowImportModal(false)} className="text-slate-400 hover:text-slate-100">
@@ -2532,7 +2582,7 @@ export default function App() {
                     <span>Weekly Reading Retrospective</span>
                   </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    {totalWeeklyMinutes} minutes read across {weeklyHistory.length} articles over the past 7 days.
+                    {totalWeeklyMinutes} minutes read across {weeklyRecent.length} articles over the past 7 days.
                   </p>
                 </div>
                 <button
@@ -2552,55 +2602,34 @@ export default function App() {
                 </div>
                 <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center">
                   <span className="text-[11px] text-slate-400 block mb-0.5">Completed</span>
-                  <span className="text-base font-bold font-serif text-slate-100">{weeklyHistory.length}</span>
+                  <span className="text-base font-bold font-serif text-slate-100">{weeklyRecent.length}</span>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center truncate">
                   <span className="text-[11px] text-slate-400 block mb-0.5">Lead Focus</span>
-                  <span className="text-xs font-bold text-amber-300 truncate block">{topWeeklyTopic}</span>
+                  <span className="text-[11px] font-bold text-amber-300 block leading-tight whitespace-normal">{topWeeklyTopic}</span>
                 </div>
               </div>
             </div>
 
-            {/* AI Provider & Custom API Key */}
+            {/* Gemini API Key */}
             <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
               <div>
-                <h3 className="text-sm font-semibold text-slate-200">AI Model & Provider</h3>
-                <p className="text-xs text-slate-400 mt-0.5">Swap out the default AI provider or plug in your own custom API key.</p>
+                <h3 className="text-sm font-semibold text-slate-200">Gemini API Key</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Digests and source discovery run on Google Gemini. Add your own key, or leave blank to use the server's.</p>
               </div>
 
               <div className="space-y-4 pt-2">
                 <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1.5">AI Provider</label>
-                  <select
-                    value={aiProvider}
-                    onChange={e => {
-                      setAiProvider(e.target.value);
-                      showToast(`Switched AI provider to ${e.target.value}`);
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
-                  >
-                    <option value="gemini">Google Gemini (Default / AI Studio)</option>
-                    <option value="openai">OpenAI (GPT-4o-mini)</option>
-                    <option value="anthropic">Anthropic (Claude 3.5 Sonnet)</option>
-                    <option value="deterministic">Deterministic Engine (No Key Needed)</option>
-                  </select>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">Custom Gemini API Key</label>
+                  <input
+                    type="password"
+                    value={customApiKey}
+                    onChange={e => setCustomApiKey(e.target.value)}
+                    placeholder="AIzaSy..."
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                  />
+                  <p className="text-[11px] text-slate-500 mt-1">Stored locally in your browser and used securely for your requests.</p>
                 </div>
-
-                {aiProvider !== 'deterministic' && (
-                  <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                      Custom API Key {aiProvider === 'openai' ? '(OpenAI)' : aiProvider === 'anthropic' ? '(Anthropic)' : '(Gemini)'}
-                    </label>
-                    <input
-                      type="password"
-                      value={customApiKey}
-                      onChange={e => setCustomApiKey(e.target.value)}
-                      placeholder={aiProvider === 'openai' ? 'sk-...' : aiProvider === 'anthropic' ? 'sk-ant-...' : 'AIzaSy...'}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
-                    />
-                    <p className="text-[11px] text-slate-500 mt-1">Stored locally in your browser and used securely for your requests.</p>
-                  </div>
-                )}
               </div>
             </div>
 
@@ -3012,7 +3041,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                              className={`p-2.5 rounded-xl backdrop-blur-md border transition shadow-lg ${
+                              className={`p-2.5 min-w-11 min-h-11 flex items-center justify-center rounded-xl backdrop-blur-md border transition shadow-lg ${
                                 savedIds.includes(item.id)
                                   ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
                                   : 'bg-slate-950/70 border-slate-700/60 text-slate-200 hover:text-amber-400 hover:bg-slate-900/90'
@@ -3072,7 +3101,7 @@ export default function App() {
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                              className={`p-2 rounded-xl border transition ${
+                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
                                 actions.isVotedMore
                                   ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
                                   : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
@@ -3087,7 +3116,7 @@ export default function App() {
                             <button 
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                              className={`p-2 rounded-xl border transition ${
+                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
                                 actions.isVotedLess
                                   ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
                                   : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
@@ -3113,12 +3142,12 @@ export default function App() {
 
 
       {/* Bottom Dock Navigation */}
-      <nav className="fixed bottom-3 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-lg bg-slate-900/90 backdrop-blur-xl border border-slate-800/80 rounded-2xl py-2.5 px-3 shadow-2xl">
+      <nav className="fixed safe-dock left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-lg bg-slate-900/90 backdrop-blur-xl border border-slate-800/80 rounded-2xl py-2.5 px-3 shadow-2xl">
         <div className="flex items-center justify-around">
           <button 
             type="button"
             onClick={() => setActiveTab('today')}
-            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'today' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'today' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Home className="w-5 h-5" />
             <span className="text-[10px] tracking-tight">Today</span>
@@ -3127,7 +3156,7 @@ export default function App() {
           <button 
             type="button"
             onClick={() => setActiveTab('feeds')}
-            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'feeds' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'feeds' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <div className="relative">
               <Rss className="w-5 h-5" />
@@ -3141,7 +3170,7 @@ export default function App() {
           <button 
             type="button"
             onClick={() => setActiveTab('saved')}
-            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'saved' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'saved' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <div className="relative">
               <Bookmark className="w-5 h-5" />
@@ -3155,7 +3184,7 @@ export default function App() {
           <button 
             type="button"
             onClick={() => setActiveTab('sources')}
-            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'sources' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'sources' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Compass className="w-5 h-5" />
             <span className="text-[10px] tracking-tight">Sources</span>

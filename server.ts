@@ -15,53 +15,6 @@ const MAX_PAGE_BYTES = 8 * 1024 * 1024;
 
 class BlockedUrlError extends Error {}
 
-async function callOpenAI(apiKey: string, prompt: string): Promise<any> {
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: prompt }],
-      response_format: { type: 'json_object' }
-    })
-  });
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`OpenAI API error: ${resp.status} ${errText}`);
-  }
-  const data = await resp.json();
-  const content = data.choices?.[0]?.message?.content;
-  return JSON.parse(content);
-}
-
-async function callAnthropic(apiKey: string, prompt: string): Promise<any> {
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01'
-    },
-    body: JSON.stringify({
-      model: 'claude-3-5-sonnet-20241022',
-      max_tokens: 4096,
-      messages: [{ role: 'user', content: prompt }]
-    })
-  });
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`Anthropic API error: ${resp.status} ${errText}`);
-  }
-  const data = await resp.json();
-  const text = data.content?.[0]?.text;
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const jsonStr = fenced ? fenced[1] : text;
-  return JSON.parse(jsonStr);
-}
-
 const BLOCKED_HOSTNAMES = new Set(['localhost', 'metadata.google.internal']);
 const BLOCKED_HOST_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa'];
 
@@ -591,10 +544,10 @@ async function startServer() {
     return [];
   };
 
-  // Curate daily digest from live feeds using Gemini, OpenAI, Anthropic, or Deterministic engine
+  // Curate daily digest from live feeds using Gemini, with a deterministic fallback
   app.post('/api/curate', async (req, res) => {
     try {
-      const { sources: clientSources, signals, readingStats, serendipityDial = 30, itemCount = 6, provider = 'gemini', apiKey: clientApiKey } = req.body;
+      const { sources: clientSources, signals, readingStats, serendipityDial = 30, itemCount = 6, apiKey: clientApiKey } = req.body;
 
       const activeSources = Array.isArray(clientSources) && clientSources.length > 0
         ? clientSources.filter((s: any) => s.status !== 'failing')
@@ -643,8 +596,8 @@ async function startServer() {
       const moreIds: string[] = Array.isArray(signals?.moreIds) ? signals.moreIds : [];
       const lessIds: string[] = Array.isArray(signals?.lessIds) ? signals.lessIds : [];
 
-      // 2. Curate using AI if requested and candidate pool is ready
-      if (provider !== 'deterministic' && candidatePool.length >= 4) {
+      // 2. Curate with Gemini when the candidate pool is ready
+      if (candidatePool.length >= 4) {
         const candidatesForAi = candidatePool.slice(0, 30).map((item, idx) => ({
           idx,
           title: item.title,
@@ -674,44 +627,26 @@ CURATION RULES:
 
         let aiSelections: Array<{ idx: number; why: string; isOutOfBubble: boolean }> | null = null;
 
-        if (provider === 'openai' && clientApiKey?.trim()) {
-          try {
-            const parsed = await callOpenAI(clientApiKey.trim(), prompt);
-            const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
-            if (Array.isArray(list) && list.length > 0) aiSelections = list;
-          } catch (e: any) {
-            console.warn('[Curator] OpenAI curation failed, falling back:', e.message);
-          }
-        } else if (provider === 'anthropic' && clientApiKey?.trim()) {
-          try {
-            const parsed = await callAnthropic(clientApiKey.trim(), prompt);
-            const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
-            if (Array.isArray(list) && list.length > 0) aiSelections = list;
-          } catch (e: any) {
-            console.warn('[Curator] Anthropic curation failed, falling back:', e.message);
-          }
-        } else {
-          const activeAi = clientApiKey?.trim()
-            ? new GoogleGenAI({ apiKey: clientApiKey.trim(), httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
-            : ai;
+        const activeAi = clientApiKey?.trim()
+          ? new GoogleGenAI({ apiKey: clientApiKey.trim(), httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+          : ai;
 
-          if (activeAi) {
-            try {
-              const response = await activeAi.models.generateContent({
-                model: 'gemini-4-hydrogen',
-                contents: prompt,
-                config: {
-                  responseMimeType: 'application/json'
-                }
-              });
-              if (response.text) {
-                const parsed = JSON.parse(response.text);
-                const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
-                if (Array.isArray(list) && list.length > 0) aiSelections = list;
+        if (activeAi) {
+          try {
+            const response = await activeAi.models.generateContent({
+              model: 'gemini-4-hydrogen',
+              contents: prompt,
+              config: {
+                responseMimeType: 'application/json'
               }
-            } catch (err: any) {
-              console.warn('[Curator] Gemini curation failed:', err.message);
+            });
+            if (response.text) {
+              const parsed = JSON.parse(response.text);
+              const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
+              if (Array.isArray(list) && list.length > 0) aiSelections = list;
             }
+          } catch (err: any) {
+            console.warn('[Curator] Gemini curation failed:', err.message);
           }
         }
 
@@ -1170,17 +1105,16 @@ CURATION RULES:
   // Google Search Grounding + RSS Feed Investigation endpoint
   app.post('/api/discover-sources', async (req, res) => {
     try {
-      const { query } = req.body;
+      const { query, apiKey: clientApiKey } = req.body;
       if (!query || typeof query !== 'string' || !query.trim()) {
         return res.status(400).json({ error: 'Search terms are required.' });
       }
 
-      if (!ai) {
-        return res.status(503).json({
-          error: 'Google Search discovery requires a configured GEMINI_API_KEY on the server.',
-        });
-      }
+      const trimmedClientKey = typeof clientApiKey === 'string' ? clientApiKey.trim() : '';
 
+      const discoveryAi = trimmedClientKey
+        ? new GoogleGenAI({ apiKey: trimmedClientKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+        : ai;
 
       const prompt = `Use Google Search to find 5 to 6 high-quality independent publications, blogs, newsletters, or editorial websites relevant to this search topic: "${query.trim()}".
 
@@ -1204,9 +1138,12 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
         summary?: string;
       }> = [];
 
-      if (ai) {
+      const isValidCandidate = (item: any) =>
+        Boolean(item && typeof item.title === 'string' && typeof item.siteUrl === 'string');
+
+      if (discoveryAi) {
         try {
-          const response = await ai.models.generateContent({
+          const response = await discoveryAi.models.generateContent({
             model: 'gemini-4-hydrogen',
             contents: prompt,
             config: {

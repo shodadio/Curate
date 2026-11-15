@@ -37,17 +37,34 @@ export function WeeklyReviewModal({
 }: WeeklyReviewModalProps) {
   if (!isOpen) return null;
 
-  // Calculate statistics
-  const totalMinutes = readingItems.reduce((acc, it) => acc + (it.minutesSpent || 6), 0);
-  const totalArticles = readingItems.length;
+  // Every statistic below is derived from recorded reading — no placeholders, smoothing or defaults
+  const dayMs = 24 * 60 * 60 * 1000;
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const weekStart = todayStart.getTime() - 6 * dayMs;
+  const priorWeekStart = weekStart - 7 * dayMs;
+
+  const recentItems = readingItems.filter(it => it.completedAt >= weekStart);
+  const priorWeekItems = readingItems.filter(it => it.completedAt >= priorWeekStart && it.completedAt < weekStart);
+
+  const minutesFor = (items: WeeklyReadingItem[]) =>
+    items.reduce((acc, it) => acc + (it.minutesSpent ?? 0), 0);
+
+  const totalMinutes = minutesFor(recentItems);
+  const totalArticles = recentItems.length;
+  const priorWeekMinutes = minutesFor(priorWeekItems);
+  const weekDeltaPct = priorWeekMinutes > 0
+    ? Math.round(((totalMinutes - priorWeekMinutes) / priorWeekMinutes) * 100)
+    : null;
+  const avgMinutesPerArticle = totalArticles > 0 ? Math.round((totalMinutes / totalArticles) * 10) / 10 : 0;
 
   // Topic breakdown
   const topicMap = new Map<string, { minutes: number; count: number }>();
-  readingItems.forEach(it => {
+  recentItems.forEach(it => {
     const topic = it.folder || 'General';
     const curr = topicMap.get(topic) || { minutes: 0, count: 0 };
     topicMap.set(topic, {
-      minutes: curr.minutes + (it.minutesSpent || 6),
+      minutes: curr.minutes + (it.minutesSpent ?? 0),
       count: curr.count + 1
     });
   });
@@ -61,35 +78,34 @@ export function WeeklyReviewModal({
     }))
     .sort((a, b) => b.minutes - a.minutes);
 
-  // Day-of-week distribution (last 7 days)
-  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  const now = Date.now();
-  const dayMs = 24 * 60 * 60 * 1000;
+  const topTopic = sortedTopics[0]?.topic;
+  const stretchCount = topTopic
+    ? recentItems.filter(it => (it.folder || 'General') !== topTopic).length
+    : 0;
 
-  const dailyMinutes = days.map((dayName, idx) => {
-    // Distribute time across the 7 days based on actual item timestamps or realistic distribution
-    const dayItems = readingItems.filter(it => {
-      const diffDays = Math.floor((now - it.completedAt) / dayMs);
-      return diffDays === (6 - idx);
-    });
-    const mins = dayItems.reduce((s, it) => s + (it.minutesSpent || 6), 0);
-    // If dynamic has sparse entries, smooth with minimum active reading
+  // Minutes per real calendar day over the last 7 days, labelled with each day's actual weekday
+  const dailyMinutes = Array.from({ length: 7 }, (_, idx) => {
+    const dayStart = weekStart + idx * dayMs;
+    const dayEnd = dayStart + dayMs;
+    const minutes = recentItems
+      .filter(it => it.completedAt >= dayStart && it.completedAt < dayEnd)
+      .reduce((sum, it) => sum + (it.minutesSpent ?? 0), 0);
     return {
-      day: dayName,
-      minutes: mins > 0 ? mins : [6, 8, 12, 5, 9, 14, 8][idx]
+      day: new Date(dayStart).toLocaleDateString('en-US', { weekday: 'short' }),
+      minutes
     };
   });
 
-  const maxDayMins = Math.max(1, ...dailyMinutes.map(d => d.minutes));
+  const maxDayMins = Math.max(0, ...dailyMinutes.map(d => d.minutes));
 
   // Sources breakdown
   const sourceMap = new Map<string, { count: number; minutes: number }>();
-  readingItems.forEach(it => {
+  recentItems.forEach(it => {
     const s = it.source || 'Curated';
     const curr = sourceMap.get(s) || { count: 0, minutes: 0 };
     sourceMap.set(s, {
       count: curr.count + 1,
-      minutes: curr.minutes + (it.minutesSpent || 6)
+      minutes: curr.minutes + (it.minutesSpent ?? 0)
     });
   });
   const topSources = Array.from(sourceMap.entries())
@@ -114,15 +130,15 @@ export function WeeklyReviewModal({
 
   return (
     <div 
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/85 backdrop-blur-md overflow-y-auto animate-fade-in"
+      className="fixed inset-0 z-50 flex items-start sm:items-center justify-center p-3 sm:p-6 safe-modal bg-slate-950/85 backdrop-blur-md overflow-y-auto animate-fade-in"
       onClick={onClose}
     >
       <div 
-        className="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl overflow-hidden my-auto relative text-slate-100"
+        className="w-full max-w-2xl max-h-[calc(100dvh-1.5rem)] flex flex-col bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl overflow-hidden my-auto relative text-slate-100"
         onClick={e => e.stopPropagation()}
       >
         {/* Subtle warm ambient header banner */}
-        <div className="relative p-6 sm:p-8 bg-gradient-to-b from-amber-500/10 via-slate-900/90 to-slate-900 border-b border-slate-800/80">
+        <div className="relative shrink-0 p-6 sm:p-8 bg-gradient-to-b from-amber-500/10 via-slate-900/90 to-slate-900 border-b border-slate-800/80">
           <button 
             type="button"
             onClick={onClose}
@@ -153,7 +169,13 @@ export function WeeklyReviewModal({
         </div>
 
         {/* Modal Body */}
-        <div className="p-6 sm:p-8 space-y-8 max-h-[75vh] overflow-y-auto">
+        <div className="p-6 sm:p-8 space-y-8 flex-1 min-h-0 overflow-y-auto">
+          {totalArticles === 0 && (
+            <div className="p-5 rounded-2xl bg-slate-950/60 border border-slate-800/80 text-xs text-slate-400 leading-relaxed">
+              No reading has been recorded in the last 7 days yet. Finish an article and the time you spend will appear here.
+            </div>
+          )}
+
           {/* Key Stat Cards Grid */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
             <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80">
@@ -164,9 +186,15 @@ export function WeeklyReviewModal({
               <div className="text-2xl font-bold font-serif text-slate-100">
                 {totalMinutes} <span className="text-xs font-sans text-slate-400 font-normal">mins</span>
               </div>
-              <div className="text-[11px] text-emerald-400 mt-1 flex items-center gap-1">
+              <div className={`text-[11px] mt-1 flex items-center gap-1 ${
+                weekDeltaPct === null ? 'text-slate-500' : weekDeltaPct >= 0 ? 'text-emerald-400' : 'text-rose-400'
+              }`}>
                 <TrendingUp className="w-3 h-3" />
-                <span>+15% vs prior week</span>
+                <span>
+                  {weekDeltaPct === null
+                    ? (priorWeekMinutes > 0 ? `${priorWeekMinutes} min read the week before` : 'No prior week recorded')
+                    : `${weekDeltaPct >= 0 ? '+' : ''}${weekDeltaPct}% vs prior week`}
+                </span>
               </div>
             </div>
 
@@ -179,7 +207,7 @@ export function WeeklyReviewModal({
                 {totalArticles} <span className="text-xs font-sans text-slate-400 font-normal">items</span>
               </div>
               <div className="text-[11px] text-slate-400 mt-1">
-                100% completion
+                {avgMinutesPerArticle} min average per article
               </div>
             </div>
 
@@ -189,10 +217,10 @@ export function WeeklyReviewModal({
                 <span>Top Topic</span>
               </div>
               <div className="text-base sm:text-lg font-bold font-serif text-slate-100 truncate">
-                {sortedTopics[0]?.topic || 'Economics'}
+                {topTopic || 'No reading yet'}
               </div>
               <div className="text-[11px] text-amber-300/80 mt-1">
-                {sortedTopics[0]?.pct || 42}% of reading diet
+                {totalMinutes > 0 ? `${sortedTopics[0]?.pct ?? 0}% of reading time` : 'Nothing recorded yet'}
               </div>
             </div>
 
@@ -202,7 +230,7 @@ export function WeeklyReviewModal({
                 <span>Serendipity</span>
               </div>
               <div className="text-2xl font-bold font-serif text-slate-100">
-                2 <span className="text-xs font-sans text-slate-400 font-normal">stretch</span>
+                {stretchCount} <span className="text-xs font-sans text-slate-400 font-normal">stretch</span>
               </div>
               <div className="text-[11px] text-slate-400 mt-1">
                 Outside routine
@@ -222,8 +250,8 @@ export function WeeklyReviewModal({
 
             <div className="pt-4 pb-1 grid grid-cols-7 gap-2 items-end h-32">
               {dailyMinutes.map((d, i) => {
-                const heightPct = Math.max(15, Math.round((d.minutes / maxDayMins) * 100));
-                const isPeak = d.minutes === maxDayMins;
+                const heightPct = maxDayMins > 0 ? Math.max(4, Math.round((d.minutes / maxDayMins) * 100)) : 0;
+                const isPeak = maxDayMins > 0 && d.minutes === maxDayMins;
                 return (
                   <div key={d.day} className="flex flex-col items-center gap-1.5 h-full justify-end group">
                     <span className="text-[10px] font-mono text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -328,11 +356,11 @@ export function WeeklyReviewModal({
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-slate-200">Completed Articles Log</h3>
-              <span className="text-xs text-slate-400">{readingItems.length} articles</span>
+              <span className="text-xs text-slate-400">{recentItems.length} articles</span>
             </div>
 
             <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-              {readingItems.map(item => (
+              {recentItems.map(item => (
                 <div 
                   key={item.id}
                   onClick={() => {
@@ -353,7 +381,7 @@ export function WeeklyReviewModal({
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <span className="font-mono text-slate-400 text-[11px] bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-                      {item.readTime || `${item.minutesSpent || 6} min read`}
+                      {item.readTime || `${item.minutesSpent ?? 0} min read`}
                     </span>
                     <Check className="w-4 h-4 text-emerald-400" />
                   </div>
@@ -369,13 +397,19 @@ export function WeeklyReviewModal({
               <span>Curator Editorial Synthesis</span>
             </div>
             <p className="text-slate-300 leading-relaxed">
-              Your reading diet over the past week demonstrated high engagement with institutional memory and technical depth, anchored primarily in {sortedTopics[0]?.topic || 'Economics'} and {sortedTopics[1]?.topic || 'Engineering'}. You successfully ventured into serendipitous stretches, maintaining a 100% completion rate across {totalArticles} dispatches.
+              {totalArticles === 0
+                ? 'No reading activity to summarise yet. Once you finish an article, this reflection reports what you actually read.'
+                : `Over the past 7 days you recorded ${totalMinutes} minutes across ${totalArticles} ${totalArticles === 1 ? 'article' : 'articles'}, ${sortedTopics[1]
+                    ? `split mainly between ${sortedTopics[0].topic} (${sortedTopics[0].pct}%) and ${sortedTopics[1].topic} (${sortedTopics[1].pct}%)`
+                    : `concentrated in ${sortedTopics[0].topic}`}.${stretchCount > 0
+                    ? ` ${stretchCount} ${stretchCount === 1 ? 'item sat' : 'items sat'} outside your main focus.`
+                    : ''}`}
             </p>
           </div>
         </div>
 
         {/* Modal Footer Actions */}
-        <div className="p-4 sm:p-6 bg-slate-950/80 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
+        <div className="shrink-0 p-4 sm:p-6 bg-slate-950/80 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
           <button 
             type="button"
             onClick={handleShare}
