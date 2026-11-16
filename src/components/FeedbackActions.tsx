@@ -17,28 +17,26 @@ export function FeedbackActions({ isMore, isLess, onMore, onLess }: FeedbackActi
     : 'bg-slate-950/80 border-slate-700/80 text-slate-300 hover:text-rose-300 hover:border-rose-500/40';
 
   return (
-    <div className="flex max-w-full flex-wrap items-center gap-2">
+    <div className="flex items-center gap-2">
       <button
         type="button"
         onClick={event => { event.stopPropagation(); onMore(); }}
-        className={`inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-xl border px-2.5 text-[11px] font-medium transition ${moreClasses}`}
+        className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-xl border transition ${moreClasses}`}
         title={isMore ? 'More like this (selected)' : 'Show me more like this'}
         aria-label={isMore ? 'More like this, selected' : 'More like this'}
         aria-pressed={isMore}
       >
-        <ThumbsUp className={`w-3.5 h-3.5 ${isMore ? 'fill-amber-400/30' : ''}`} />
-        <span>More like this</span>
+        <ThumbsUp className={`w-4 h-4 ${isMore ? 'fill-amber-400/30' : ''}`} />
       </button>
       <button
         type="button"
         onClick={event => { event.stopPropagation(); onLess(); }}
-        className={`inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-xl border px-2.5 text-[11px] font-medium transition ${lessClasses}`}
+        className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-xl border transition ${lessClasses}`}
         title={isLess ? 'Less like this (selected)' : 'Show me fewer like this'}
         aria-label={isLess ? 'Less like this, selected' : 'Less like this'}
         aria-pressed={isLess}
       >
-        <ThumbsDown className={`w-3.5 h-3.5 ${isLess ? 'fill-rose-400/30' : ''}`} />
-        <span>Less like this</span>
+        <ThumbsDown className={`w-4 h-4 ${isLess ? 'fill-rose-400/30' : ''}`} />
       </button>
     </div>
   );

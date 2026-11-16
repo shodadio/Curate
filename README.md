@@ -23,7 +23,7 @@
   - [5. Outbound SSRF Hardening & Network Security](#5-outbound-ssrf-hardening--network-security)
   - [6. High-Signal Deterministic Fallback Engine](#6-high-signal-deterministic-fallback-engine)
   - [7. OPML Import & Export](#7-opml-import--export)
-  - [8. Distraction-Free Reader & iOS Web Speech Read Aloud](#8-distraction-free-reader--ios-web-speech-read-aloud)
+  - [8. Distraction-Free Reader & Onboard Read Aloud](#8-distraction-free-reader--onboard-read-aloud)
   - [9. Mobile & iOS Safari Viewport Hardening](#9-mobile--ios-safari-viewport-hardening)
   - [10. Progressive Web App (PWA) Support](#10-progressive-web-app-pwa-support)
 - [System Architecture](#system-architecture)
@@ -99,12 +99,13 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Folder Preservation**: Preserves nested categories, folders, and custom tags.
 - **Export Anytime**: Download a clean, standardized `.opml` XML file containing your complete watch list.
 
-### 8. Distraction-Free Reader & iOS Web Speech Read Aloud
+### 8. Distraction-Free Reader & Onboard Read Aloud
 - **Typographic Discipline**: One self-hosted variable family, *Inter* (roman 47 KB + italic 51 KB woff2, `font-display: optional`), used for the interface, reading bodies, wordmark and metadata alike — no Google Fonts requests, so text never reflows or changes face after first paint.
-- **Native Web Speech Read Aloud**:
-  - Integrated text-to-speech audio player powered by the browser's native `window.speechSynthesis`.
-  - Fully compatible with iOS Safari and modern mobile browsers.
-  - Play, pause, resume, and stop controls with progress tracking.
+- **Native Read Aloud**:
+  - A sentence-by-sentence queue over the browser's own `window.speechSynthesis`, so an article is never cut off by the engine's long-utterance limit (Chrome stops at roughly fifteen seconds, iOS stalls on very long strings), and every paragraph break gets a natural beat.
+  - Defaults to a calm 0.95× rate, the device language, and the best English voice the device reports — Enhanced and Premium voices are preferred over the compact ones. Any installed voice and any speed can be chosen in **Settings → Read aloud**, with a *Hear this voice* preview.
+  - Live progress bar with paragraph and sentence position, the spoken paragraph highlighted, and tap-any-paragraph to listen from that point.
+  - Feed debris — URLs, footnote marks, bracket asides, "Read more" furniture, abbreviations and currency — is normalised out of the text before it reaches the voice.
 - **Scroll Depth Tracker**: Automatically tracks reading progress and marks articles as finished once the user scrolls past 85% depth.
 
 ### 9. Mobile & iOS Safari Viewport Hardening
@@ -130,7 +131,7 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 │  - Top Header Navigation with Refresh & Settings Controls       │
 │  - Bottom Dock Navigation (Today, Feeds, Saved, Sources)        │
 │  - Signal Tuning with Undo/Redo Fallbacks                       │
-│  - Web Speech API Audio Player                                  │
+│  - Sentence-Queued Read Aloud (voice + rate)                    │
 │  - LocalStorage State Manager (Bookmarks, Stats, Signal Weights)│
 └────────────────────────────────┬────────────────────────────────┘
                                  │ HTTP / JSON

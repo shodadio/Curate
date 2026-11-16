@@ -4,9 +4,10 @@ import {
   Download, Upload, Sliders, ExternalLink, ArrowLeft, Sparkles, 
   AlertCircle, X, Home, Compass,
   ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square,
-  RotateCcw, EyeOff, BarChart3, Clock, ArrowRight
+  RotateCcw, EyeOff, BarChart3, Clock, ArrowRight, ChevronDown, Activity
 } from 'lucide-react';
 import QRCode from 'qrcode';
+import { createPortal } from 'react-dom';
 import { CuratorMark } from './components/CuratorLogo';
 import { WeeklyReviewModal, WeeklyReadingItem } from './components/WeeklyReviewModal';
 import { InterestsEditor } from './components/InterestsEditor';
@@ -42,6 +43,8 @@ interface DigestItem {
   avatar?: string;
   publishedAt?: string;
   quote?: string;
+  // The publication's own blurb, carried on the articles a feed returns
+  sourceDescription?: string;
 }
 
 interface SourceItem {
@@ -53,6 +56,8 @@ interface SourceItem {
   failingReason?: string;
   lastSyncedAt?: number;
   avatar?: string;
+  // The feed's channel description, cached from the last successful fetch
+  description?: string;
 }
 
 interface SemanticFeedbackItem {
@@ -125,6 +130,202 @@ function buildArticleParagraphs(text: string): string[] {
     .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph));
 }
 
+// ---- Read Aloud: text preparation and the spoken queue -----------------------
+
+interface SpeechChunk {
+  text: string;
+  // -1 for the title, byline and summary; otherwise the rendered paragraph it belongs to
+  paragraphIndex: number;
+}
+
+// Browsers cut a long utterance off (Chrome after roughly fifteen seconds, iOS stalls),
+// so the reader speaks a sentence at a time: 220 characters is comfortably inside every
+// engine's comfort zone, and the paragraph beat keeps the prose from running together.
+const SPEECH_MAX_CHUNK_CHARS = 220;
+const SPEECH_SENTENCE_PAUSE_MS = 40;
+const SPEECH_PARAGRAPH_PAUSE_MS = 340;
+
+const SPEECH_RATE_DEFAULT = 0.95;
+const SPEECH_RATE_MIN = 0.7;
+const SPEECH_RATE_MAX = 1.5;
+const SPEECH_FALLBACK_LANG = 'en-GB';
+
+const SPEECH_VOICE_AUTO = 'auto';
+const SPEECH_VOICE_STORAGE_KEY = 'curator_speech_voice';
+const SPEECH_RATE_STORAGE_KEY = 'curator_speech_rate';
+
+// Voices that read like a calm editor out of the box, best first. Only some browsers put
+// the quality in the name, so this order carries most of the judgement.
+const PREFERRED_SPEECH_VOICES = [
+  'jamie', 'evan', 'ava', 'zoe', 'allison', 'nathan', 'samantha', 'daniel',
+  'serena', 'karen', 'oliver', 'martha', 'arthur', 'moira', 'tessa', 'rishi'
+];
+
+// "Evan (Enhanced)" and "Evan" are the same voice to a reader choosing one
+function speechVoiceBaseName(voice: SpeechSynthesisVoice): string {
+  return (voice.name || '')
+    .replace(/\s*\(.*?\)\s*/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function resolveSpeechVoice(
+  voices: SpeechSynthesisVoice[],
+  preference: string
+): SpeechSynthesisVoice | null {
+  if (!voices || voices.length === 0) return null;
+
+  // Speak the language the reader is reading in: the interface is English throughout
+  const english = voices.filter(voice => /^en(-|_|$)/i.test(voice.lang || ''));
+  const pool = english.length > 0 ? english : voices;
+
+  if (preference && preference !== SPEECH_VOICE_AUTO) {
+    const chosen =
+      voices.find(voice => voice.voiceURI === preference) ||
+      voices.find(voice => voice.name === preference) ||
+      pool.find(voice => speechVoiceBaseName(voice) === preference.toLowerCase());
+    if (chosen) return chosen;
+  }
+
+  const score = (voice: SpeechSynthesisVoice): number => {
+    const base = speechVoiceBaseName(voice);
+    const raw = (voice.name || '').toLowerCase();
+    let value = 0;
+    const rank = PREFERRED_SPEECH_VOICES.indexOf(base);
+    if (rank !== -1) value += (PREFERRED_SPEECH_VOICES.length - rank) * 10;
+    // Some platforms name the quality outright; take it at face value
+    if (/(enhanced|premium|neural|natural)/.test(raw)) value += 45;
+    if (voice.localService) value += 6;
+    if (voice.default) value += 4;
+    return value;
+  };
+
+  return pool.slice().sort((a, b) => score(b) - score(a))[0] || null;
+}
+
+// Feed bodies carry URLs, footnote marks and site furniture. Left alone, the voice reads
+// addresses out one character at a time, which is the quickest way to make it sound cheap.
+function normaliseForSpeech(text: string): string {
+  if (!text) return '';
+
+  let out = decodeArticleEntities(text)
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/[\u200B-\u200D\uFEFF]/g, ' ')
+    .replace(/\u00a0/g, ' ');
+
+  // Keep a markdown link's label, drop its target
+  out = out.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+
+  out = out
+    .replace(/\b(?:https?:\/\/|ftp:\/\/|www\.)\S+/gi, ' ')
+    .replace(/\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/gi, ' ')
+    .replace(/\b[\w-]+\.(?:com|org|net|io|co|uk|dev|ai|me|gov|edu|substack|app)\b(?:\/\S*)?/gi, ' ');
+
+  // Footnote marks, bracketed asides and placeholder ellipses
+  out = out
+    .replace(/\[\s*(?:\.{2,}|…|\d+|\*|\u2020|\u2021|note\s*\d*|sic|photo|image|video|audio)[^\]]*\]/gi, ' ')
+    .replace(/\[\s*\]/g, ' ')
+    .replace(/\(\s*(?:\.{2,}|…)\s*\)/g, ' ')
+    .replace(/[\u00B9\u00B2\u00B3\u2070-\u209C]/g, ' ');
+
+  // Site furniture that arrives inside the body rather than beside it
+  out = out
+    .replace(/\b(?:click|tap) here\b/gi, ' ')
+    .replace(/\bread (?:the )?(?:full|original|rest of (?:the|this)) (?:article|post|story)\b[^.]*\.?/gi, ' ')
+    .replace(/\bcontinue reading\b[^.]*\.?/gi, ' ')
+    .replace(/\b(?:share this|advertisement)\b[^.]*\.?/gi, ' ');
+
+  // Abbreviations, symbols and currency the engine otherwise spells out
+  out = out
+    .replace(/\be\.g\.\s*/gi, 'for example, ')
+    .replace(/\bi\.e\.\s*/gi, 'that is, ')
+    .replace(/\betc\.(?=\s|$)/gi, 'et cetera')
+    .replace(/\bvs\.?(?=\s)/gi, 'versus ')
+    .replace(/\bw\/(?=\s)/gi, 'with ')
+    .replace(/\bDr\.(?=\s)/g, 'Doctor ')
+    .replace(/\bMr\.(?=\s)/g, 'Mister ')
+    .replace(/\bMrs\.(?=\s)/g, 'Missus ')
+    .replace(/\bMs\.(?=\s)/g, 'Miz ')
+    .replace(/\bNo\.\s*(\d)/g, 'Number $1')
+    .replace(/&/g, ' and ')
+    .replace(/%/g, ' percent')
+    .replace(/£\s?(\d[\d,.]*)/g, '$1 pounds')
+    .replace(/\$\s?(\d[\d,.]*)/g, '$1 dollars')
+    .replace(/€\s?(\d[\d,.]*)/g, '$1 euros')
+    .replace(/×/g, ' by ')
+    .replace(/→/g, ' to ')
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[—–]/g, ', ')
+    .replace(/[*•·#]/g, ' ');
+
+  return out
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/([.!?])(?=["'(A-Z])/g, '$1 ')
+    .trim();
+}
+
+function splitIntoSentences(text: string): string[] {
+  const clean = (text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return [];
+
+  const segments: string[] = [];
+  const boundary = /[.!?…]+["'”’)\]]*(?=\s|$)/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = boundary.exec(clean)) !== null) {
+    const end = match.index + match[0].length;
+    segments.push(clean.slice(cursor, end).trim());
+    cursor = end;
+    while (clean[cursor] === ' ') cursor += 1;
+    boundary.lastIndex = cursor;
+  }
+  if (cursor < clean.length) segments.push(clean.slice(cursor).trim());
+
+  const sentences: string[] = [];
+  for (const segment of segments) {
+    if (!segment) continue;
+    let rest = segment;
+    // A run-on with no full stop is broken at the last clause that still fits
+    while (rest.length > SPEECH_MAX_CHUNK_CHARS) {
+      const head = rest.slice(0, SPEECH_MAX_CHUNK_CHARS);
+      const clause = Math.max(
+        head.lastIndexOf(', '),
+        head.lastIndexOf('; '),
+        head.lastIndexOf(': '),
+        head.lastIndexOf(' ')
+      );
+      const cut = clause > 60 ? clause + 1 : SPEECH_MAX_CHUNK_CHARS;
+      sentences.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    if (rest) sentences.push(rest);
+  }
+
+  return sentences;
+}
+
+// Title and byline, then the summary, then the article paragraph by paragraph. Each chunk
+// keeps the index of the paragraph it came from, which is what the progress bar, the
+// highlight and the tap-to-listen-from-here all follow.
+function buildSpeechQueue(article: DigestItem): SpeechChunk[] {
+  const chunks: SpeechChunk[] = [];
+
+  const push = (text: string, paragraphIndex: number) => {
+    for (const sentence of splitIntoSentences(normaliseForSpeech(text))) {
+      chunks.push({ text: sentence, paragraphIndex });
+    }
+  };
+
+  push(`${article.title}. By ${article.source}.`, -1);
+  if (article.summary) push(article.summary, -1);
+  buildArticleParagraphs(article.fullText).forEach((paragraph, index) => push(paragraph, index));
+
+  return chunks;
+}
+
 function QRCodeBox({ url }: { url: string }) {
   const [svgStr, setSvgStr] = useState<string>('');
   useEffect(() => {
@@ -153,6 +354,21 @@ export default function App() {
   const [selectedFeedSource, setSelectedFeedSource] = useState<string | null>(null);
   const [feedStreamArticles, setFeedStreamArticles] = useState<DigestItem[]>([]);
   const [loadingFeedStream, setLoadingFeedStream] = useState<boolean>(false);
+  // Server-side request tally, read on demand from the Settings tab
+  const [usageStats, setUsageStats] = useState<{
+    today?: any;
+    week?: any;
+    month?: any;
+    days?: any[];
+    usdPerGbp?: number;
+    peakNow?: boolean;
+    rates?: { inputMiss: number; inputHit: number; output: number };
+    retentionDays?: number;
+  } | null>(null);
+  const [loadingUsage, setLoadingUsage] = useState<boolean>(false);
+  // Bumped on every stream response so the list remounts cleanly when the filter changes;
+  // without it the previous filter's cards were left in place under the new header.
+  const [feedStreamRenderKey, setFeedStreamRenderKey] = useState<number>(0);
   const [readSourceIds, setReadSourceIds] = useState<string[]>(() => {
     const saved = localStorage.getItem('curator_read_sources');
     if (saved) {
@@ -176,6 +392,9 @@ export default function App() {
     }
   });
   const [refreshingSourceId, setRefreshingSourceId] = useState<string | null>(null);
+  // Which source descriptions are open — in the Sources list, and on the reader's byline
+  const [expandedSourceDescriptionIds, setExpandedSourceDescriptionIds] = useState<string[]>([]);
+  const [showReaderSourceNote, setShowReaderSourceNote] = useState<boolean>(false);
 
   // App data state with localStorage persistence
   const [sources, setSources] = useState<SourceItem[]>(() => {
@@ -209,7 +428,8 @@ export default function App() {
   } | null>(null);
   const [feedReport, setFeedReport] = useState<{
     attempted: number;
-    failed: Array<{ title: string; reason: string }>;
+    failed: Array<{ title: string; feedUrl?: string; reason: string }>;
+    failedCount?: number;
   } | null>(null);
 
   // First-run calibration flow for the semantic profile
@@ -273,6 +493,7 @@ export default function App() {
   const displayFolder = (folder?: string) =>
     (!folder || folder.trim().toLowerCase() === 'uncategorized') ? 'General' : folder;
 
+  // The folder that took the most of this week's reading time
   const topWeeklyTopic = (() => {
     const counts: Record<string, number> = {};
     weeklyRecent.forEach(it => {
@@ -339,6 +560,11 @@ export default function App() {
     return saved ? Number(saved) : 25;
   });
   const [deliveryTime, setDeliveryTime] = useState<string>(() => localStorage.getItem('curator_delivery_time') || '07:00');
+  // When the digest on screen was actually curated, so the header can say so honestly.
+  const [digestCuratedAt, setDigestCuratedAt] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('curator_digest_curated_at'));
+    return Number.isFinite(saved) && saved > 0 ? saved : 0;
+  });
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(() => {
     const saved = localStorage.getItem('curator_notifications');
     return saved !== null ? JSON.parse(saved) : true;
@@ -385,8 +611,21 @@ export default function App() {
   const wakeLockWantedRef = React.useRef(false);
   // Monotonic ids so a slow, superseded response can never overwrite newer state
   const digestRequestRef = React.useRef(0);
+  // Latest digest size, so a reminder scheduled before the digest arrives still says the right number
+  const digestCountRef = React.useRef<number>(0);
   const feedStreamRequestRef = React.useRef(0);
-  const speechCancelledRef = React.useRef(false);
+  // Read Aloud queue: the sentences still to speak, which one is playing, and the session
+  // they belong to, so a superseded callback can never speak over a newer one
+  const speechQueueRef = React.useRef<SpeechChunk[]>([]);
+  const speechIndexRef = React.useRef(0);
+  const speechArticleIdRef = React.useRef<string | null>(null);
+  const speechSessionRef = React.useRef(0);
+  const speechStateRef = React.useRef<'idle' | 'playing' | 'paused'>('idle');
+  const speechGapTimerRef = React.useRef<any>(null);
+  // The utterance in flight, so resume knows whether to continue one or speak the next
+  const speechUtteranceRef = React.useRef<SpeechSynthesisUtterance | null>(null);
+  // Whether the engine actually started the current session (iOS refuses silently sometimes)
+  const speechStartedRef = React.useRef(false);
 
   // Muted cards state for immediate inline Undo / Redo when user clicks "Fewer"
   const [mutedCards, setMutedCards] = useState<Record<string, DigestItem>>({});
@@ -424,11 +663,83 @@ export default function App() {
 
   // Reading view timer & depth tracking
 
-  // Read Aloud (iOS onboard speech synthesis).
-  // Voice, rate and pitch are never set here: the system speaks with the
-  // default voice and settings the user picked in Spoken Content.
+  // Read Aloud (onboard speech synthesis). Voice and rate are chosen explicitly now: the
+  // device default is often a compact, robotic voice at an odd speed, and the attachment
+  // the reader wants is a calm Enhanced voice at just under normal pace.
   const [speechPlaying, setSpeechPlaying] = useState<boolean>(false);
   const [speechPaused, setSpeechPaused] = useState<boolean>(false);
+  // The article the running session belongs to; null when nothing is being read
+  const [speechArticleId, setSpeechArticleId] = useState<string | null>(null);
+  const [speechProgress, setSpeechProgress] = useState<{ index: number; total: number; paragraph: number }>({
+    index: 0,
+    total: 0,
+    paragraph: -1
+  });
+  const [speechVoices, setSpeechVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [speechVoiceUri, setSpeechVoiceUri] = useState<string>(
+    () => localStorage.getItem(SPEECH_VOICE_STORAGE_KEY) || SPEECH_VOICE_AUTO
+  );
+  const [speechRate, setSpeechRate] = useState<number>(() => {
+    const saved = Number(localStorage.getItem(SPEECH_RATE_STORAGE_KEY));
+    return Number.isFinite(saved) && saved >= SPEECH_RATE_MIN && saved <= SPEECH_RATE_MAX
+      ? saved
+      : SPEECH_RATE_DEFAULT;
+  });
+
+  useEffect(() => {
+    localStorage.setItem(SPEECH_VOICE_STORAGE_KEY, speechVoiceUri);
+  }, [speechVoiceUri]);
+
+  useEffect(() => {
+    localStorage.setItem(SPEECH_RATE_STORAGE_KEY, String(speechRate));
+  }, [speechRate]);
+
+  // Safari fills the voice list lazily and does not always fire voiceschanged
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+    const loadVoices = () => {
+      const next = window.speechSynthesis.getVoices();
+      if (next && next.length > 0) setSpeechVoices(next);
+    };
+
+    loadVoices();
+    window.speechSynthesis.addEventListener('voiceschanged', loadVoices);
+    const late = setTimeout(loadVoices, 600);
+
+    return () => {
+      window.speechSynthesis.removeEventListener('voiceschanged', loadVoices);
+      clearTimeout(late);
+    };
+  }, []);
+
+  const speechFallbackLang =
+    typeof navigator !== 'undefined' && /^en(-|_|$)/i.test(navigator.language || '')
+      ? navigator.language
+      : SPEECH_FALLBACK_LANG;
+
+  const automaticSpeechVoice = React.useMemo(
+    () => resolveSpeechVoice(speechVoices, SPEECH_VOICE_AUTO),
+    [speechVoices]
+  );
+
+  const activeSpeechVoice = React.useMemo(
+    () => (speechVoiceUri === SPEECH_VOICE_AUTO
+      ? automaticSpeechVoice
+      : resolveSpeechVoice(speechVoices, speechVoiceUri) || automaticSpeechVoice),
+    [speechVoices, speechVoiceUri, automaticSpeechVoice]
+  );
+
+  const speechVoiceLabel = activeSpeechVoice ? activeSpeechVoice.name : 'system voice';
+
+  // Compact voices and Enhanced/Premium ones sit in the same list: English first, by name
+  const speechVoiceOptions = React.useMemo(() => {
+    const english = speechVoices.filter(voice => /^en(-|_|$)/i.test(voice.lang || ''));
+    const pool = english.length > 0 ? english : speechVoices;
+    return pool
+      .slice()
+      .sort((a, b) => speechVoiceBaseName(a).localeCompare(speechVoiceBaseName(b)));
+  }, [speechVoices]);
 
   useEffect(() => {
     localStorage.setItem('curator_saved_articles', JSON.stringify(savedArticles));
@@ -466,8 +777,58 @@ export default function App() {
   }, [deliveryTime]);
 
   useEffect(() => {
+    if (digestCuratedAt > 0) {
+      localStorage.setItem('curator_digest_curated_at', String(digestCuratedAt));
+    }
+  }, [digestCuratedAt]);
+
+  // Hold the page still while a full-screen dialog is open, so the content behind it
+  // cannot scroll out from under the reader's finger. Both elements are locked: which one
+  // actually scrolls depends on the browser and on the page's overflow rules.
+  useEffect(() => {
+    if (!showSetupWizard && !showImportModal && !showAddSourceModal) return;
+    const root = document.documentElement;
+    const previousBody = document.body.style.overflow;
+    const previousRoot = root.style.overflow;
+    document.body.style.overflow = 'hidden';
+    root.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousBody;
+      root.style.overflow = previousRoot;
+    };
+  }, [showSetupWizard, showImportModal, showAddSourceModal]);
+
+  useEffect(() => {
     localStorage.setItem('curator_notifications', JSON.stringify(notificationsEnabled));
   }, [notificationsEnabled]);
+
+  useEffect(() => {
+    digestCountRef.current = digest.length;
+  }, [digest.length]);
+
+  // The morning reminder: fires at the chosen time while Curator is running, and catches up
+  // once on the first open after that time if the app was closed. A web app cannot be woken
+  // in the background on iOS, so that catch-up is the honest limit of a scheduled reminder.
+  useEffect(() => {
+    if (!notificationsEnabled) return;
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+
+    const [hours, minutes] = deliveryTime.split(':').map(Number);
+    const now = new Date();
+    const scheduled = new Date(now);
+    if (Number.isFinite(hours) && Number.isFinite(minutes)) {
+      scheduled.setHours(hours, minutes, 0, 0);
+    } else {
+      scheduled.setHours(7, 0, 0, 0);
+    }
+
+    if (scheduled.getTime() <= now.getTime()) notifyDigestReady();
+
+    const next = new Date(scheduled);
+    if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
+    const timer = setTimeout(() => notifyDigestReady(), next.getTime() - now.getTime());
+    return () => clearTimeout(timer);
+  }, [notificationsEnabled, deliveryTime, digest.length > 0]);
 
   useEffect(() => {
     localStorage.setItem('curator_item_count', itemCount.toString());
@@ -530,6 +891,22 @@ export default function App() {
     }
   }, [activeTab, selectedFeedSource]);
 
+  useEffect(() => {
+    if (activeTab === 'settings') loadUsageStats();
+  }, [activeTab]);
+
+  const loadUsageStats = async () => {
+    setLoadingUsage(true);
+    try {
+      const res = await fetch('/api/usage');
+      if (res.ok) setUsageStats(await res.json());
+    } catch {
+      // The tally is a convenience; a failure just leaves the last reading in place
+    } finally {
+      setLoadingUsage(false);
+    }
+  };
+
   const fetchFeedStream = async (sourceTitle?: string) => {
     const requestId = ++feedStreamRequestRef.current;
     setLoadingFeedStream(true);
@@ -543,6 +920,8 @@ export default function App() {
       if (requestId !== feedStreamRequestRef.current) return;
       if (Array.isArray(data.articles)) {
         setFeedStreamArticles(data.articles);
+        setFeedStreamRenderKey(prev => prev + 1);
+        applySourceMetadata(data.articles);
       }
     } catch (e) {
       // fallback
@@ -583,6 +962,64 @@ export default function App() {
   const markAllSourcesAsUnread = () => {
     setReadSourceIds([]);
     showToast('Unread indicators reset');
+  };
+
+  // Every article carries its feed's own blurb and proves the feed was just read, so cache
+  // both on the matching source: the description stays available offline, and the row's
+  // sync status is honest without any extra request.
+  const applySourceMetadata = (items: Array<{ source?: string; sourceDescription?: string }>) => {
+    if (!items || items.length === 0) return;
+    const seen = new Set<string>();
+    const descriptions = new Map<string, string>();
+    items.forEach(item => {
+      const name = (item?.source || '').trim().toLowerCase();
+      if (!name) return;
+      seen.add(name);
+      const description = (item?.sourceDescription || '').trim();
+      if (description && !descriptions.has(name)) descriptions.set(name, description);
+    });
+    if (seen.size === 0) return;
+
+    const syncedAt = Date.now();
+    setSources(prev => {
+      let changed = false;
+      const next = prev.map(src => {
+        const key = src.title.trim().toLowerCase();
+        if (!seen.has(key)) return src;
+        const description = descriptions.get(key) || src.description;
+        // A run of overlapping fetches within a minute must not churn state or storage
+        const alreadyFresh = src.status === 'active' && !src.failingReason &&
+          src.description === description &&
+          typeof src.lastSyncedAt === 'number' && syncedAt - src.lastSyncedAt < 60 * 1000;
+        if (alreadyFresh) return src;
+        changed = true;
+        return { ...src, description, lastSyncedAt: syncedAt, status: 'active' as const, failingReason: undefined };
+      });
+      return changed ? next : prev;
+    });
+  };
+
+  // The digest run also reports which feeds failed. Mark those sources as needing attention,
+  // so "Tap to review sources" lands on the rows that actually broke instead of a wall of
+  // "Active" with no sign of the problem.
+  const applyFeedReport = (report: { failed?: Array<{ title?: string; feedUrl?: string; reason?: string }> } | null) => {
+    const failed = Array.isArray(report?.failed) ? report!.failed! : [];
+    if (failed.length === 0) return;
+    setSources(prev => {
+      let changed = false;
+      const next = prev.map(src => {
+        const match = failed.find(entry =>
+          (entry.feedUrl && src.feedUrl && entry.feedUrl.trim().toLowerCase() === src.feedUrl.trim().toLowerCase()) ||
+          (entry.title && entry.title.trim().toLowerCase() === src.title.trim().toLowerCase())
+        );
+        if (!match) return src;
+        const reason = (match.reason || 'This feed returned nothing.').trim();
+        if (src.status === 'failing' && src.failingReason === reason) return src;
+        changed = true;
+        return { ...src, status: 'failing' as const, failingReason: reason };
+      });
+      return changed ? next : prev;
+    });
   };
 
   const generateDigest = async (options?: { fresh?: boolean }) => {
@@ -641,10 +1078,15 @@ export default function App() {
         showToast(data?.error ? `Could not refresh the digest: ${data.error}` : 'Could not refresh the digest');
         return;
       }
+      setDigestCuratedAt(Date.now());
       if (Array.isArray(data.digest) && data.digest.length > 0) {
         setDigest(data.digest);
+        applySourceMetadata(data.digest);
         if (data.semanticSummary) setSemanticSummary(data.semanticSummary);
-        if (data.feedReport) setFeedReport(data.feedReport);
+        if (data.feedReport) {
+          setFeedReport(data.feedReport);
+          applyFeedReport(data.feedReport);
+        }
 
         const shownAt = Date.now();
         const freshIds = new Set<string>(data.digest.map((item: DigestItem) => item.id));
@@ -745,6 +1187,7 @@ export default function App() {
         return;
       }
       setCalibrationCandidates(data.candidates);
+      applySourceMetadata(data.candidates);
       setCalibrationIndex(0);
       setCalibrationVotes(0);
       setSetupStep(2);
@@ -1102,6 +1545,31 @@ export default function App() {
     return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   };
 
+  // The moment a digest was actually curated: today shows as a time, anything
+  // older carries its date so a stale list is never mistaken for a fresh one.
+  const formatCuratedAt = (value: number): string => {
+    if (!Number.isFinite(value) || value <= 0) return '';
+    const d = new Date(value);
+    const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) return time;
+    return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${time}`;
+  };
+
+  // Pounds, with enough precision that a few tenths of a penny still show
+  const formatGbp = (value: number): string => {
+    const safe = Number.isFinite(value) ? value : 0;
+    if (safe === 0) return '0.00';
+    return safe < 0.01 ? safe.toFixed(4) : safe.toFixed(2);
+  };
+
+  const formatTokens = (value: number): string => {
+    const safe = Number.isFinite(value) ? value : 0;
+    if (safe >= 1_000_000) return `${(safe / 1_000_000).toFixed(2)}M`;
+    if (safe >= 1000) return `${(safe / 1000).toFixed(1)}k`;
+    return String(Math.round(safe));
+  };
+
   const getShortSourceTitle = (title: string): string => {
     if (!title) return '';
     let clean = title.trim();
@@ -1141,6 +1609,7 @@ export default function App() {
       const data = await res.json().catch(() => ({}));
       const articles: DigestItem[] = Array.isArray(data.articles) ? data.articles : [];
       const fetched = res.ok && articles.length > 0;
+      if (fetched) applySourceMetadata(articles);
 
       setSources(prev => prev.map(s => {
         if (s.id !== source.id) return s;
@@ -1156,6 +1625,7 @@ export default function App() {
       if (fetched) {
         if (selectedFeedSource === source.title) {
           setFeedStreamArticles(articles);
+          setFeedStreamRenderKey(prev => prev + 1);
         }
         showToast(`Fetched ${articles.length} ${articles.length === 1 ? 'article' : 'articles'} from "${source.title}"`);
       } else {
@@ -1220,86 +1690,279 @@ export default function App() {
   // Release the wake lock only when the app itself goes away
   useEffect(() => () => releaseWakeLock(), []);
 
-  const handleToggleReadAloud = (article: DigestItem, restart = false, rateOverride?: number) => {
+  // ---- Read Aloud -------------------------------------------------------------
+  // One utterance per sentence, queued: short utterances never hit the engine's
+  // long-string truncation (Chrome stops at roughly fifteen seconds, iOS stalls on very
+  // long strings), paragraph breaks get a longer beat than sentence breaks, and the queue
+  // position is the progress indicator.
+
+  const configureSpeechUtterance = (utterance: SpeechSynthesisUtterance) => {
+    const voice = activeSpeechVoice;
+    if (voice) utterance.voice = voice;
+    utterance.lang = voice?.lang || speechFallbackLang;
+    utterance.rate = speechRate;
+  };
+
+  const stopSpeech = () => {
+    speechSessionRef.current += 1;
+    speechStateRef.current = 'idle';
+    if (speechGapTimerRef.current) {
+      clearTimeout(speechGapTimerRef.current);
+      speechGapTimerRef.current = null;
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    speechQueueRef.current = [];
+    speechIndexRef.current = 0;
+    speechArticleIdRef.current = null;
+    speechUtteranceRef.current = null;
+    releaseWakeLock();
+    setSpeechPlaying(false);
+    setSpeechPaused(false);
+    setSpeechArticleId(null);
+    setSpeechProgress({ index: 0, total: 0, paragraph: -1 });
+  };
+
+  // Only a queue that ran to its end counts as listening; stopSpeech() is the other exit
+  const finishSpeech = () => {
+    const finishedId = speechArticleIdRef.current;
+    stopSpeech();
+    if (!finishedId) return;
+    setReadingStats(prev => ({
+      ...prev,
+      [finishedId]: { maxDepth: 100, finished: true, lastRead: Date.now() }
+    }));
+    setReadArticleIds(prev => (prev.includes(finishedId) ? prev : [...prev, finishedId]));
+    showToast('Finished listening · Read through recorded');
+  };
+
+  const speakSpeechChunk = () => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+    const queue = speechQueueRef.current;
+    const index = speechIndexRef.current;
+    const session = speechSessionRef.current;
+
+    if (index >= queue.length) {
+      finishSpeech();
+      return;
+    }
+
+    const chunk = queue[index];
+    const utterance = new SpeechSynthesisUtterance(chunk.text);
+    configureSpeechUtterance(utterance);
+
+    speechStateRef.current = 'playing';
+    setSpeechPlaying(true);
+    setSpeechPaused(false);
+    setSpeechProgress({ index, total: queue.length, paragraph: chunk.paragraphIndex });
+
+    utterance.onstart = () => {
+      speechStartedRef.current = true;
+      setSpeechPlaying(true);
+      setSpeechPaused(false);
+    };
+
+    utterance.onend = () => {
+      if (session !== speechSessionRef.current) return;
+      if (speechStateRef.current === 'idle') return;
+
+      speechUtteranceRef.current = null;
+      speechIndexRef.current = index + 1;
+      const next = queue[index + 1];
+      const endsParagraph = Boolean(next) && chunk.paragraphIndex >= 0 && next.paragraphIndex !== chunk.paragraphIndex;
+
+      speechGapTimerRef.current = setTimeout(() => {
+        speechGapTimerRef.current = null;
+        if (session !== speechSessionRef.current) return;
+        // Paused inside the gap: resume() picks the queue back up
+        if (speechStateRef.current !== 'playing') return;
+        speakSpeechChunk();
+      }, endsParagraph ? SPEECH_PARAGRAPH_PAUSE_MS : SPEECH_SENTENCE_PAUSE_MS);
+    };
+
+    utterance.onerror = (event) => {
+      if (session !== speechSessionRef.current) return;
+      const reason = String(event?.error || '');
+      // A cancelled or superseded utterance is not a failure worth reporting
+      if (reason === 'interrupted' || reason === 'canceled' || reason === 'cancelled') return;
+      console.warn('SpeechSynthesis error:', event);
+      stopSpeech();
+      showToast('Read aloud stopped — this voice could not speak that passage.');
+    };
+
+    speechUtteranceRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const startSpeech = (article: DigestItem, startIndex = 0) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       showToast('Speech audio is not supported in this browser.');
       return;
     }
 
-    if (speechPlaying && !restart) {
-      if (speechPaused) {
-        window.speechSynthesis.resume();
-        setSpeechPaused(false);
-        requestWakeLock();
-        showToast('Resumed reading aloud');
-      } else {
-        window.speechSynthesis.pause();
-        setSpeechPaused(true);
-        releaseWakeLock();
-        showToast('Paused reading aloud');
-      }
+    const queue = buildSpeechQueue(article);
+    if (queue.length === 0) {
+      showToast('This article has no readable text to speak.');
       return;
     }
 
-    window.speechSynthesis.cancel();
-
-    const cleanBody = article.fullText
-      .replace(/<[^>]*>/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"');
-
-    const textToRead = `${article.title}. By ${article.source}. ${article.summary}. ${cleanBody}`;
-    const utterance = new SpeechSynthesisUtterance(textToRead);
-
-    // Leave voice, rate, pitch and volume untouched so the system speaks with
-    // the default voice and speech settings the user chose on the device.
-
-    utterance.onstart = () => {
-      setSpeechPlaying(true);
-      setSpeechPaused(false);
-      requestWakeLock();
-      showToast('Reading aloud with your default voice');
-    };
-
-    utterance.onend = () => {
-      releaseWakeLock();
-      setSpeechPlaying(false);
-      setSpeechPaused(false);
-      // cancel() also fires onend — a deliberate stop must not mark the article finished
-      const cancelled = speechCancelledRef.current;
-      speechCancelledRef.current = false;
-      if (cancelled) return;
-      setReadingStats(prev => ({
-        ...prev,
-        [article.id]: { maxDepth: 100, finished: true, lastRead: Date.now() }
-      }));
-      setReadArticleIds(prev => (prev.includes(article.id) ? prev : [...prev, article.id]));
-      showToast('Finished listening · Read through recorded');
-    };
-
-    utterance.onerror = (e) => {
-      console.warn('SpeechSynthesis error:', e);
-      releaseWakeLock();
-      setSpeechPlaying(false);
-      setSpeechPaused(false);
-    };
-
-    // Request during the user gesture; onstart confirms playback actually began
-    speechCancelledRef.current = false;
+    stopSpeech();
+    const first = Math.max(0, Math.min(startIndex, queue.length - 1));
+    speechQueueRef.current = queue;
+    speechIndexRef.current = first;
+    speechArticleIdRef.current = article.id;
+    speechStartedRef.current = false;
+    setSpeechArticleId(article.id);
+    setSpeechProgress({ index: first, total: queue.length, paragraph: queue[first].paragraphIndex });
     requestWakeLock();
+    // Still inside the tap: iOS only starts speaking from a user gesture
+    speakSpeechChunk();
+
+    // If the engine never started, say so instead of leaving a bar that never moves
+    const session = speechSessionRef.current;
+    setTimeout(() => {
+      if (speechSessionRef.current !== session) return;
+      if (speechStartedRef.current) return;
+      stopSpeech();
+      showToast('The device did not start speaking — try Read aloud again.');
+    }, 1600);
+  };
+
+  const pauseSpeech = () => {
+    if (speechStateRef.current !== 'playing') return;
+    if (speechGapTimerRef.current) {
+      clearTimeout(speechGapTimerRef.current);
+      speechGapTimerRef.current = null;
+    }
+    speechStateRef.current = 'paused';
+    setSpeechPaused(true);
+    releaseWakeLock();
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.pause();
+    }
+    showToast('Paused reading aloud');
+  };
+
+  const resumeSpeech = () => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    if (speechStateRef.current !== 'paused') return;
+
+    speechStateRef.current = 'playing';
+    setSpeechPaused(false);
+    requestWakeLock();
+    showToast('Resumed reading aloud');
+
+    // pause() marks the engine paused even with nothing queued, so always clear it first
+    if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+    // Paused in the breath between two sentences: nothing is loaded with the engine
+    if (!speechUtteranceRef.current) speakSpeechChunk();
+  };
+
+  const handleToggleReadAloud = (article: DigestItem) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      showToast('Speech audio is not supported in this browser.');
+      return;
+    }
+
+    const isThisArticle = speechArticleIdRef.current === article.id;
+    if (isThisArticle && speechStateRef.current === 'paused') {
+      resumeSpeech();
+      return;
+    }
+    if (isThisArticle && speechStateRef.current === 'playing') {
+      pauseSpeech();
+      return;
+    }
+    startSpeech(article);
+  };
+
+  const handleStopReadAloud = () => stopSpeech();
+
+  // Tapping a paragraph while listening restarts the queue at that paragraph
+  const jumpSpeechToParagraph = (paragraphIndex: number) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    const at = speechQueueRef.current.findIndex(chunk => chunk.paragraphIndex === paragraphIndex);
+    if (at === -1) return;
+
+    speechSessionRef.current += 1;
+    speechStateRef.current = 'idle';
+    if (speechGapTimerRef.current) {
+      clearTimeout(speechGapTimerRef.current);
+      speechGapTimerRef.current = null;
+    }
+    window.speechSynthesis.cancel();
+    speechIndexRef.current = at;
+    requestWakeLock();
+    speakSpeechChunk();
+  };
+
+  // Settings › Read aloud › Hear this voice
+  const handlePreviewSpeech = () => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      showToast('Speech audio is not supported in this browser.');
+      return;
+    }
+    stopSpeech();
+    const utterance = new SpeechSynthesisUtterance('Curator. Your morning reading, read aloud.');
+    configureSpeechUtterance(utterance);
     window.speechSynthesis.speak(utterance);
   };
 
-  const handleStopReadAloud = () => {
-    speechCancelledRef.current = true;
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
+  // Leaving the article ends the session, so speech never reads a page the reader closed
+  useEffect(() => {
+    const sessionArticleId = speechArticleIdRef.current;
+    if (!sessionArticleId) return;
+    if (selectedArticle && selectedArticle.id === sessionArticleId) return;
+    stopSpeech();
+  }, [selectedArticle]);
+
+  // Follow the voice down the page, but only once the spoken paragraph has scrolled away
+  useEffect(() => {
+    if (!speechPlaying || speechProgress.paragraph < 0) return;
+    const element = document.getElementById(`reader-paragraph-${speechProgress.paragraph}`);
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    if (rect.top >= 88 && rect.bottom <= window.innerHeight - 48) return;
+    element.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [speechPlaying, speechProgress.paragraph]);
+
+  const handleToggleNotifications = async () => {
+    if (notificationsEnabled) {
+      setNotificationsEnabled(false);
+      return;
     }
-    releaseWakeLock();
-    setSpeechPlaying(false);
-    setSpeechPaused(false);
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      let permission = Notification.permission;
+      if (permission === 'default') permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        showToast('Notifications are blocked — allow them for Curator in your browser settings.');
+        return;
+      }
+    }
+    setNotificationsEnabled(true);
+    showToast(`Morning reminder set for ${formatDeliveryTime(deliveryTime)}`);
+  };
+
+  // At most one reminder per day, whatever wakes it: the timer or the next app open
+  const notifyDigestReady = () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    if (!notificationsEnabled || Notification.permission !== 'granted') return;
+    const today = new Date().toDateString();
+    if (localStorage.getItem('curator_notified_day') === today) return;
+    try {
+      new Notification('The Curator', {
+        body: digestCountRef.current > 0
+          ? `${digestCountRef.current} items ready in today's digest.`
+          : 'Your morning digest is ready.',
+        icon: '/pwa-192x192.png',
+        tag: 'curator-morning',
+      });
+      localStorage.setItem('curator_notified_day', today);
+    } catch {
+      // A refused notification is not worth interrupting the app over
+    }
   };
 
   const handleSendTestNotification = async () => {
@@ -1374,6 +2037,8 @@ export default function App() {
 
   const openArticle = (item: DigestItem) => {
     setSelectedArticle(item);
+    // The byline's source description starts collapsed on every article
+    setShowReaderSourceNote(false);
 
     // Mark article as read / clicked
     setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
@@ -1436,6 +2101,13 @@ export default function App() {
     return acc;
   }, {} as Record<string, SourceItem[]>);
 
+  // The source an open article came from, plus its cached description (the article's own
+  // copy of the blurb wins when the feed supplied one).
+  const readerSource = selectedArticle
+    ? sources.find(src => src.title.trim().toLowerCase() === selectedArticle.source.trim().toLowerCase())
+    : undefined;
+  const readerSourceDescription = (selectedArticle?.sourceDescription || readerSource?.description || '').trim();
+
   // Folder names are the categories the reader already keeps, so they seed the interest chips.
   const interestSuggestions = suggestionsFromFolders(sources.map(src => src.folder));
 
@@ -1448,6 +2120,10 @@ export default function App() {
   const outOfBubbleDigest = digest.filter(d => d.isOutOfBubble);
   const currentCalibrationItem = calibrationCandidates[calibrationIndex];
   const articleParagraphs = selectedArticle ? buildArticleParagraphs(selectedArticle.fullText) : [];
+  const readAloudActive = Boolean(selectedArticle && speechArticleId === selectedArticle.id);
+  const speechPercent = speechProgress.total > 0
+    ? Math.min(100, Math.round((speechProgress.index / speechProgress.total) * 100))
+    : 0;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-slate-800 selection:text-white w-full max-w-full overflow-x-hidden">
@@ -1542,7 +2218,9 @@ export default function App() {
                     ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 ring-2 ring-amber-500/30'
                     : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-amber-400 hover:border-slate-700'
                 }`}
-                title="Read aloud with your default device voice"
+                title={readAloudActive
+                  ? (speechPaused ? 'Resume reading aloud' : 'Pause reading aloud')
+                  : `Read aloud with ${speechVoiceLabel}`}
               >
                 {speechPlaying ? (
                   speechPaused ? <Play className="w-3.5 h-3.5 fill-current" /> : <Pause className="w-3.5 h-3.5 fill-current" />
@@ -1562,13 +2240,32 @@ export default function App() {
           </header>
 
           <main className="max-w-2xl mx-auto w-full px-6 py-10 flex-1">
-            <div className="text-xs text-slate-400 mb-3 flex items-center gap-2">
-              <span className="font-medium text-slate-300">{selectedArticle.source}</span>
+            <div className="text-xs text-slate-400 mb-3 flex items-center gap-2 flex-wrap">
+              {readerSourceDescription ? (
+                <button
+                  type="button"
+                  onClick={() => setShowReaderSourceNote(prev => !prev)}
+                  className="inline-flex items-center gap-1 font-medium text-slate-300 hover:text-amber-300 transition cursor-pointer"
+                  aria-expanded={showReaderSourceNote}
+                  title={showReaderSourceNote ? 'Hide the source description' : `About ${selectedArticle.source}`}
+                >
+                  <span>{selectedArticle.source}</span>
+                  <ChevronDown className={`w-3 h-3 text-slate-500 transition-transform ${showReaderSourceNote ? 'rotate-180' : ''}`} />
+                </button>
+              ) : (
+                <span className="font-medium text-slate-300">{selectedArticle.source}</span>
+              )}
               <span aria-hidden="true">·</span>
               <span>{selectedArticle.folder}</span>
               <span aria-hidden="true">·</span>
               <span>{selectedArticle.readTime}</span>
             </div>
+
+            {showReaderSourceNote && readerSourceDescription && (
+              <p className="text-xs text-slate-400 leading-relaxed mb-4 border-l border-slate-800 pl-3">
+                {readerSourceDescription}
+              </p>
+            )}
 
             <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-slate-100 mb-6 leading-snug">
               {selectedArticle.title}
@@ -1580,40 +2277,83 @@ export default function App() {
               <p className="text-slate-300 italic leading-relaxed">{selectedArticle.why}</p>
             </div>
 
-            {/* Sleek Read Aloud bar (visible only when active) */}
-            {speechPlaying && (
-              <div className="mb-8 p-3 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-3 text-xs animate-fade-in shadow-md">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <button
-                    type="button"
-                    onClick={() => handleToggleReadAloud(selectedArticle)}
-                    className="w-7 h-7 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center shrink-0 hover:bg-amber-400 transition"
-                    title={speechPaused ? 'Resume' : 'Pause'}
-                  >
-                    {speechPaused ? <Play className="w-3.5 h-3.5 fill-current ml-0.5" /> : <Pause className="w-3.5 h-3.5 fill-current" />}
-                  </button>
-                  <span className="text-slate-200 truncate" title="Voice and rate follow Settings › Accessibility › Spoken Content">
-                    {speechPaused ? 'Audio paused' : 'Reading aloud with your default voice'}
-                  </span>
+            {/* Read Aloud: what is being spoken, and how far through it is */}
+            {readAloudActive && (
+              <div className="mb-8 p-3 rounded-xl bg-slate-900/90 border border-slate-800 animate-fade-in shadow-md">
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleReadAloud(selectedArticle)}
+                      className="w-7 h-7 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center shrink-0 hover:bg-amber-400 transition"
+                      title={speechPaused ? 'Resume' : 'Pause'}
+                    >
+                      {speechPaused ? <Play className="w-3.5 h-3.5 fill-current ml-0.5" /> : <Pause className="w-3.5 h-3.5 fill-current" />}
+                    </button>
+                    <span
+                      className="text-slate-200 truncate"
+                      title={`${speechVoiceLabel} at ${speechRate.toFixed(2)}×`}
+                    >
+                      {speechPaused ? 'Audio paused' : `Reading aloud · ${speechVoiceLabel}`}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-[11px] text-slate-500 tabular-nums">{speechPercent}%</span>
+                    <button
+                      type="button"
+                      onClick={handleStopReadAloud}
+                      className="p-1 text-slate-400 hover:text-rose-400 transition"
+                      title="Stop"
+                    >
+                      <Square className="w-3.5 h-3.5 fill-current" />
+                    </button>
+                  </div>
                 </div>
 
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={handleStopReadAloud}
-                    className="p-1 text-slate-400 hover:text-rose-400 transition"
-                    title="Stop"
-                  >
-                    <Square className="w-3.5 h-3.5 fill-current" />
-                  </button>
+                <div
+                  className="mt-2 h-1 rounded-full bg-slate-800 overflow-hidden"
+                  role="progressbar"
+                  aria-valuenow={speechPercent}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label="Read aloud progress"
+                >
+                  <div
+                    className="h-full bg-amber-400 transition-all duration-300"
+                    style={{ width: `${speechPercent}%` }}
+                  />
                 </div>
+
+                <p className="mt-2 text-[11px] text-slate-500">
+                  {speechProgress.paragraph >= 0 && articleParagraphs.length > 0
+                    ? `Paragraph ${Math.min(speechProgress.paragraph + 1, articleParagraphs.length)} of ${articleParagraphs.length} · `
+                    : ''}
+                  sentence {Math.min(speechProgress.index + 1, speechProgress.total || 1)} of {speechProgress.total || 1}
+                  {' · '}tap a paragraph to listen from there
+                </p>
               </div>
             )}
 
             <div className="max-w-[68ch] mx-auto text-slate-300 font-reading space-y-5 text-[1.0625rem] leading-[1.75]">
-              {articleParagraphs.length > 0 ? articleParagraphs.map((paragraph, idx) => (
-                <p key={idx} className="text-pretty">{paragraph}</p>
-              )) : (
+              {articleParagraphs.length > 0 ? articleParagraphs.map((paragraph, idx) => {
+                const isSpeakingHere = readAloudActive && speechProgress.paragraph === idx;
+                return (
+                  <p
+                    key={idx}
+                    id={`reader-paragraph-${idx}`}
+                    onClick={readAloudActive ? () => jumpSpeechToParagraph(idx) : undefined}
+                    title={readAloudActive ? 'Listen from this paragraph' : undefined}
+                    className={`text-pretty transition-colors ${
+                      isSpeakingHere
+                        ? 'text-amber-50 border-l-2 border-amber-400 pl-4 -ml-4'
+                        : readAloudActive
+                          ? 'cursor-pointer hover:text-slate-100'
+                          : ''
+                    }`}
+                  >{paragraph}</p>
+                );
+              }) : (
                 <p className="text-slate-400 text-base">This feed supplied no readable body text. Use “Read original” below to open the article.</p>
               )}
             </div>
@@ -1643,10 +2383,11 @@ export default function App() {
                     setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
                     showToast(`Opening original on ${selectedArticle.source}`);
                   }}
-                  className="inline-flex items-center gap-1.5 text-sm font-medium text-amber-400 hover:text-amber-300 underline underline-offset-4 decoration-amber-500/40 hover:decoration-amber-300 transition-colors group cursor-pointer"
+                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-amber-400 hover:text-amber-300 transition-colors cursor-pointer"
+                  title={`Read original on ${selectedArticle.source} (opens external browser or app)`}
+                  aria-label={`Read original on ${selectedArticle.source}`}
                 >
-                  <span>Read original</span>
-                  <ExternalLink className="w-4 h-4 text-amber-400/80 group-hover:text-amber-300 group-hover:translate-x-0.5 transition-transform shrink-0" />
+                  <ExternalLink className="w-4 h-4 text-amber-400/80 hover:text-amber-300 transition-colors" />
                 </a>
 
                 {/* Feedback Icons Aligned to Right */}
@@ -1737,40 +2478,17 @@ export default function App() {
         {/* TAB 1: TODAY */}
         {activeTab === 'today' && (
           <div className="space-y-6 animate-fade-in w-full max-w-full">
-            {/* Weekly Intellectual Summary Banner Card */}
-            <div 
-              onClick={() => setShowWeeklyReviewModal(true)}
-              className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/10 via-slate-900/80 to-slate-900/60 border border-amber-500/20 flex items-center justify-between gap-3 text-xs cursor-pointer hover:border-amber-500/40 hover:bg-slate-900 transition-all shadow-sm group"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0">
-                  <BarChart3 className="w-4 h-4 text-amber-400" />
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 font-semibold text-slate-200 truncate">
-                    <span>Weekly Reading Retrospective</span>
-                    <span className="text-[10px] font-mono font-normal text-amber-300 bg-amber-500/20 px-1.5 py-0.5 rounded shrink-0">
-                      {totalWeeklyMinutes} mins
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 mt-0.5 truncate">
-                    Top focus: <span className="text-slate-300 font-medium">{topWeeklyTopic}</span> · {weeklyRecent.length} articles read
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-1 text-amber-400 group-hover:translate-x-0.5 transition-transform shrink-0 font-medium text-[11px]">
-                <span className="hidden sm:inline">View Review</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </div>
-            </div>
-
             <div className="flex flex-col items-start gap-3 border-b border-slate-900 pb-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-100">Today's Digest</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
                   {loadingDigest && digest.length === 0
                     ? "Synthesizing today's list…"
-                    : `Curated at ${formatDeliveryTime(deliveryTime)} · ${digest.length} items worth your time${
+                    : `Curated at ${
+                        digestCuratedAt > 0
+                          ? formatCuratedAt(digestCuratedAt)
+                          : formatDeliveryTime(deliveryTime)
+                      } · ${digest.length} items worth your time${
                         semanticSummary && semanticSummary.feedbackExamples > 0
                           ? ` · ranked from ${semanticSummary.feedbackExamples} vote examples`
                           : ''
@@ -1824,7 +2542,7 @@ export default function App() {
               >
                 <AlertCircle className="w-3.5 h-3.5 shrink-0" />
                 <span>
-                  {feedReport.failed.length} of {feedReport.attempted} feeds returned nothing today
+                  {feedReport.failedCount ?? feedReport.failed.length} of {feedReport.attempted} feeds returned nothing today
                   {' '}({feedReport.failed.slice(0, 3).map(f => f.title).join(', ')}
                   {feedReport.failed.length > 3 ? ', …' : ''}). Tap to review sources.
                 </span>
@@ -1937,14 +2655,12 @@ export default function App() {
                               <span>Read</span>
                             </div>
                           ) : actions.isVotedMore ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-950/90 border border-amber-500/50 text-[10px] font-bold text-amber-300">
-                              <ThumbsUp className="w-3 h-3 text-amber-400" />
-                              <span>More like this</span>
+                            <div className="flex items-center px-2 py-1 rounded-full bg-amber-950/90 border border-amber-500/50" title="More like this">
+                              <ThumbsUp className="w-3.5 h-3.5 text-amber-400" />
                             </div>
                           ) : actions.isVotedLess ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-950/90 border border-rose-500/50 text-[10px] font-bold text-rose-300">
-                              <ThumbsDown className="w-3 h-3 text-rose-400" />
-                              <span>Less like this</span>
+                            <div className="flex items-center px-2 py-1 rounded-full bg-rose-950/90 border border-rose-500/50" title="Less like this">
+                              <ThumbsDown className="w-3.5 h-3.5 text-rose-400" />
                             </div>
                           ) : actions.isClicked ? (
                             <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-[10px] font-medium text-sky-300">
@@ -2013,7 +2729,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); openArticle(item); }}
-                              className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 px-3 text-xs font-semibold text-amber-300 hover:bg-amber-500/25 transition"
+                              className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-amber-300 hover:text-amber-200 transition"
                             >
                               Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                             </button>
@@ -2026,11 +2742,11 @@ export default function App() {
                                 setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
                                 showToast(`Opening source on ${item.source}`);
                               }}
-                              className="inline-flex min-h-11 items-center gap-1.5 px-2 text-xs text-slate-400 hover:text-amber-300 transition-colors"
-                              title={`Read more on ${item.source} (opens external browser or app)`}
+                              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
+                              title={`Read original on ${item.source} (opens external browser or app)`}
+                              aria-label={`Read original on ${item.source}`}
                             >
-                              <span>Read original</span>
-                              <ExternalLink className="w-3 h-3 text-slate-500" />
+                              <ExternalLink className="w-4 h-4" />
                             </a>
                           </div>
                           <FeedbackActions
@@ -2142,14 +2858,12 @@ export default function App() {
                                   <span>Read</span>
                                 </div>
                               ) : actions.isVotedMore ? (
-                                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-950/90 border border-amber-500/50 text-[10px] font-bold text-amber-300">
-                                  <ThumbsUp className="w-3 h-3 text-amber-400" />
-                                  <span>More like this</span>
+                                <div className="flex items-center px-2 py-1 rounded-full bg-amber-950/90 border border-amber-500/50" title="More like this">
+                                  <ThumbsUp className="w-3.5 h-3.5 text-amber-400" />
                                 </div>
                               ) : actions.isVotedLess ? (
-                                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-950/90 border border-rose-500/50 text-[10px] font-bold text-rose-300">
-                                  <ThumbsDown className="w-3 h-3 text-rose-400" />
-                                  <span>Less like this</span>
+                                <div className="flex items-center px-2 py-1 rounded-full bg-rose-950/90 border border-rose-500/50" title="Less like this">
+                                  <ThumbsDown className="w-3.5 h-3.5 text-rose-400" />
                                 </div>
                               ) : actions.isClicked ? (
                                 <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-[10px] font-medium text-sky-300">
@@ -2219,7 +2933,7 @@ export default function App() {
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); openArticle(item); }}
-                                  className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-rose-500/15 border border-rose-500/30 px-3 text-xs font-semibold text-rose-300 hover:bg-rose-500/25 transition"
+                                  className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-rose-300 hover:text-rose-200 transition"
                                 >
                                   Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                                 </button>
@@ -2232,11 +2946,11 @@ export default function App() {
                                     setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
                                     showToast(`Opening source on ${item.source}`);
                                   }}
-                                  className="inline-flex min-h-11 items-center gap-1.5 px-2 text-xs text-rose-400 hover:text-rose-300 transition-colors"
-                                  title={`Read more on ${item.source} (opens external browser or app)`}
+                                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-rose-400 hover:text-rose-300 transition-colors"
+                                  title={`Read original on ${item.source} (opens external browser or app)`}
+                                  aria-label={`Read original on ${item.source}`}
                                 >
-                                  <span>Read original</span>
-                                  <ExternalLink className="w-3 h-3 text-rose-500/70" />
+                                  <ExternalLink className="w-4 h-4" />
                                 </a>
                               </div>
                               <FeedbackActions
@@ -2308,7 +3022,7 @@ export default function App() {
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); openArticle(item); }}
-                            className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 px-3 text-xs font-semibold text-amber-300 hover:bg-amber-500/25 transition"
+                            className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-amber-300 hover:text-amber-200 transition"
                           >
                             Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                           </button>
@@ -2321,10 +3035,11 @@ export default function App() {
                               setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
                               showToast(`Opening source on ${item.source}`);
                             }}
-                            className="inline-flex min-h-11 items-center gap-1.5 px-2 text-xs text-slate-400 hover:text-amber-300 font-medium transition"
-                            title={`Open the original article on ${item.source}`}
+                            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
+                            title={`Read original on ${item.source} (opens external browser or app)`}
+                            aria-label={`Read original on ${item.source}`}
                           >
-                            Read original <ExternalLink className="w-3 h-3" />
+                            <ExternalLink className="w-4 h-4" />
                           </a>
                         </div>
 
@@ -2346,7 +3061,10 @@ export default function App() {
         )}
 
         {/* TAB 3: SOURCES */}
-        {activeTab === 'sources' && (
+        {/* The first-run wizard and the Add Source / OPML overlays live in this branch, so it
+            also mounts when one of them is open — otherwise a button that opens them from
+            Settings would appear to do nothing. */}
+        {(activeTab === 'sources' || showSetupWizard || showImportModal || showAddSourceModal) && (
           <div className="space-y-8 animate-fade-in">
             <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-900 pb-4">
               <div>
@@ -2608,9 +3326,10 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     {folderSources.map((src) => {
                       const avatarUrl = getSourceAvatar(src.feedUrl);
                       const isRefreshing = refreshingSourceId === src.id;
+                      const descriptionOpen = expandedSourceDescriptionIds.includes(src.id);
                       return (
-                        <div key={src.id} className="p-3.5 sm:p-4 rounded-2xl bg-slate-900/40 border border-slate-900 flex items-center justify-between gap-3 sm:gap-4 w-full max-w-full overflow-hidden">
-                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <div key={src.id} className="p-3.5 sm:p-4 rounded-2xl bg-slate-900/40 border border-slate-900 flex items-start justify-between gap-3 sm:gap-4 w-full max-w-full overflow-hidden">
+                          <div className="flex items-start gap-3 min-w-0 flex-1">
                             <div className="w-10 h-10 rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden shrink-0 relative">
                               {avatarUrl ? (
                                 <img 
@@ -2652,6 +3371,25 @@ Search for writers, publications, or topics. Curator checks whether each result 
                                   </>
                                 )}
                               </div>
+                              {src.description && (
+                                <div className="mt-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedSourceDescriptionIds(prev =>
+                                      prev.includes(src.id) ? prev.filter(id => id !== src.id) : [...prev, src.id]
+                                    )}
+                                    className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400 hover:text-amber-300 transition cursor-pointer"
+                                    aria-expanded={descriptionOpen}
+                                    title={descriptionOpen ? 'Hide this feed’s description' : `About ${src.title}`}
+                                  >
+                                    <ChevronDown className={`w-3 h-3 transition-transform ${descriptionOpen ? 'rotate-180' : ''}`} />
+                                    <span>{descriptionOpen ? 'Hide description' : 'About this feed'}</span>
+                                  </button>
+                                  {descriptionOpen && (
+                                    <p className="text-[11px] text-slate-400 leading-relaxed mt-1 line-clamp-3">{src.description}</p>
+                                  )}
+                                </div>
+                              )}
                               {src.failingReason && (
                                 <span className="text-xs text-rose-400 block mt-1 break-words">{src.failingReason}</span>
                               )}
@@ -2694,10 +3432,10 @@ Search for writers, publications, or topics. Curator checks whether each result 
               )}
             </div>
 
-            {/* Add Source Modal */}
-            {showAddSourceModal && (
-              <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 safe-modal">
-                <div className="w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4">
+            {/* Add Source Modal — portalled as well, so it paints above the setup wizard */}
+            {showAddSourceModal && createPortal(
+              <div className="fixed inset-0 z-[85] bg-slate-950/85 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
+                <div className="w-full max-w-md my-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold text-slate-100">Add New Source</h3>
                     <button onClick={() => setShowAddSourceModal(false)} className="text-slate-400 hover:text-slate-100">
@@ -2774,13 +3512,15 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     </div>
                   </form>
                 </div>
-              </div>
+              </div>,
+              document.body
             )}
 
-            {/* First-run semantic setup */}
-            {showSetupWizard && (
-              <div className="fixed inset-0 z-[70] bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
-                <div className="w-full max-w-lg rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-5 max-h-[90vh] overflow-y-auto animate-fade-in">
+            {/* First-run semantic setup — portalled to <body> so the overlay always covers
+                the whole screen (header and dock included), whichever tab opened it */}
+            {showSetupWizard && createPortal(
+              <div className="fixed inset-0 z-[80] bg-slate-950/90 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
+                <div className="w-full max-w-lg my-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-5 animate-fade-in">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <p className="text-[11px] uppercase tracking-wider text-amber-400/90 font-semibold">
@@ -2894,17 +3634,29 @@ Search for writers, publications, or topics. Curator checks whether each result 
                             <button
                               type="button"
                               onClick={() => answerCalibration(currentCalibrationItem, 'like')}
-                              className="flex-1 px-3 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center justify-center gap-1.5 hover:bg-emerald-500/25 transition"
+                              className="flex-1 min-h-11 px-3 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 flex items-center justify-center hover:bg-emerald-500/25 transition"
+                              title="More like this"
+                              aria-label="More like this"
                             >
-                              <ThumbsUp className="w-3.5 h-3.5" /> More like this
+                              <ThumbsUp className="w-4 h-4" />
                             </button>
                             <button
                               type="button"
                               onClick={() => answerCalibration(currentCalibrationItem, 'dislike')}
-                              className="flex-1 px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center justify-center gap-1.5 hover:bg-rose-500/20 transition"
+                              className="flex-1 min-h-11 px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 flex items-center justify-center hover:bg-rose-500/20 transition"
+                              title="Not for me"
+                              aria-label="Not for me"
                             >
-                              <ThumbsDown className="w-3.5 h-3.5" /> Not for me
+                              <ThumbsDown className="w-4 h-4" />
                             </button>
+                          </div>
+                          <div className="flex items-center justify-center gap-4 text-[10px] font-medium text-slate-400">
+                            <span className="flex items-center gap-1">
+                              <ThumbsUp className="w-3 h-3 text-emerald-400/70" /> read it
+                            </span>
+                            <span className="flex items-center gap-1">
+                              <ThumbsDown className="w-3 h-3 text-rose-400/70" /> skip it
+                            </span>
                           </div>
                         </div>
                       ) : (
@@ -2974,13 +3726,14 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     </div>
                   )}
                 </div>
-              </div>
+              </div>,
+              document.body
             )}
 
             {/* OPML Import Modal */}
-            {showImportModal && (
-              <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 safe-modal">
-                <div className="w-full max-w-lg rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4 max-h-[calc(100dvh-2rem)] overflow-y-auto">
+            {showImportModal && createPortal(
+              <div className="fixed inset-0 z-[85] bg-slate-950/85 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
+                <div className="w-full max-w-lg my-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold text-slate-100">Import Subscription List (OPML)</h3>
                     <button onClick={() => setShowImportModal(false)} className="text-slate-400 hover:text-slate-100">
@@ -3098,7 +3851,8 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     </button>
                   </div>
                 </div>
-              </div>
+              </div>,
+              document.body
             )}
           </div>
         )}
@@ -3149,12 +3903,197 @@ Search for writers, publications, or topics. Curator checks whether each result 
               </div>
             </div>
 
+            {/* Server-side request tally: what the app actually asked of the network */}
+            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-amber-400" />
+                    <span>Server activity</span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Every request Curator has made, counted on the server. Kept for {usageStats?.retentionDays ?? 120} days.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={loadUsageStats}
+                  className="p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border border-slate-800 text-slate-400 hover:text-amber-300 hover:border-amber-500/30 transition"
+                  title="Refresh the tally"
+                >
+                  <RefreshCw className={`w-4 h-4 ${loadingUsage ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                {([
+                  ['Today', usageStats?.today],
+                  ['Last 7 days', usageStats?.week],
+                  ['Last 30 days', usageStats?.month],
+                ] as Array<[string, any]>).map(([label, bucket]) => (
+                  <div key={label} className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-slate-200">{label}</div>
+                      <div className="text-[11px] text-slate-400 mt-0.5 break-words">
+                        {bucket
+                          ? `${bucket.outboundRequests} outbound · ${bucket.aiCalls} AI · ${bucket.apiCalls} app calls${bucket.feedFetches ? ` · ${bucket.feedFetches} feed fetches` : ''}`
+                          : 'No tally yet'}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-sm font-semibold text-amber-300">
+                        {bucket ? `£${formatGbp(bucket.gbp)}` : '—'}
+                      </div>
+                      <div className="text-[10px] text-slate-500">
+                        {bucket ? `$${bucket.usd.toFixed(4)}` : ''}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {usageStats?.month && (usageStats.month.inputTokens > 0 || usageStats.month.outputTokens > 0) && (
+                <p className="text-[11px] text-slate-400">
+                  Tokens this month: {formatTokens(usageStats.month.inputTokens)} in
+                  {usageStats.month.cachedInputTokens > 0 ? ` (${formatTokens(usageStats.month.cachedInputTokens)} cached)` : ''}
+                  {' '}· {formatTokens(usageStats.month.outputTokens)} out
+                </p>
+              )}
+
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Estimate at ${usageStats?.rates?.inputMiss ?? 0.15}/1M input, ${usageStats?.rates?.inputHit ?? 0.003}/1M cached input
+                and ${usageStats?.rates?.output ?? 0.6}/1M output, converted at £1 = ${usageStats?.usdPerGbp ?? 1.32}.
+                {usageStats?.peakNow ? ' Peak hours now — these calls bill at 2×.' : ' Peak hours (Mon–Fri, 01:00–04:00 and 06:00–10:00 UTC) double these rates.'}
+              </p>
+
+              <p className="text-[11px] text-slate-500">
+                Counted inside the server container, so it survives app restarts but starts fresh on a redeploy.
+              </p>
+            </div>
+
+            {/* Read aloud: the onboard voice and pace the reader speaks with */}
+            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                  <Volume2 className="w-4 h-4 text-amber-400" />
+                  <span>Read aloud</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  The reader speaks with a voice installed on this device. Add or download more in
+                  Settings › Accessibility › Spoken Content › Voices, then start Read aloud once.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">Voice</label>
+                <select
+                  value={speechVoiceUri}
+                  onChange={e => setSpeechVoiceUri(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
+                >
+                  <option value={SPEECH_VOICE_AUTO}>
+                    {automaticSpeechVoice ? `Automatic — ${automaticSpeechVoice.name}` : 'Automatic'}
+                  </option>
+                  {speechVoiceOptions.map(voice => (
+                    <option key={voice.voiceURI} value={voice.voiceURI}>
+                      {voice.name} · {voice.lang}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  {speechVoices.length > 0
+                    ? `${speechVoices.length} ${speechVoices.length === 1 ? 'voice' : 'voices'} reported by this device. Enhanced and Premium voices sound markedly better than the compact ones.`
+                    : 'This device has not reported its voices yet — start Read aloud once and they appear here.'}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5 flex items-center justify-between">
+                  <span>Speed</span>
+                  <span className="text-amber-300 tabular-nums">{speechRate.toFixed(2)}×</span>
+                </label>
+                <input
+                  type="range"
+                  min={SPEECH_RATE_MIN}
+                  max={SPEECH_RATE_MAX}
+                  step={0.05}
+                  value={speechRate}
+                  onChange={e => setSpeechRate(Number(e.target.value))}
+                  className="w-full accent-amber-400"
+                  aria-label="Read aloud speed"
+                />
+                <div className="flex justify-between text-[10px] text-slate-500">
+                  <span>Slower</span>
+                  <span>Calm default {SPEECH_RATE_DEFAULT.toFixed(2)}×</span>
+                  <span>Faster</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handlePreviewSpeech}
+                className="px-4 py-2 text-xs font-medium rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition"
+              >
+                Hear this voice
+              </button>
+            </div>
+
             {/* Provider-configurable AI services */}
             <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-5">
               <div>
                 <h3 className="text-sm font-semibold text-slate-200">Optional AI services</h3>
                 <p className="text-xs text-slate-400 mt-0.5">Curator works without an external AI service. Connect one if you want AI-assisted digest writing or richer topic matching.</p>
               </div>
+
+              {(() => {
+                const chatKey = customApiKey.trim();
+                const usesServerGemini = aiProvider === 'gemini' && serverGeminiAvailable;
+                const hasChatKey = Boolean(chatKey) || usesServerGemini;
+                const providerConfigured = aiProvider !== 'openai-compatible' || Boolean(aiBaseUrl.trim() && aiModel.trim());
+                const ready = aiProvider !== 'deterministic' && hasChatKey && providerConfigured;
+                const masked = chatKey ? `••••${chatKey.slice(-4)}` : '';
+
+                const embeddingKey = embeddingApiKey.trim() || (embeddingKeyMatchesChatProvider ? chatKey : '');
+                const embeddingReady = embeddingProvider !== 'none' &&
+                  Boolean(embeddingKey || (embeddingProvider === 'gemini' && serverGeminiAvailable));
+
+                let heading = 'API key not active';
+                let detail = 'No key saved — digests and ranking use the built-in engine.';
+                let tone = 'border-amber-500/25 bg-amber-500/10 text-amber-300';
+
+                if (aiProvider === 'deterministic') {
+                  heading = 'Built-in engine';
+                  detail = 'No API key in use. Nothing is sent to an external service.';
+                  tone = 'border-slate-800 bg-slate-950/60 text-slate-400';
+                } else if (!hasChatKey) {
+                  heading = 'API key not active';
+                  detail = 'No key saved yet — Curator keeps using the built-in engine until you add one below.';
+                } else if (!providerConfigured) {
+                  heading = 'API key saved, provider incomplete';
+                  detail = `The key (${masked || 'server'}) is stored, but the provider URL and model are missing, so the built-in engine is still doing the work.`;
+                } else {
+                  heading = 'API key active';
+                  detail = usesServerGemini
+                    ? 'Using the server’s GEMINI_API_KEY for digests.'
+                    : `Key saved in this browser (${masked}) and sent only with your own requests.`;
+                  tone = 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300';
+                }
+
+                const embeddingLabel = embeddingProvider === 'none'
+                  ? 'Topic matching: built-in (no key needed).'
+                  : embeddingReady
+                    ? `Topic matching: key active${embeddingKey ? ` (••••${embeddingKey.slice(-4)})` : ''}.`
+                    : 'Topic matching: no key yet — built-in matching continues.';
+
+                return (
+                  <div className={`rounded-xl border px-3 py-2 text-[11px] leading-relaxed space-y-0.5 ${tone}`}>
+                    <div>
+                      <span className="font-semibold">Digest writing: {heading}.</span> {detail}
+                    </div>
+                    <div className={embeddingReady ? 'text-emerald-300/90' : undefined}>{embeddingLabel}</div>
+                  </div>
+                );
+              })()}
 
               <div className="space-y-3 pt-1">
                 <div>
@@ -3340,12 +4279,17 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   <p className="text-xs text-slate-400 mt-0.5">One calm notification per morning</p>
                 </div>
                 <button 
-                  onClick={() => setNotificationsEnabled(!notificationsEnabled)}
+                  onClick={handleToggleNotifications}
                   className={`w-11 h-6 rounded-full transition relative ${notificationsEnabled ? 'bg-amber-500' : 'bg-slate-800'}`}
                 >
                   <div className={`w-5 h-5 rounded-full bg-white absolute top-0.5 transition-transform ${notificationsEnabled ? 'translate-x-5.5' : 'translate-x-0.5'}`} />
                 </button>
               </div>
+
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                The reminder fires at {formatDeliveryTime(deliveryTime)} while Curator is open, and once when you next open it after that time if it was closed.
+                iOS cannot wake a closed web app, so an installed Curator gets it on its next open.
+              </p>
 
               <div className="pt-2">
                 <button 
@@ -3446,23 +4390,6 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 </div>
               </div>
             </details>
-
-            {/* Subscription Export */}
-            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-200">Data & Subscriptions</h3>
-                <p className="text-xs text-slate-400 mt-0.5">Your OPML subscription file is yours. Export anytime.</p>
-              </div>
-              <div>
-                <button 
-                  onClick={handleExportOPML}
-                  className="px-4 py-2 text-xs font-medium rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-slate-100 transition flex items-center gap-2"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Export full subscription list (.opml)</span>
-                </button>
-              </div>
-            </div>
           </div>
         )}
 
@@ -3620,7 +4547,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 </button>
               </div>
             ) : (
-              <div className="space-y-6">
+              <div key={`stream-${feedStreamRenderKey}`} className="space-y-6">
                 {feedStreamArticles.map((item) => {
                   const actions = getCardActions(item.id);
                   return (
@@ -3677,14 +4604,12 @@ Search for writers, publications, or topics. Curator checks whether each result 
                               <span>Read</span>
                             </div>
                           ) : actions.isVotedMore ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-950/90 border border-amber-500/50 text-[10px] font-bold text-amber-300">
-                              <ThumbsUp className="w-3 h-3 text-amber-400" />
-                              <span>More like this</span>
+                            <div className="flex items-center px-2 py-1 rounded-full bg-amber-950/90 border border-amber-500/50" title="More like this">
+                              <ThumbsUp className="w-3.5 h-3.5 text-amber-400" />
                             </div>
                           ) : actions.isVotedLess ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-950/90 border border-rose-500/50 text-[10px] font-bold text-rose-300">
-                              <ThumbsDown className="w-3 h-3 text-rose-400" />
-                              <span>Less like this</span>
+                            <div className="flex items-center px-2 py-1 rounded-full bg-rose-950/90 border border-rose-500/50" title="Less like this">
+                              <ThumbsDown className="w-3.5 h-3.5 text-rose-400" />
                             </div>
                           ) : actions.isClicked ? (
                             <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-[10px] font-medium text-sky-300">
@@ -3745,7 +4670,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); openArticle(item); }}
-                              className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 px-3 text-xs font-semibold text-amber-300 hover:bg-amber-500/25 transition"
+                              className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-amber-300 hover:text-amber-200 transition"
                             >
                               Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                             </button>
@@ -3758,11 +4683,11 @@ Search for writers, publications, or topics. Curator checks whether each result 
                                 setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
                                 showToast(`Opening source on ${item.source}`);
                               }}
-                              className="inline-flex min-h-11 items-center gap-1.5 px-2 text-xs text-slate-400 hover:text-amber-300 transition-colors"
-                              title={`Read more on ${item.source} (opens external browser or app)`}
+                              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
+                              title={`Read original on ${item.source} (opens external browser or app)`}
+                              aria-label={`Read original on ${item.source}`}
                             >
-                              <span>Read original</span>
-                              <ExternalLink className="w-3 h-3 text-slate-500" />
+                              <ExternalLink className="w-4 h-4" />
                             </a>
                           </div>
                           <FeedbackActions

@@ -7,6 +7,7 @@ import http from 'http';
 import https from 'https';
 import net from 'net';
 import path from 'path';
+import fs from 'fs';
 
 dotenv.config();
 
@@ -376,6 +377,11 @@ async function callOpenAICompatible(config: ProviderRequestConfig, prompt: strin
     { Authorization: `Bearer ${config.apiKey}` },
     { model: config.model, messages: [{ role: 'user', content: prompt }], max_tokens: 4096 },
   );
+  recordModelUsage({
+    input: data?.usage?.prompt_tokens,
+    cachedInput: data?.usage?.prompt_tokens_details?.cached_tokens,
+    output: data?.usage?.completion_tokens,
+  });
   const text = readOpenAIChatText(data);
   if (!text) throw new Error('AI provider returned no message content.');
   return parseModelJson(text);
@@ -405,6 +411,11 @@ async function postAnthropicMessage(
     throw new Error(`Anthropic API error: ${resp.status} ${errText}`);
   }
   const data = await resp.json();
+  recordModelUsage({
+    input: data?.usage?.input_tokens,
+    cachedInput: data?.usage?.cache_read_input_tokens,
+    output: data?.usage?.output_tokens,
+  });
   const text = data.content?.[0]?.text;
   if (typeof text !== 'string') throw new Error('Anthropic returned no message content.');
   return text;
@@ -511,7 +522,140 @@ interface PageResponse {
   text: string;
 }
 
+// ---------------------------------------------------------------------------
+// Usage tally
+// What the app actually asks of the network, counted where it happens: every
+// outbound HTTP request, every feed fetch, every AI call and its tokens. Daily
+// buckets are kept for four months so Settings can show day/week/month totals.
+// ---------------------------------------------------------------------------
+
+const USD_PER_GBP = 1.32; // £1 = $1.32
+// Published per-1M-token rates, off-peak; peak windows double them.
+const TOKEN_RATES = { inputMiss: 0.15, inputHit: 0.003, output: 0.6 };
+const PEAK_WINDOWS_UTC: Array<[number, number]> = [[1, 4], [6, 10]];
+const USAGE_RETENTION_DAYS = 120;
+
+interface UsageBucket {
+  date: string;
+  apiCalls: number;
+  outboundRequests: number;
+  feedFetches: number;
+  aiCalls: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  usd: number;
+}
+
+const emptyUsageBucket = (date: string): UsageBucket => ({
+  date,
+  apiCalls: 0,
+  outboundRequests: 0,
+  feedFetches: 0,
+  aiCalls: 0,
+  inputTokens: 0,
+  cachedInputTokens: 0,
+  outputTokens: 0,
+  usd: 0,
+});
+
+const usageBuckets = new Map<string, UsageBucket>();
+const USAGE_FILE = path.join(process.cwd(), 'usage-stats.json');
+let usageSaveTimer: NodeJS.Timeout | null = null;
+
+const utcDay = (at: number = Date.now()): string => new Date(at).toISOString().slice(0, 10);
+
+const loadUsage = () => {
+  try {
+    if (!fs.existsSync(USAGE_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(USAGE_FILE, 'utf8'));
+    if (!Array.isArray(raw?.days)) return;
+    raw.days.forEach((entry: any) => {
+      if (entry && typeof entry.date === 'string') {
+        usageBuckets.set(entry.date, { ...emptyUsageBucket(entry.date), ...entry });
+      }
+    });
+  } catch { /* a corrupt file just means a fresh tally */ }
+};
+
+const saveUsage = () => {
+  try {
+    const oldest = utcDay(Date.now() - USAGE_RETENTION_DAYS * 86400000);
+    [...usageBuckets.keys()].forEach(date => {
+      if (date < oldest) usageBuckets.delete(date);
+    });
+    const days = [...usageBuckets.values()].sort((a, b) => a.date.localeCompare(b.date));
+    fs.writeFileSync(USAGE_FILE, JSON.stringify({ days }));
+  } catch { /* tally is best-effort, never break a request over it */ }
+};
+
+// Batched write so a burst of feed fetches does not hit the disk per request
+const scheduleUsageSave = () => {
+  if (usageSaveTimer) return;
+  usageSaveTimer = setTimeout(() => {
+    usageSaveTimer = null;
+    saveUsage();
+  }, 4000);
+};
+
+const currentUsageBucket = (date: string = utcDay()): UsageBucket => {
+  let bucket = usageBuckets.get(date);
+  if (!bucket) {
+    bucket = emptyUsageBucket(date);
+    usageBuckets.set(date, bucket);
+  }
+  return bucket;
+};
+
+const usageDelta = (patch: Partial<Omit<UsageBucket, 'date'>>) => {
+  const bucket = currentUsageBucket();
+  (Object.keys(patch) as Array<keyof Omit<UsageBucket, 'date'>>).forEach(key => {
+    const value = patch[key];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      (bucket as any)[key] += value;
+    }
+  });
+  scheduleUsageSave();
+};
+
+// Mon–Fri 01:00–04:00 and 06:00–10:00 UTC are the provider's peak windows
+const isPeakPricing = (at: number = Date.now()): boolean => {
+  const date = new Date(at);
+  const day = date.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const hour = date.getUTCHours();
+  return PEAK_WINDOWS_UTC.some(([start, end]) => hour >= start && hour < end);
+};
+
+// One AI call plus whatever token counts the provider reported for it
+const recordModelUsage = (usage: { input?: number; cachedInput?: number; output?: number } | null | undefined) => {
+  const input = Math.max(0, Number(usage?.input) || 0);
+  const cachedInput = Math.min(input, Math.max(0, Number(usage?.cachedInput) || 0));
+  const output = Math.max(0, Number(usage?.output) || 0);
+  const multiplier = isPeakPricing() ? 2 : 1;
+  const usd = (
+    (input - cachedInput) * TOKEN_RATES.inputMiss +
+    cachedInput * TOKEN_RATES.inputHit +
+    output * TOKEN_RATES.output
+  ) / 1_000_000 * multiplier;
+
+  usageDelta({ aiCalls: 1, inputTokens: input, cachedInputTokens: cachedInput, outputTokens: output, usd });
+};
+
+// Gemini reports usage in its own shape
+const recordGeminiUsage = (response: any) => {
+  const meta = response?.usageMetadata;
+  recordModelUsage({
+    input: meta?.promptTokenCount,
+    cachedInput: meta?.cachedContentTokenCount,
+    output: meta?.candidatesTokenCount,
+  });
+};
+
+loadUsage();
+
 function requestOnce(url: URL, timeoutMs: number): Promise<{ redirectTo?: string; page?: PageResponse }> {
+  usageDelta({ outboundRequests: 1 });
   return new Promise((resolve, reject) => {
     const isHttps = url.protocol === 'https:';
     const requester = isHttps ? https.request : http.request;
@@ -580,6 +724,11 @@ async function fetchPublicPage(targetUrl: string, timeoutMs = 4500): Promise<Pag
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '25mb' }));
+  // Count the calls the app makes into its own server (the usage route excludes itself)
+  app.use('/api', (req, _res, next) => {
+    if (!req.path.startsWith('/usage')) usageDelta({ apiCalls: 1 });
+    next();
+  });
 
   const PORT = process.env.PORT || 3000;
 
@@ -663,6 +812,7 @@ async function startServer() {
           contents: batch.map(item => item.text),
           config: { taskType: 'SEMANTIC_SIMILARITY', outputDimensionality: 768 },
         });
+        recordGeminiUsage(response);
         vectors = (response.embeddings || []).map(item => item?.values);
       } else {
         const response = await postProviderJson(
@@ -670,6 +820,7 @@ async function startServer() {
           { Authorization: `Bearer ${apiKey}` },
           { model, input: batch.map(item => item.text) },
         );
+        recordModelUsage({ input: response?.usage?.prompt_tokens, output: 0 });
         vectors = Array.isArray(response.data)
           ? [...response.data].sort((a: any, b: any) => (a.index || 0) - (b.index || 0)).map((item: any) => item.embedding)
           : [];
@@ -696,6 +847,42 @@ async function startServer() {
   };
 
   // API Routes
+  app.get('/api/usage', (_req, res) => {
+    const today = utcDay();
+    const sumOver = (days: number): UsageBucket => {
+      const from = utcDay(Date.now() - (days - 1) * 86400000);
+      const total = emptyUsageBucket(`${from}..${today}`);
+      usageBuckets.forEach(bucket => {
+        if (bucket.date < from || bucket.date > today) return;
+        total.apiCalls += bucket.apiCalls;
+        total.outboundRequests += bucket.outboundRequests;
+        total.feedFetches += bucket.feedFetches;
+        total.aiCalls += bucket.aiCalls;
+        total.inputTokens += bucket.inputTokens;
+        total.cachedInputTokens += bucket.cachedInputTokens;
+        total.outputTokens += bucket.outputTokens;
+        total.usd += bucket.usd;
+      });
+      return total;
+    };
+    const withPounds = (bucket: UsageBucket) => ({ ...bucket, gbp: bucket.usd / USD_PER_GBP });
+    const monthStart = utcDay(Date.now() - 29 * 86400000);
+
+    res.json({
+      today: withPounds(sumOver(1)),
+      week: withPounds(sumOver(7)),
+      month: withPounds(sumOver(30)),
+      days: [...usageBuckets.values()]
+        .filter(bucket => bucket.date >= monthStart)
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .map(withPounds),
+      usdPerGbp: USD_PER_GBP,
+      peakNow: isPeakPricing(),
+      rates: TOKEN_RATES,
+      retentionDays: USAGE_RETENTION_DAYS,
+    });
+  });
+
   app.get('/api/semantic-status', (_req, res) => {
     res.json({
       geminiConfigured: Boolean(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY),
@@ -752,6 +939,7 @@ async function startServer() {
             contents: pingPrompt,
             config: { maxOutputTokens: 16 },
           });
+          recordGeminiUsage(response);
           const reply = String(response.text || '').trim();
           if (!reply) throw new Error('Gemini answered but returned no text.');
           return res.json({ ok: true, provider, model, latencyMs: Date.now() - started, reply });
@@ -1139,8 +1327,37 @@ async function startServer() {
     }
   };
 
+  // The publication's own blurb, taken from the feed metadata that is already being
+  // downloaded: RSS <description> inside <channel>, or Atom's feed-level <subtitle>.
+  // Caching it on the source means showing a description costs no extra request.
+  const parseFeedChannelDescription = (xml: string): string => {
+    if (!xml) return '';
+    // Feed metadata sits before the first item, so a post's own <description> can never
+    // be mistaken for the publication's.
+    const beforeFirstItem = xml.split(/<(?:item|entry)\b/i)[0] || '';
+    const candidates = [
+      beforeFirstItem.match(/<description[^>]*>([\s\S]*?)<\/description>/i),
+      beforeFirstItem.match(/<subtitle[^>]*>([\s\S]*?)<\/subtitle>/i),
+      beforeFirstItem.match(/<itunes:summary[^>]*>([\s\S]*?)<\/itunes:summary>/i),
+    ];
+
+    let description = '';
+    for (const match of candidates) {
+      const text = match ? cleanHtml(match[1]) : '';
+      if (text) {
+        description = text;
+        break;
+      }
+    }
+    if (!description) return '';
+    return description.length > 300
+      ? `${description.slice(0, 297).replace(/\s+\S*$/, '')}…`
+      : description;
+  };
+
   const parseFeedItems = (xml: string, sourceTitle: string, folder: string, baseUrl: string): any[] => {
     const items: any[] = [];
+    const feedDescription = parseFeedChannelDescription(xml);
     const regex = /<(?:item|entry)\b[^>]*>([\s\S]*?)<\/(?:item|entry)>/gi;
     let m: RegExpExecArray | null;
 
@@ -1173,8 +1390,13 @@ async function startServer() {
 
       const dateMatch = block.match(/<(?:pubDate|published|updated|dc:date)[^>]*>([\s\S]*?)<\/(?:pubDate|published|updated|dc:date)>/i);
       const rawDate = dateMatch ? cleanHtml(dateMatch[1]) : '';
-      const publishedAt = formatPublishDate(rawDate);
-      const publishedAtMs = rawDate ? new Date(rawDate).getTime() : NaN;
+      // Some feeds publish a year-less date ("Sep 11"). Date() anchors those to 2001,
+      // which would file this year's posts below everything else, so pin the current year.
+      const dated = rawDate && !/\b\d{4}\b/.test(rawDate)
+        ? `${rawDate} ${new Date().getFullYear()}`
+        : rawDate;
+      const publishedAt = formatPublishDate(dated);
+      const publishedAtMs = dated ? new Date(dated).getTime() : NaN;
 
       const contentMatch = block.match(/<(?:content:encoded|content)[^>]*>([\s\S]*?)<\/(?:content:encoded|content)>/i);
       const descMatch = block.match(/<description[^>]*>([\s\S]*?)<\/description>/i);
@@ -1229,6 +1451,7 @@ async function startServer() {
       items.push({
         id,
         source: sourceTitle,
+        sourceDescription: feedDescription || undefined,
         folder: folder || 'General',
         title,
         summary,
@@ -1256,6 +1479,7 @@ async function startServer() {
       return { items: cached.items };
     }
     try {
+      usageDelta({ feedFetches: 1 });
       const page = await fetchPublicPage(feedUrl, 7000);
       if (page && page.ok && page.text) {
         const parsed = parseFeedItems(page.text, sourceTitle, folder, feedUrl);
@@ -1340,16 +1564,16 @@ async function startServer() {
         runSources.map((s: any) => fetchFeedWithStatus(s.feedUrl, s.title, s.folder))
       );
 
-      const feedFailures: Array<{ title: string; reason: string }> = [];
+      const feedFailures: Array<{ title: string; feedUrl?: string; reason: string }> = [];
       let candidatePool: any[] = [];
       runSources.forEach((source: any, index: number) => {
         const result = feedResults[index];
         if (!result || result.status === 'rejected') {
-          feedFailures.push({ title: source.title || 'Source', reason: 'Request failed' });
+          feedFailures.push({ title: source.title || 'Source', feedUrl: source.feedUrl, reason: 'Request failed' });
           return;
         }
         if (result.value.error) {
-          feedFailures.push({ title: source.title || 'Source', reason: result.value.error });
+          feedFailures.push({ title: source.title || 'Source', feedUrl: source.feedUrl, reason: result.value.error });
         }
         candidatePool.push(...result.value.items);
       });
@@ -1561,7 +1785,10 @@ async function startServer() {
 
       const feedReport = {
         attempted: runSources.length,
+        // The list is capped for the wire; failedCount carries the real number so the
+        // "N of M feeds" line never under-reports a wide outage.
         failed: feedFailures.slice(0, 12),
+        failedCount: feedFailures.length,
       };
 
       // 2. Curate using AI if requested and candidate pool is ready
@@ -1636,6 +1863,7 @@ CURATION RULES:
                 contents: prompt,
                 config: { responseMimeType: 'application/json' }
               });
+              recordGeminiUsage(response);
               if (response.text) {
                 const parsed = parseModelJson(response.text);
                 const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
@@ -1782,6 +2010,7 @@ CURATION RULES:
           id: item.id,
           title: item.title,
           source: item.source,
+          sourceDescription: item.sourceDescription,
           folder: item.folder,
           summary: item.summary,
           readTime: item.readTime,
@@ -1831,7 +2060,7 @@ CURATION RULES:
           targetFeeds = defMatch.length > 0 ? defMatch : [{ title: sourceTitle, feedUrl: '', folder: 'Custom Feed' }];
         }
       } else {
-        targetFeeds = allSources.filter((s: any) => s.status !== 'failing').slice(0, 10);
+        targetFeeds = allSources.filter((s: any) => s.status !== 'failing').slice(0, 24);
       }
 
       const results = await Promise.allSettled(
@@ -1855,6 +2084,14 @@ CURATION RULES:
           }
         }
       }
+
+      // Feeds arrive in parallel, so the merged list would otherwise be grouped by source
+      // rather than the newest-first order the stream promises.
+      articles.sort((a: any, b: any) => {
+        const left = Number(a?.publishedAtMs);
+        const right = Number(b?.publishedAtMs);
+        return (Number.isFinite(right) ? right : 0) - (Number.isFinite(left) ? left : 0);
+      });
 
       res.json({
         success: true,
@@ -2226,6 +2463,7 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
               tools: [{ googleSearch: {} }],
             },
           });
+          recordGeminiUsage(response);
 
           rawText = response.text || '';
           const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
