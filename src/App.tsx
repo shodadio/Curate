@@ -33,6 +33,7 @@ interface DigestItem {
   title: string;
   source: string;
   folder: string;
+  categories?: string[];
   readTime: string;
   why: string;
   summary: string;
@@ -52,6 +53,7 @@ interface SourceItem {
   title: string;
   feedUrl: string;
   folder: string;
+  categories: string[];
   status: 'active' | 'failing';
   failingReason?: string;
   lastSyncedAt?: number;
@@ -69,6 +71,26 @@ interface SemanticFeedbackItem {
   source?: string;
   folder?: string;
 }
+
+const normalizeCategoryLabels = (raw: unknown, fallback?: string): string[] => {
+  const labels = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of labels) {
+    if (typeof value !== 'string') continue;
+    const normalized = value.replace(/\s+/g, ' ').trim().slice(0, 40);
+    const label = normalized.toLowerCase() === 'uncategorized' ? 'General' : normalized;
+    const key = label.toLowerCase();
+    if (!label || seen.has(key)) continue;
+    seen.add(key);
+    result.push(label);
+  }
+  if (result.length === 0 && !Array.isArray(raw) && fallback?.trim()) {
+    const normalizedFallback = fallback.replace(/\s+/g, ' ').trim().slice(0, 40);
+    result.push(normalizedFallback.toLowerCase() === 'uncategorized' ? 'General' : normalizedFallback);
+  }
+  return result;
+};
 
 function decodeArticleEntities(text: string): string {
   return (text || '')
@@ -501,7 +523,7 @@ export default function App() {
   // App data state with localStorage persistence
   const [sources, setSources] = useState<SourceItem[]>(() => {
     const defaultSources: SourceItem[] = [
-      { id: 'src_row', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech', status: 'active', lastSyncedAt: Date.now() - 75 * 60 * 1000 }
+      { id: 'src_row', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech', categories: ['Global Tech'], status: 'active', lastSyncedAt: Date.now() - 75 * 60 * 1000 }
     ];
 
     const saved = localStorage.getItem('curator_sources');
@@ -514,7 +536,10 @@ export default function App() {
           s.feedUrl.includes('worldhistory.com')
         );
         if (!hasStaleDummy && Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          return parsed.map(source => ({
+            ...source,
+            categories: normalizeCategoryLabels(source.categories, source.folder),
+          }));
         }
       } catch (e) { /* ignore */ }
     }
@@ -655,21 +680,21 @@ export default function App() {
     }
   });
   const [serverGeminiAvailable, setServerGeminiAvailable] = useState<boolean>(false);
+  const [startupApiStatus, setStartupApiStatus] = useState<'checking' | 'healthy' | 'issue'>('checking');
+  const [startupApiMessage, setStartupApiMessage] = useState('Checking Curator server and configured providers…');
+  const [showStartupApiPrompt, setShowStartupApiPrompt] = useState(false);
+  const startupApiCheckRef = React.useRef(0);
+  const startupApiCheckStartedRef = React.useRef(false);
 
   // Settings
   const [serendipityDial, setSerendipityDial] = useState<number>(() => {
     const saved = localStorage.getItem('curator_serendipity');
     return saved ? Number(saved) : 25;
   });
-  const [deliveryTime, setDeliveryTime] = useState<string>(() => localStorage.getItem('curator_delivery_time') || '07:00');
   // When the digest on screen was actually curated, so the header can say so honestly.
   const [digestCuratedAt, setDigestCuratedAt] = useState<number>(() => {
     const saved = Number(localStorage.getItem('curator_digest_curated_at'));
     return Number.isFinite(saved) && saved > 0 ? saved : 0;
-  });
-  const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(() => {
-    const saved = localStorage.getItem('curator_notifications');
-    return saved !== null ? JSON.parse(saved) : true;
   });
   const [itemCount, setItemCount] = useState<number>(() => {
     const saved = localStorage.getItem('curator_item_count');
@@ -713,8 +738,6 @@ export default function App() {
   const wakeLockWantedRef = React.useRef(false);
   // Monotonic ids so a slow, superseded response can never overwrite newer state
   const digestRequestRef = React.useRef(0);
-  // Latest digest size, so a reminder scheduled before the digest arrives still says the right number
-  const digestCountRef = React.useRef<number>(0);
   const feedStreamRequestRef = React.useRef(0);
   // Read Aloud queue: the sentences still to speak, which one is playing, and the session
   // they belong to, so a superseded callback can never speak over a newer one
@@ -757,6 +780,8 @@ export default function App() {
   // Google Search & RSS investigation state
   const [discoverQuery, setDiscoverQuery] = useState<string>('');
   const [sourceSearch, setSourceSearch] = useState<string>('');
+  const [categoryEditorSourceId, setCategoryEditorSourceId] = useState<string | null>(null);
+  const [categoryDraft, setCategoryDraft] = useState('');
   const [isDiscovering, setIsDiscovering] = useState<boolean>(false);
   const [discoverError, setDiscoverError] = useState<string | null>(null);
   const [discoverResults, setDiscoverResults] = useState<DiscoveredSource[]>([]);
@@ -862,20 +887,142 @@ export default function App() {
     localStorage.setItem('curator_semantic_feedback', JSON.stringify(semanticFeedback));
   }, [semanticFeedback]);
 
+  const checkStartupServices = async () => {
+    const checkId = ++startupApiCheckRef.current;
+    const isCurrentCheck = () => checkId === startupApiCheckRef.current;
+    setStartupApiStatus('checking');
+    setStartupApiMessage('Checking Curator server and configured providers…');
+    setShowStartupApiPrompt(false);
+
+    const fetchJson = async (url: string, init: RequestInit = {}, timeoutMs = 12000) => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(url, { ...init, signal: controller.signal });
+        const data = await response.json().catch(() => ({}));
+        return { response, data };
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    };
+
+    const flagIssue = (message: string) => {
+      if (!isCurrentCheck()) return;
+      setStartupApiStatus('issue');
+      setStartupApiMessage(message);
+      setShowStartupApiPrompt(true);
+      setActiveTab('settings');
+      setShowSetupWizard(false);
+      window.setTimeout(() => {
+        if (isCurrentCheck()) {
+          document.getElementById('provider-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 150);
+    };
+
+    const testProvider = async (
+      label: string,
+      kind: 'chat' | 'embedding',
+      provider: string,
+      apiKey: string,
+      baseUrl: string,
+      model: string,
+    ): Promise<string | null> => {
+      try {
+        const { response, data } = await fetchJson('/api/test-provider', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind, provider, apiKey, baseUrl, model }),
+        }, 20000);
+        if (!response.ok || !data?.ok) {
+          return `${label}: ${String(data?.error || `Test failed (HTTP ${response.status}).`).slice(0, 240)}`;
+        }
+        return null;
+      } catch (error: any) {
+        return `${label}: ${error?.name === 'AbortError' ? 'request timed out' : 'could not reach the provider'}.`;
+      }
+    };
+
+    try {
+      const health = await fetchJson('/api/health', { cache: 'no-store' });
+      if (!health.response.ok || health.data?.ok !== true) {
+        throw new Error(`Curator server returned HTTP ${health.response.status}.`);
+      }
+
+      const usage = await fetchJson('/api/usage', { cache: 'no-store' });
+      if (!usage.response.ok || !Number.isFinite(Number(usage.data?.today?.apiCalls))) {
+        throw new Error('Curator server activity tracking did not return a valid status.');
+      }
+
+      const semanticStatus = await fetchJson('/api/semantic-status', { cache: 'no-store' });
+      if (!semanticStatus.response.ok) {
+        throw new Error(`Service status returned HTTP ${semanticStatus.response.status}.`);
+      }
+      const serverGeminiConfigured = Boolean(semanticStatus.data?.geminiConfigured);
+      if (!isCurrentCheck()) return;
+      setServerGeminiAvailable(serverGeminiConfigured);
+
+      const checks: Array<Promise<string | null>> = [];
+      const chatKey = customApiKey.trim();
+      const chatConfigured = aiProvider === 'openai-compatible'
+        ? Boolean(chatKey && aiBaseUrl.trim() && aiModel.trim())
+        : aiProvider === 'anthropic'
+          ? Boolean(chatKey)
+          : aiProvider === 'gemini'
+            ? Boolean(chatKey || serverGeminiConfigured)
+            : false;
+      if (chatConfigured) {
+        checks.push(testProvider('Digest writing', 'chat', aiProvider, chatKey, aiBaseUrl.trim(), aiModel.trim()));
+      }
+
+      const effectiveEmbeddingKey = embeddingApiKey.trim() || (embeddingKeyMatchesChatProvider ? chatKey : '');
+      const effectiveEmbeddingBaseUrl = embeddingBaseUrl.trim() ||
+        (embeddingKeyMatchesChatProvider ? aiBaseUrl.trim() : '');
+      const embeddingConfigured = embeddingProvider === 'openai-compatible'
+        ? Boolean(effectiveEmbeddingKey && effectiveEmbeddingBaseUrl)
+        : embeddingProvider === 'gemini'
+          ? Boolean(effectiveEmbeddingKey || serverGeminiConfigured)
+          : false;
+      if (embeddingConfigured) {
+        checks.push(testProvider(
+          'Topic matching',
+          'embedding',
+          embeddingProvider,
+          effectiveEmbeddingKey,
+          effectiveEmbeddingBaseUrl,
+          embeddingModel.trim(),
+        ));
+      }
+
+      const failures = (await Promise.all(checks)).filter((message): message is string => Boolean(message));
+      if (!isCurrentCheck()) return;
+      if (failures.length > 0) {
+        flagIssue(`A configured provider did not respond successfully: ${failures.join(' ')}`);
+        return;
+      }
+
+      setStartupApiStatus('healthy');
+      setStartupApiMessage(checks.length > 0
+        ? 'Curator API, server activity tracking, and configured providers are responding.'
+        : 'Curator API and server activity tracking are responding. Built-in services are ready; no external provider needs checking.');
+    } catch (error: any) {
+      if (!isCurrentCheck()) return;
+      setServerGeminiAvailable(false);
+      flagIssue(error?.name === 'AbortError'
+        ? 'Curator’s server check timed out. Check your connection, or update provider settings if the server is reachable again.'
+        : `Curator’s server or API status check failed: ${String(error?.message || 'No response from the server')}`);
+    }
+  };
+
   useEffect(() => {
-    fetch('/api/semantic-status')
-      .then(res => res.json())
-      .then(data => setServerGeminiAvailable(Boolean(data.geminiConfigured)))
-      .catch(() => setServerGeminiAvailable(false));
+    if (startupApiCheckStartedRef.current) return;
+    startupApiCheckStartedRef.current = true;
+    void checkStartupServices();
   }, []);
 
   useEffect(() => {
     localStorage.setItem('curator_serendipity', serendipityDial.toString());
   }, [serendipityDial]);
-
-  useEffect(() => {
-    localStorage.setItem('curator_delivery_time', deliveryTime);
-  }, [deliveryTime]);
 
   useEffect(() => {
     if (digestCuratedAt > 0) {
@@ -898,38 +1045,6 @@ export default function App() {
       root.style.overflow = previousRoot;
     };
   }, [showSetupWizard, showImportModal, showAddSourceModal]);
-
-  useEffect(() => {
-    localStorage.setItem('curator_notifications', JSON.stringify(notificationsEnabled));
-  }, [notificationsEnabled]);
-
-  useEffect(() => {
-    digestCountRef.current = digest.length;
-  }, [digest.length]);
-
-  // The morning reminder: fires at the chosen time while Curator is running, and catches up
-  // once on the first open after that time if the app was closed. A web app cannot be woken
-  // in the background on iOS, so that catch-up is the honest limit of a scheduled reminder.
-  useEffect(() => {
-    if (!notificationsEnabled) return;
-    if (typeof window === 'undefined' || !('Notification' in window)) return;
-
-    const [hours, minutes] = deliveryTime.split(':').map(Number);
-    const now = new Date();
-    const scheduled = new Date(now);
-    if (Number.isFinite(hours) && Number.isFinite(minutes)) {
-      scheduled.setHours(hours, minutes, 0, 0);
-    } else {
-      scheduled.setHours(7, 0, 0, 0);
-    }
-
-    if (scheduled.getTime() <= now.getTime()) notifyDigestReady();
-
-    const next = new Date(scheduled);
-    if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
-    const timer = setTimeout(() => notifyDigestReady(), next.getTime() - now.getTime());
-    return () => clearTimeout(timer);
-  }, [notificationsEnabled, deliveryTime, digest.length > 0]);
 
   useEffect(() => {
     localStorage.setItem('curator_item_count', itemCount.toString());
@@ -1445,6 +1560,7 @@ export default function App() {
       title: newSourceTitle,
       feedUrl: newSourceUrl,
       folder: chosenFolder,
+      categories: [chosenFolder],
       status: 'active'
     };
     setSources(prev => [newSrc, ...prev]);
@@ -1454,6 +1570,33 @@ export default function App() {
     setNewSourceUrl('');
     setShowAddSourceModal(false);
     showToast('Source added successfully');
+  };
+
+  const toggleSourceCategory = (sourceId: string, category: string) => {
+    setSources(prev => prev.map(source => {
+      if (source.id !== sourceId) return source;
+      const categories = normalizeCategoryLabels(source.categories, source.folder);
+      const isSelected = categories.some(value => value.toLowerCase() === category.toLowerCase());
+      return {
+        ...source,
+        categories: isSelected
+          ? categories.filter(value => value.toLowerCase() !== category.toLowerCase())
+          : [...categories, category],
+      };
+    }));
+  };
+
+  const addSourceCategory = (source: SourceItem) => {
+    const typed = categoryDraft.replace(/\s+/g, ' ').trim().slice(0, 40);
+    if (!typed) return;
+    const category = sourceCategories.find(value => value.toLowerCase() === typed.toLowerCase()) || typed;
+    setSources(prev => prev.map(item => {
+      if (item.id !== source.id) return item;
+      const categories = normalizeCategoryLabels(item.categories, item.folder);
+      if (categories.some(value => value.toLowerCase() === category.toLowerCase())) return item;
+      return { ...item, categories: [...categories, category] };
+    }));
+    setCategoryDraft('');
   };
 
   const handleDeleteSource = (id: string) => {
@@ -1503,7 +1646,10 @@ export default function App() {
         return;
       }
       if (data.success && data.sources) {
-        setSources(data.sources);
+        setSources(data.sources.map((source: SourceItem) => ({
+          ...source,
+          categories: normalizeCategoryLabels(source.categories, source.folder),
+        })));
         setImportResult({
           totalImported: data.totalImported,
           successCount: data.successCount,
@@ -1587,6 +1733,7 @@ export default function App() {
       title: item.title,
       feedUrl: item.feedUrl,
       folder: item.folder || 'Discovered',
+      categories: [item.folder || 'Discovered'],
       status: 'active'
     };
     setSources(prev => [newSrc, ...prev]);
@@ -1598,13 +1745,18 @@ export default function App() {
   };
 
   const handleExportOPML = () => {
+    const escapeXmlAttribute = (value: string) => value
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
     const opmlContent = `<?xml version="1.0" encoding="UTF-8"?>
 <opml version="1.0">
   <head>
     <title>Curator Subscriptions Export</title>
   </head>
   <body>
-    ${sources.map(s => `<outline text="${s.title}" title="${s.title}" type="rss" xmlUrl="${s.feedUrl}" category="${s.folder}"/>`).join('\n    ')}
+    ${sources.map(s => `<outline text="${escapeXmlAttribute(s.title)}" title="${escapeXmlAttribute(s.title)}" type="rss" xmlUrl="${escapeXmlAttribute(s.feedUrl)}" category="${escapeXmlAttribute(s.folder)}" curatorCategories="${escapeXmlAttribute(JSON.stringify(normalizeCategoryLabels(s.categories, s.folder)))}"/>`).join('\n    ')}
   </body>
 </opml>`;
     const blob = new Blob([opmlContent], { type: 'text/xml' });
@@ -1638,23 +1790,16 @@ export default function App() {
     return `${days}d ago`;
   };
 
-  const formatDeliveryTime = (value: string): string => {
-    const [hours, minutes] = value.split(':').map(Number);
-    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return value;
-    const d = new Date();
-    d.setHours(hours, minutes, 0, 0);
-    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  };
-
-  // The moment a digest was actually curated: today shows as a time, anything
-  // older carries its date so a stale list is never mistaken for a fresh one.
+  // Always show the digest date with its local curation time; retain the year for older digests.
   const formatCuratedAt = (value: number): string => {
     if (!Number.isFinite(value) || value <= 0) return '';
     const d = new Date(value);
-    const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     const now = new Date();
-    if (d.toDateString() === now.toDateString()) return time;
-    return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${time}`;
+    const dateOptions: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
+    if (d.getFullYear() !== now.getFullYear()) dateOptions.year = 'numeric';
+    const date = d.toLocaleDateString([], dateOptions);
+    const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    return `${date} at ${time}`;
   };
 
   // Pounds, with enough precision that a few tenths of a penny still show
@@ -2040,71 +2185,6 @@ export default function App() {
     element.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }, [speechPlaying, speechProgress.paragraph]);
 
-  const handleToggleNotifications = async () => {
-    if (notificationsEnabled) {
-      setNotificationsEnabled(false);
-      return;
-    }
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      let permission = Notification.permission;
-      if (permission === 'default') permission = await Notification.requestPermission();
-      if (permission !== 'granted') {
-        showToast('Notifications are blocked — allow them for Curator in your browser settings.');
-        return;
-      }
-    }
-    setNotificationsEnabled(true);
-    showToast(`Morning reminder set for ${formatDeliveryTime(deliveryTime)}`);
-  };
-
-  // At most one reminder per day, whatever wakes it: the timer or the next app open
-  const notifyDigestReady = () => {
-    if (typeof window === 'undefined' || !('Notification' in window)) return;
-    if (!notificationsEnabled || Notification.permission !== 'granted') return;
-    const today = new Date().toDateString();
-    if (localStorage.getItem('curator_notified_day') === today) return;
-    try {
-      new Notification('The Curator', {
-        body: digestCountRef.current > 0
-          ? `${digestCountRef.current} items ready in today's digest.`
-          : 'Your morning digest is ready.',
-        icon: '/pwa-192x192.png',
-        tag: 'curator-morning',
-      });
-      localStorage.setItem('curator_notified_day', today);
-    } catch {
-      // A refused notification is not worth interrupting the app over
-    }
-  };
-
-  const handleSendTestNotification = async () => {
-    if (typeof window === 'undefined' || !('Notification' in window)) {
-      showToast('This browser does not support notifications.');
-      return;
-    }
-    if (!notificationsEnabled) {
-      showToast('Turn morning notifications on first.');
-      return;
-    }
-    let permission = Notification.permission;
-    if (permission === 'default') {
-      permission = await Notification.requestPermission();
-    }
-    if (permission !== 'granted') {
-      showToast('Notifications are blocked in your browser settings.');
-      return;
-    }
-    try {
-      new Notification('The Curator', {
-        body: `${digest.length || itemCount} items ready in today's digest.`,
-        icon: '/pwa-192x192.png'
-      });
-      showToast('Test notification sent');
-    } catch {
-      showToast('This browser could not show a notification.');
-    }
-  };
-
   const getCardActions = (itemId: string) => {
     const stats = readingStats[itemId] || {};
 
@@ -2205,9 +2285,14 @@ export default function App() {
     return acc;
   }, {} as Record<string, SourceItem[]>);
   const sourceFolders = Array.from(new Set(['General', ...sources.map(src => displayFolder(src.folder))])).sort((a, b) => a.localeCompare(b));
+  const sourceCategories = Array.from(new Set([
+    'General',
+    ...sourceFolders,
+    ...sources.flatMap(src => normalizeCategoryLabels(src.categories, src.folder)),
+  ])).sort((a, b) => a.localeCompare(b));
   const filteredSourcesByFolder = Object.entries(sourcesByFolder).reduce((acc, [folder, folderSources]) => {
     const matching = folderSources
-      .filter(src => `${src.title} ${src.feedUrl} ${folder}`.toLowerCase().includes(sourceSearch.trim().toLowerCase()))
+      .filter(src => `${src.title} ${src.feedUrl} ${folder} ${normalizeCategoryLabels(src.categories, src.folder).join(' ')}`.toLowerCase().includes(sourceSearch.trim().toLowerCase()))
       .sort((a, b) => a.title.localeCompare(b.title));
     if (matching.length > 0) acc[folder] = matching;
     return acc;
@@ -2220,8 +2305,10 @@ export default function App() {
     : undefined;
   const readerSourceDescription = (selectedArticle?.sourceDescription || readerSource?.description || '').trim();
 
-  // Folder names are the categories the reader already keeps, so they seed the interest chips.
-  const interestSuggestions = suggestionsFromFolders(sources.map(src => src.folder));
+  // Editable feed categories, rather than organizational folders, seed interest suggestions.
+  const interestSuggestions = suggestionsFromFolders(sources.flatMap(src =>
+    normalizeCategoryLabels(src.categories, src.folder)
+  ));
 
   const savedDigestItems = [
     ...savedArticles,
@@ -2239,11 +2326,15 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-slate-800 selection:text-white w-full max-w-full overflow-x-hidden">
-      {/* Toast Notification with Undo / Action fallback */}
+      {/* Toast status and Undo action, kept clear of the reading header and text */}
       {activeToast && (
-        <div className="fixed safe-toast left-1/2 -translate-x-1/2 z-[60] max-w-[calc(100vw-2rem)] bg-slate-900/95 border border-slate-700/80 text-slate-200 text-xs px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-3 animate-fade-in backdrop-blur-md">
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed safe-toast left-1/2 -translate-x-1/2 z-[60] w-fit max-w-[calc(100vw-2rem)] bg-slate-900/95 border border-slate-700/80 text-slate-200 text-sm px-4 py-3 rounded-2xl shadow-2xl flex flex-wrap items-center gap-3 animate-fade-in backdrop-blur-md"
+        >
           <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span>{activeToast.message}</span>
+          <span className="min-w-0 flex-[1_1_12rem] leading-snug">{activeToast.message}</span>
           {activeToast.actionLabel && activeToast.onAction && (
             <button
               type="button"
@@ -2251,7 +2342,7 @@ export default function App() {
                 activeToast.onAction?.();
                 setActiveToast(null);
               }}
-              className="ml-1 px-2.5 py-0.5 rounded-full bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-semibold text-[11px] border border-amber-500/40 transition flex items-center gap-1 cursor-pointer"
+              className="ml-auto shrink-0 px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-semibold text-xs border border-amber-500/40 transition flex items-center gap-1 cursor-pointer"
             >
               <RotateCcw className="w-3 h-3" />
               <span>{activeToast.actionLabel}</span>
@@ -2597,10 +2688,9 @@ export default function App() {
                 <p className="text-xs text-slate-400 mt-0.5">
                   {loadingDigest && digest.length === 0
                     ? "Synthesizing today's list…"
-                    : `Curated at ${
-                        digestCuratedAt > 0
-                          ? formatCuratedAt(digestCuratedAt)
-                          : formatDeliveryTime(deliveryTime)
+                    : `${digestCuratedAt > 0
+                        ? `Curated on ${formatCuratedAt(digestCuratedAt)}`
+                        : `Today's digest · ${new Date().toLocaleDateString([], { month: 'short', day: 'numeric' })}`
                       } · ${digest.length} items worth your time${
                         semanticSummary && semanticSummary.feedbackExamples > 0
                           ? ` · ranked from ${semanticSummary.feedbackExamples} vote examples`
@@ -3424,7 +3514,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 value={sourceSearch}
                 onChange={e => setSourceSearch(e.target.value)}
                 placeholder="Search your sources"
-                aria-label="Search sources by name, feed URL, or folder"
+                aria-label="Search sources by name, feed URL, folder, or category"
                 className="w-full rounded-xl bg-slate-950 border border-slate-800 pl-10 pr-3 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
               />
             </div>
@@ -3441,8 +3531,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       const isRefreshing = refreshingSourceId === src.id;
                       const descriptionOpen = expandedSourceDescriptionIds.includes(src.id);
                       return (
-                        <div key={src.id} className="p-3.5 sm:p-4 rounded-2xl bg-slate-900/40 border border-slate-900 flex items-start justify-between gap-3 sm:gap-4 w-full max-w-full overflow-hidden">
-                          <div className="flex items-start gap-3 min-w-0 flex-1">
+                        <div key={src.id} className="rounded-2xl bg-slate-900/40 border border-slate-900 w-full max-w-full overflow-hidden">
+                          <div className="p-3.5 sm:p-4 flex items-start justify-between gap-3 sm:gap-4">
+                            <div className="flex items-start gap-3 min-w-0 flex-1">
                             <div className="w-10 h-10 rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden shrink-0 relative">
                               {avatarUrl ? (
                                 <img 
@@ -3462,16 +3553,37 @@ Search for writers, publications, or topics. Curator checks whether each result 
                             </div>
 
                             <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span className="text-sm font-medium text-slate-200 truncate">{src.title}</span>
-                                {src.status === 'failing' ? (
-                                  <span className="text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded shrink-0">Failing</span>
-                                ) : (
-                                  <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded shrink-0">Active</span>
-                                )}
-                              </div>
+                              <span className="block text-sm font-medium text-slate-200 truncate">{src.title}</span>
                               <span title={src.feedUrl} className="text-xs text-slate-400 line-clamp-2 break-all block mt-0.5">{src.feedUrl}</span>
-                              <div className="flex items-center gap-1.5 text-[11px] text-slate-400 mt-1">
+                              <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                                {normalizeCategoryLabels(src.categories, src.folder).map(category => (
+                                  <span key={category} className="rounded-full bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[10px] text-amber-200">
+                                    {category}
+                                  </span>
+                                ))}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setCategoryDraft('');
+                                    setCategoryEditorSourceId(categoryEditorSourceId === src.id ? null : src.id);
+                                  }}
+                                  aria-expanded={categoryEditorSourceId === src.id}
+                                  className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-medium transition ${
+                                    categoryEditorSourceId === src.id
+                                      ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                                      : 'border-slate-800 text-slate-400 hover:text-amber-300 hover:border-amber-500/30'
+                                  }`}
+                                >
+                                  <Sliders className="w-3 h-3 shrink-0" />
+                                  <span>{categoryEditorSourceId === src.id ? 'Done' : 'Edit categories'}</span>
+                                </button>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[11px] text-slate-400 mt-1.5">
+                                {src.status === 'failing' ? (
+                                  <span className="text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/20 px-1.5 py-0.5 rounded">Failing</span>
+                                ) : (
+                                  <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded">Active</span>
+                                )}
                                 {src.lastSyncedAt ? (
                                   <>
                                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
@@ -3532,6 +3644,65 @@ Search for writers, publications, or topics. Curator checks whether each result 
                               {pendingDeleteId === src.id ? <AlertCircle className="w-4 h-4" /> : <Trash2 className="w-4 h-4" />}
                             </button>
                           </div>
+                          </div>
+                          {categoryEditorSourceId === src.id && (
+                            <div className="px-3.5 sm:px-4 pb-3.5 sm:pb-4">
+                              <div className="rounded-xl bg-slate-950/70 border border-slate-800 p-3 sm:p-3.5 space-y-3">
+                                <div className="space-y-0.5">
+                                  <p className="text-xs font-medium text-slate-200">Categories</p>
+                                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                                    Pick any that describe this feed. Its folder stays unchanged.
+                                  </p>
+                                </div>
+                                <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto overscroll-contain py-0.5">
+                                  {sourceCategories.map(category => {
+                                    const isSelected = normalizeCategoryLabels(src.categories, src.folder)
+                                      .some(value => value.toLowerCase() === category.toLowerCase());
+                                    return (
+                                      <button
+                                        key={category}
+                                        type="button"
+                                        onClick={() => toggleSourceCategory(src.id, category)}
+                                        aria-pressed={isSelected}
+                                        className={`inline-flex max-w-full items-center gap-1.5 rounded-full border px-3 py-2 text-[11px] leading-tight text-left transition ${
+                                          isSelected
+                                            ? 'border-amber-500/50 bg-amber-500/15 text-amber-100'
+                                            : 'border-slate-800 bg-slate-900/70 text-slate-300 hover:border-slate-700'
+                                        }`}
+                                      >
+                                        {isSelected && <Check className="w-3 h-3 shrink-0" />}
+                                        <span className="min-w-0 break-words">{category}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                                <form
+                                  className="flex gap-2"
+                                  onSubmit={e => {
+                                    e.preventDefault();
+                                    addSourceCategory(src);
+                                  }}
+                                >
+                                  <input
+                                    type="text"
+                                    maxLength={40}
+                                    value={categoryDraft}
+                                    onChange={e => setCategoryDraft(e.target.value)}
+                                    placeholder="New category"
+                                    aria-label={`Create a category for ${src.title}`}
+                                    className="min-w-0 flex-1 rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+                                  />
+                                  <button
+                                    type="submit"
+                                    disabled={!categoryDraft.trim()}
+                                    className="shrink-0 rounded-xl bg-amber-500/15 border border-amber-500/30 px-3 py-2 text-xs font-medium text-amber-200 disabled:opacity-40"
+                                  >
+                                    Add
+                                  </button>
+                                </form>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -3540,7 +3711,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
               ))}
               {sourceSearch.trim() && Object.keys(filteredSourcesByFolder).length === 0 && (
                 <p className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-5 text-center text-sm text-slate-400">
-                  No sources match “{sourceSearch.trim()}”. Try another name, folder, or feed URL.
+                  No sources match “{sourceSearch.trim()}”. Try another name, folder, category, or feed URL.
                 </p>
               )}
             </div>
@@ -4161,10 +4332,41 @@ Search for writers, publications, or topics. Curator checks whether each result 
             </div>
 
             {/* Provider-configurable AI services */}
-            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-5">
+            <div id="provider-settings" className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-5 scroll-mt-6">
               <div>
                 <h3 className="text-sm font-semibold text-slate-200">Optional AI services</h3>
                 <p className="text-xs text-slate-400 mt-0.5">Curator works without an external AI service. Connect one if you want AI-assisted digest writing or richer topic matching.</p>
+              </div>
+
+              <div
+                role={startupApiStatus === 'issue' ? 'alert' : 'status'}
+                aria-live={startupApiStatus === 'issue' ? 'assertive' : 'polite'}
+                className={`rounded-xl border px-3 py-2 text-[11px] leading-relaxed space-y-1 ${
+                  startupApiStatus === 'issue'
+                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+                    : startupApiStatus === 'healthy'
+                      ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
+                      : 'border-slate-800 bg-slate-950/60 text-slate-400'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-semibold flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${
+                      startupApiStatus === 'issue' ? 'bg-amber-400' : startupApiStatus === 'healthy' ? 'bg-emerald-400' : 'bg-slate-500 animate-pulse'
+                    }`} />
+                    {startupApiStatus === 'checking' ? 'Checking server and APIs' : startupApiStatus === 'healthy' ? 'Server and API check passed' : 'Server or API needs attention'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void checkStartupServices()}
+                    disabled={startupApiStatus === 'checking'}
+                    className="shrink-0 underline underline-offset-2 disabled:opacity-50"
+                  >
+                    {startupApiStatus === 'checking' ? 'Checking…' : 'Check again'}
+                  </button>
+                </div>
+                <p>{startupApiMessage}</p>
+                <p className="text-[10px] opacity-75">Startup checks send a minimal request only to configured external providers; provider billing may apply. Built-in services need no external API key.</p>
               </div>
 
               {(() => {
@@ -4378,50 +4580,6 @@ Search for writers, publications, or topics. Curator checks whether each result 
               >
                 Apply providers & refresh digest
               </button>
-            </div>
-
-            {/* Delivery Time & Notifications */}
-            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-200">Morning Delivery Time</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">When your single daily digest notification arrives</p>
-                </div>
-                <input 
-                  type="time" 
-                  value={deliveryTime}
-                  onChange={e => setDeliveryTime(e.target.value)}
-                  className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-sm text-slate-200 font-mono focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div className="flex items-center justify-between pt-4 border-t border-slate-900">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-200">Push Notification</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">One calm notification per morning</p>
-                </div>
-                <button 
-                  onClick={handleToggleNotifications}
-                  className={`w-11 h-6 rounded-full transition relative ${notificationsEnabled ? 'bg-amber-500' : 'bg-slate-800'}`}
-                >
-                  <div className={`w-5 h-5 rounded-full bg-white absolute top-0.5 transition-transform ${notificationsEnabled ? 'translate-x-5.5' : 'translate-x-0.5'}`} />
-                </button>
-              </div>
-
-              <p className="text-[11px] text-slate-500 leading-relaxed">
-                The reminder fires at {formatDeliveryTime(deliveryTime)} while Curator is open, and once when you next open it after that time if it was closed.
-                iOS cannot wake a closed web app, so an installed Curator gets it on its next open.
-              </p>
-
-              <div className="pt-2">
-                <button 
-                  type="button"
-                  onClick={handleSendTestNotification}
-                  className="px-4 py-2 text-xs font-medium rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-slate-100 transition"
-                >
-                  Send me a test notification
-                </button>
-              </div>
             </div>
 
             {/* Browser-local semantic reading profile */}
@@ -4879,16 +5037,55 @@ Search for writers, publications, or topics. Curator checks whether each result 
             <span className="text-[10px] tracking-tight">Sources</span>
           </button>
 
-          <button 
-            type="button"
-            onClick={() => setActiveTab('settings')}
-            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'settings' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
-          >
-            <Sliders className="w-5 h-5" />
-            <span className="text-[10px] tracking-tight">Settings</span>
-          </button>
         </div>
       </nav>
+
+      {showStartupApiPrompt && createPortal(
+        <div className="fixed inset-0 z-[110] bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 safe-modal">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="startup-api-alert-title"
+            aria-describedby="startup-api-alert-message"
+            className="w-full max-w-md rounded-3xl bg-slate-900 border border-amber-500/30 p-5 shadow-2xl space-y-4"
+          >
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <h2 id="startup-api-alert-title" className="text-base font-semibold text-slate-100">Service check needs attention</h2>
+                <p id="startup-api-alert-message" className="text-sm text-amber-200 mt-1 leading-relaxed">{startupApiMessage}</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Settings are open. If a provider failed, update its URL, model, or key. If Curator’s server is unreachable, retry when your connection is back. You can also ignore this warning for now.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowStartupApiPrompt(false);
+                  setActiveTab('settings');
+                  setShowSetupWizard(false);
+                  window.setTimeout(() => {
+                    document.getElementById('provider-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }, 150);
+                }}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-semibold hover:bg-amber-400 transition"
+              >
+                Update settings
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowStartupApiPrompt(false)}
+                className="px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs font-medium text-slate-300 hover:text-slate-100 transition"
+              >
+                Ignore
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
 
       {/* Weekly Reading Review Modal */}
       <WeeklyReviewModal

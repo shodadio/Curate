@@ -114,6 +114,7 @@ interface SemanticCandidate {
   summary?: string;
   fullText?: string;
   folder?: string;
+  categories?: string[];
   source?: string;
 }
 
@@ -158,9 +159,10 @@ const semanticTermCounts = (text: string): Map<string, number> => {
 const composeSemanticText = (item: SemanticCandidate): string => {
   const title = item.title || '';
   const folder = item.folder || '';
+  const categories = Array.isArray(item.categories) ? item.categories.join('. ') : '';
   const summary = item.summary || '';
   const full = String(item.fullText || '').slice(0, 1800);
-  return `${title}. ${title}. ${title}. ${folder}. ${folder}. ${summary}. ${summary}. ${full}`;
+  return `${title}. ${title}. ${title}. ${folder}. ${folder}. ${categories}. ${categories}. ${summary}. ${summary}. ${full}`;
 };
 
 const buildSemanticVectors = (documents: string[]): Array<Map<string, number>> => {
@@ -846,6 +848,12 @@ async function startServer() {
     return results;
   };
 
+  // Lightweight liveness check used at app startup before provider requests are attempted.
+  app.get('/api/health', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ok: true, service: 'curator' });
+  });
+
   // API Routes
   app.get('/api/usage', (_req, res) => {
     const today = utcDay();
@@ -1028,6 +1036,7 @@ async function startServer() {
         title: string;
         feedUrl: string;
         folder: string;
+        categories: string[];
         status: 'active' | 'failing';
         failingReason?: string;
       }> = [];
@@ -1103,6 +1112,21 @@ async function startServer() {
         const xmlUrl = getAttr(tag, 'xmlUrl');
         const title = getAttr(tag, 'title') || getAttr(tag, 'text') || '';
         const categoryAttr = getAttr(tag, 'category');
+        const curatorCategoriesAttr = getAttr(tag, 'curatorCategories');
+        let curatorCategories: string[] | undefined;
+        if (curatorCategoriesAttr !== undefined) {
+          try {
+            const parsedCategories = JSON.parse(curatorCategoriesAttr);
+            if (Array.isArray(parsedCategories)) {
+              curatorCategories = parsedCategories
+                .filter((value: any) => typeof value === 'string')
+                .map((value: string) => value.replace(/\s+/g, ' ').trim().slice(0, 40))
+                .filter((value: string, index: number, values: string[]) => value && values.findIndex(other => other.toLowerCase() === value.toLowerCase()) === index);
+            }
+          } catch {
+            // Ignore invalid Curator metadata and use the ordinary OPML category below.
+          }
+        }
         const typeAttr = getAttr(tag, 'type');
 
         if (xmlUrl !== undefined) {
@@ -1137,6 +1161,7 @@ async function startServer() {
               title: cleanTitle,
               feedUrl: xmlUrl,
               folder,
+              categories: curatorCategories ?? [folder],
               status: 'failing',
               failingReason: 'Invalid feed URL format',
             });
@@ -1147,6 +1172,7 @@ async function startServer() {
               title: cleanTitle,
               feedUrl: xmlUrl,
               folder,
+              categories: curatorCategories ?? [folder],
               status: 'active',
             });
           }
@@ -1196,6 +1222,20 @@ async function startServer() {
   }
   const feedCache = new Map<string, FeedCacheEntry>();
   const FEED_CACHE_TTL = 5 * 60 * 1000;
+  const normalizeFeedCategories = (raw: unknown, folder: string): string[] => {
+    const labels = Array.isArray(raw) ? raw : [];
+    const seen = new Set<string>();
+    const categories: string[] = [];
+    for (const value of labels) {
+      if (typeof value !== 'string') continue;
+      const label = value.replace(/\s+/g, ' ').trim().slice(0, 40);
+      const key = label.toLowerCase();
+      if (!label || seen.has(key)) continue;
+      seen.add(key);
+      categories.push(label);
+    }
+    return Array.isArray(raw) ? categories : [folder || 'General'];
+  };
 
   const DEFAULT_FEEDS = [
     { title: 'Marginal Revolution', feedUrl: 'https://marginalrevolution.com/feed', folder: 'Economics' },
@@ -1363,7 +1403,7 @@ async function startServer() {
       : description;
   };
 
-  const parseFeedItems = (xml: string, sourceTitle: string, folder: string, baseUrl: string): any[] => {
+  const parseFeedItems = (xml: string, sourceTitle: string, folder: string, baseUrl: string, categories: string[]): any[] => {
     const items: any[] = [];
     const feedDescription = parseFeedChannelDescription(xml);
     const regex = /<(?:item|entry)\b[^>]*>([\s\S]*?)<\/(?:item|entry)>/gi;
@@ -1452,6 +1492,9 @@ async function startServer() {
       const words = cleanFull.split(/\s+/).filter(Boolean).length;
       const minutes = Math.max(2, Math.round(words / 200));
       const readTime = `${minutes} min read`;
+      const hasContinuationMarker = /(?:\.{3}|…|\[\s*…\s*\])\s*$/.test(cleanFull) ||
+        /\b(?:continue reading|read (?:the )?(?:full )?(?:article|story)|read more)\b/i.test(cleanFull.slice(-250)) ||
+        /\b(?:continue reading|read more)\b/i.test(fullRaw);
 
       const idHash = Buffer.from(link || title).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 16);
       const id = `live_${idHash}`;
@@ -1461,11 +1504,13 @@ async function startServer() {
         source: sourceTitle,
         sourceDescription: feedDescription || undefined,
         folder: folder || 'General',
+        categories,
         title,
         summary,
         readTime,
         url: link,
         fullText: cleanFull.length > 120 ? cleanFull : (summary + '\n\n' + 'Read the complete article directly at: ' + link),
+        _needsArticleFetch: Boolean(link && cleanFull.length > 80 && hasContinuationMarker),
         publishedAt,
         publishedAtMs: Number.isFinite(publishedAtMs) ? publishedAtMs : undefined,
         bannerImage,
@@ -1476,21 +1521,123 @@ async function startServer() {
     return items;
   };
 
+  interface ArticleTextCacheEntry {
+    timestamp: number;
+    text: string;
+  }
+  const articleTextCache = new Map<string, ArticleTextCacheEntry>();
+  const ARTICLE_TEXT_CACHE_TTL = 24 * 60 * 60 * 1000;
+  const ARTICLE_TEXT_FAILURE_TTL = 10 * 60 * 1000;
+  const MAX_ARTICLE_TEXT_CACHE_ENTRIES = 300;
+
+  const extractArticleBody = (html: string): string => {
+    const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
+    const mainMatch = articleMatch ? null : html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
+    let body = articleMatch?.[1] || mainMatch?.[1] || '';
+    if (!body) return '';
+
+    body = body
+      .replace(/<(figure|figcaption|audio|video|iframe|script|style|noscript|svg|form|button|nav|header|footer)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+      .replace(/<h1\b[^>]*>[\s\S]*?<\/h1\s*>/gi, ' ');
+
+    const excludedClassNames = /(?:^|[\s_-])(?:author|byline|related|recommend(?:ation|ed)?|newsletter|subscribe|share|social|audio|player|caption|tldr|standfirst|dek|bio|advert|promoted|read[-_ ]?more|post[-_ ]?meta|article[-_ ]?meta|outbrain|taboola)(?=$|[\s_-])/i;
+    const taggedBlocks = /<(div|section|aside|p|h[2-6]|ul|ol)\b[^>]*(?:class|id)\s*=\s*["'][^"']*["'][^>]*>[\s\S]*?<\/\1\s*>/gi;
+    for (let pass = 0; pass < 8; pass += 1) {
+      let removed = false;
+      body = body.replace(taggedBlocks, block => {
+        const openingTag = block.match(/^<[^>]+>/)?.[0] || '';
+        const labels = [...openingTag.matchAll(/(?:class|id)\s*=\s*["']([^"']*)["']/gi)]
+          .map(match => match[1]);
+        if (!labels.some(label => excludedClassNames.test(label))) return block;
+        removed = true;
+        return ' ';
+      });
+      if (!removed) break;
+    }
+
+    const text = htmlToReadableText(body);
+    const paragraphs = text.split(/\n{2,}/).filter(paragraph => paragraph.trim().length > 0);
+    if (text.length < 600 || paragraphs.length < 3) return '';
+    if (/\b(?:subscribe|sign up|create an account)\b.{0,80}\b(?:continue|read|access)\b|\b(?:sign|log) in to\b.{0,80}\b(?:continue|read|access)\b/i.test(text)) {
+      return '';
+    }
+    return text;
+  };
+
+  const fetchArticleBody = async (targetUrl: string): Promise<string | null> => {
+    let cacheKey = '';
+    try {
+      const parsedUrl = new URL(targetUrl);
+      parsedUrl.hash = '';
+      cacheKey = parsedUrl.toString();
+    } catch {
+      return null;
+    }
+
+    const cached = articleTextCache.get(cacheKey);
+    const cacheTtl = cached?.text ? ARTICLE_TEXT_CACHE_TTL : ARTICLE_TEXT_FAILURE_TTL;
+    if (cached && Date.now() - cached.timestamp < cacheTtl) return cached.text || null;
+    if (cached) articleTextCache.delete(cacheKey);
+
+    let text = '';
+    try {
+      // Reuse the same public-host, redirect, timeout, and response-size checks as feed fetching.
+      const page = await fetchPublicPage(cacheKey, 6000);
+      if (page.ok && (!page.contentType || /(?:text\/html|application\/xhtml\+xml)/i.test(page.contentType))) {
+        text = extractArticleBody(page.text);
+      }
+    } catch {
+      // Preserve the feed excerpt when an article is unavailable, blocked, or fails extraction.
+    }
+
+    if (articleTextCache.size >= MAX_ARTICLE_TEXT_CACHE_ENTRIES) {
+      const oldestKey = articleTextCache.keys().next().value;
+      if (oldestKey) articleTextCache.delete(oldestKey);
+    }
+    articleTextCache.set(cacheKey, { timestamp: Date.now(), text });
+    return text || null;
+  };
+
+  const enrichSelectedArticles = async (digest: any[]): Promise<any[]> => {
+    const targets = digest
+      .filter(item => item?._needsArticleFetch && typeof item.url === 'string')
+      .slice(0, 6);
+    let nextTarget = 0;
+    const workerCount = Math.min(3, targets.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextTarget < targets.length) {
+        const item = targets[nextTarget++];
+        const articleText = await fetchArticleBody(item.url);
+        if (!articleText) continue;
+        item.fullText = articleText;
+        const words = articleText.split(/\s+/).filter(Boolean).length;
+        item.readTime = `${Math.max(2, Math.round(words / 200))} min read`;
+      }
+    }));
+
+    return digest.map(item => {
+      const { _needsArticleFetch, ...article } = item;
+      return article;
+    });
+  };
+
   const fetchFeedWithStatus = async (
     feedUrl: string,
     sourceTitle: string,
     folder: string,
+    categories?: unknown,
   ): Promise<{ items: any[]; error?: string }> => {
     if (!feedUrl) return { items: [], error: 'No feed URL set' };
+    const itemCategories = normalizeFeedCategories(categories, folder);
     const cached = feedCache.get(feedUrl);
     if (cached && Date.now() - cached.timestamp < FEED_CACHE_TTL) {
-      return { items: cached.items };
+      return { items: cached.items.map(item => ({ ...item, categories: itemCategories })) };
     }
     try {
       usageDelta({ feedFetches: 1 });
       const page = await fetchPublicPage(feedUrl, 7000);
       if (page && page.ok && page.text) {
-        const parsed = parseFeedItems(page.text, sourceTitle, folder, feedUrl);
+        const parsed = parseFeedItems(page.text, sourceTitle, folder, feedUrl, itemCategories);
         if (parsed.length > 0) {
           feedCache.set(feedUrl, { timestamp: Date.now(), items: parsed });
           return { items: parsed };
@@ -1504,8 +1651,8 @@ async function startServer() {
     }
   };
 
-  const fetchFeedArticles = async (feedUrl: string, sourceTitle: string, folder: string): Promise<any[]> =>
-    (await fetchFeedWithStatus(feedUrl, sourceTitle, folder)).items;
+  const fetchFeedArticles = async (feedUrl: string, sourceTitle: string, folder: string, categories?: unknown): Promise<any[]> =>
+    (await fetchFeedWithStatus(feedUrl, sourceTitle, folder, categories)).items;
 
   // Curate daily digest from live feeds using configured provider adapters or deterministic ranking
   app.post('/api/curate', async (req, res) => {
@@ -1569,7 +1716,7 @@ async function startServer() {
       const runSources = orderedSources.slice(0, MAX_SOURCES_PER_RUN);
 
       const feedResults = await Promise.allSettled(
-        runSources.map((s: any) => fetchFeedWithStatus(s.feedUrl, s.title, s.folder))
+        runSources.map((s: any) => fetchFeedWithStatus(s.feedUrl, s.title, s.folder, s.categories))
       );
 
       const feedFailures: Array<{ title: string; feedUrl?: string; reason: string }> = [];
@@ -1616,8 +1763,8 @@ async function startServer() {
         : Array.isArray(signals?.less) ? signals.less : [];
       const moreIds: string[] = Array.isArray(signals?.moreIds) ? signals.moreIds : [];
       const lessIds: string[] = Array.isArray(signals?.lessIds) ? signals.lessIds : [];
-      // A declared interest is matched whole-word and case-insensitively, with the folder
-      // compared as an exact label first, so a chip named "Art" never fires on "artificial".
+      // Declared interests match whole-word and case-insensitively; category labels are checked
+      // exactly first, so a chip named "Art" never fires on "artificial".
       const normalizeInterestLabel = (value: string): string =>
         String(value || '')
           .toLowerCase()
@@ -1628,7 +1775,7 @@ async function startServer() {
       const matchesInterest = (item: any, label: string): boolean => {
         const needle = normalizeInterestLabel(label);
         if (!needle) return false;
-        if (normalizeInterestLabel(item.folder || '') === needle) return true;
+        if (Array.isArray(item.categories) && item.categories.some((category: unknown) => normalizeInterestLabel(String(category || '')) === needle)) return true;
         const haystack = ` ${normalizeInterestLabel(`${item.title || ''} ${item.summary || ''}`)} `;
         return haystack.includes(` ${needle} `);
       };
@@ -1709,7 +1856,7 @@ async function startServer() {
         try {
           const feedbackTexts = feedbackExamples.map(entry => `${entry.title}\n${entry.text}`.slice(0, 3200));
           const candidateTexts = semanticItems.map(item =>
-            `${item.title || ''}\n${item.summary || ''}\n${item.fullText || ''}`
+            `${item.title || ''}\n${item.folder || ''}\n${Array.isArray(item.categories) ? item.categories.join(' ') : ''}\n${item.summary || ''}\n${item.fullText || ''}`
               .replace(/<[^>]*>/g, ' ')
               .replace(/\s+/g, ' ')
               .trim()
@@ -1807,6 +1954,7 @@ async function startServer() {
           title: item.title,
           source: item.source,
           folder: item.folder,
+          categories: item.categories,
           summary: item.summary,
           readTime: item.readTime,
           isLiked: moreIds.includes(item.id),
@@ -1901,7 +2049,8 @@ CURATION RULES:
 
           const aiDigest = selectDiverse(rankedItems, itemCount, maxPerSource, chosenArticles);
           if (aiDigest.length >= Math.min(itemCount, Math.max(1, candidatePool.length))) {
-            return res.json({ digest: aiDigest, generatedByAI: true, semanticSummary, feedReport });
+            const enrichedDigest = await enrichSelectedArticles(aiDigest);
+            return res.json({ digest: enrichedDigest, generatedByAI: true, semanticSummary, feedReport });
           }
         }
       }
@@ -1954,8 +2103,9 @@ CURATION RULES:
         maxPerSource
       );
       const digest = [...regular, ...stretchItems].slice(0, itemCount);
+      const enrichedDigest = await enrichSelectedArticles(digest);
 
-      res.json({ digest, generatedByAI: false, semanticSummary, feedReport });
+      res.json({ digest: enrichedDigest, generatedByAI: false, semanticSummary, feedReport });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to generate digest' });
     }
@@ -1978,7 +2128,7 @@ CURATION RULES:
         : activeSources;
 
       const feedResults = await Promise.allSettled(
-        ordered.slice(0, 14).map((s: any) => fetchFeedArticles(s.feedUrl, s.title, s.folder))
+        ordered.slice(0, 14).map((s: any) => fetchFeedArticles(s.feedUrl, s.title, s.folder, s.categories))
       );
 
       const excluded = new Set<string>(
@@ -2020,6 +2170,7 @@ CURATION RULES:
           source: item.source,
           sourceDescription: item.sourceDescription,
           folder: item.folder,
+          categories: item.categories,
           summary: item.summary,
           readTime: item.readTime,
           url: item.url,
@@ -2049,7 +2200,7 @@ CURATION RULES:
         ? clientSources
         : DEFAULT_FEEDS;
 
-      let targetFeeds: Array<{ title: string; feedUrl: string; folder: string }> = [];
+      let targetFeeds: Array<{ title: string; feedUrl: string; folder: string; categories?: string[] }> = [];
 
       if (sourceTitle && sourceTitle.trim() && sourceTitle !== 'all') {
         const queryNorm = sourceTitle.trim().toLowerCase();
@@ -2072,7 +2223,7 @@ CURATION RULES:
       }
 
       const results = await Promise.allSettled(
-        targetFeeds.map(f => fetchFeedArticles(f.feedUrl, f.title, f.folder))
+        targetFeeds.map(f => fetchFeedArticles(f.feedUrl, f.title, f.folder, f.categories))
       );
 
       let articles: any[] = [];
