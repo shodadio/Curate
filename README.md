@@ -103,7 +103,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Typographic Discipline**: One self-hosted variable family, *Inter* (roman 47 KB + italic 51 KB woff2, `font-display: optional`), used for the interface, reading bodies, wordmark and metadata alike — no Google Fonts requests, so text never reflows or changes face after first paint.
 - **Native Read Aloud**:
   - A sentence-by-sentence queue over the browser's own `window.speechSynthesis`, so an article is never cut off by the engine's long-utterance limit (Chrome stops at roughly fifteen seconds, iOS stalls on very long strings), and every paragraph break gets a natural beat.
-  - Defaults to a calm 0.95× rate, the device language, and the best English voice the device reports — Enhanced and Premium voices are preferred over the compact ones. Any installed voice and any speed can be chosen in **Settings → Read aloud**, with a *Hear this voice* preview.
+  - Defaults to **Jamie (Premium)** at a calm 0.95× rate when the browser exposes that voice; otherwise it leaves voice selection to the device's Spoken Content settings. Automatic mode prefers voices explicitly named Enhanced, Premium, Neural or Natural. Other installed voices and any speed can be chosen by hand in **Settings → Read aloud**, with a *Hear this voice* preview.
   - Live progress bar with paragraph and sentence position, the spoken paragraph highlighted, and tap-any-paragraph to listen from that point.
   - Feed debris — URLs, footnote marks, bracket asides, "Read more" furniture, abbreviations and currency — is normalised out of the text before it reaches the voice.
 - **Scroll Depth Tracker**: Automatically tracks reading progress and marks articles as finished once the user scrolls past 85% depth.

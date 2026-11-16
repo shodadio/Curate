@@ -1277,13 +1277,21 @@ async function startServer() {
       .replace(/\u00a0/g, ' ')
       .replace(/[ \t]+/g, ' ')
       .replace(/ *\n */g, '\n')
-      .replace(/([,.;:!?])(?=[A-Za-z0-9“"'(])/g, '$1 ')
+      // Only a word that has run into the next one is repaired here. The old rule also fired
+      // inside decimals, thousands separators and dotted abbreviations ("1.79", "74,000",
+      // "U.S.", "e.g."), which then reached the reader — and the read-aloud voice — in
+      // pieces, because a stray full stop reads as the end of a sentence.
+      .replace(/([a-z])([,;:])(?=[A-Za-z])/g, '$1$2 ')
+      .replace(/([a-z])([.!?])(?=[A-Z][a-z])/g, '$1$2 ')
       .replace(/\n{3,}/g, '\n\n')
       .split(/\n{2,}/)
       .map(paragraph => {
         let next = paragraph
           .replace(/\s*\n\s*/g, ' ')
           .replace(/\s+([,.;:!?])/g, '$1')
+          // Inline tags were stripped to spaces, which leaves "“ defund the police ”"
+          .replace(/([“‘(])\s+/g, '$1')
+          .replace(/\s+([”’)])/g, '$1')
           .replace(/\s{2,}/g, ' ')
           .trim();
         // A stripped inline link can leave a paragraph starting with the punctuation that followed it.

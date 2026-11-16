@@ -105,9 +105,17 @@ function buildArticleParagraphs(text: string): string[] {
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/\u00a0/g, ' ')
     .replace(/<[^>]+>/g, ' ')
+    // Articles stored before the cleaner was fixed still carry a space inside "U. S.",
+    // "1. 79" and "74, 000"; repair them here so old saves read correctly too
+    .replace(/(\d)([.,])\s+(\d)/g, '$1$2$3')
+    .replace(/\b(?:[A-Za-z]\.\s+){1,}[A-Za-z]\./g, run => run.replace(/\s+/g, ''))
     .replace(/[ \t]+/g, ' ')
     .replace(/ *\n */g, '\n')
-    .replace(/([,.;:!?])(?=[A-Za-z0-9“"'(])/g, '$1 ')
+    // Only a word that has run into the next one is repaired here. The old rule also fired
+    // inside decimals, thousands separators and dotted abbreviations ("1. 79", "74, 000",
+    // "U. S.", "e. g."), which the reader showed that way and the voice then read in pieces.
+    .replace(/([a-z])([,;:])(?=[A-Za-z])/g, '$1$2 ')
+    .replace(/([a-z])([.!?])(?=[A-Z][a-z])/g, '$1$2 ')
     .replace(/\n{3,}/g, '\n\n');
 
   return clean
@@ -151,22 +159,38 @@ const SPEECH_RATE_MAX = 1.5;
 const SPEECH_FALLBACK_LANG = 'en-GB';
 
 const SPEECH_VOICE_AUTO = 'auto';
-const SPEECH_VOICE_STORAGE_KEY = 'curator_speech_voice';
+const SPEECH_VOICE_JAMIE_DEFAULT = 'default-jamie-premium';
+// v4 defaults to Jamie (Premium), while retaining an explicitly chosen voice from v3.
+const SPEECH_VOICE_STORAGE_KEY = 'curator_speech_voice_v4';
 const SPEECH_RATE_STORAGE_KEY = 'curator_speech_rate';
 
-// Voices that read like a calm editor out of the box, best first. Only some browsers put
-// the quality in the name, so this order carries most of the judgement.
+// Jamie (Premium) is the default read-aloud voice. Only some browsers put the quality in
+// the name, so the preference order also helps identify the best voice when variants tie.
 const PREFERRED_SPEECH_VOICES = [
   'jamie', 'evan', 'ava', 'zoe', 'allison', 'nathan', 'samantha', 'daniel',
   'serena', 'karen', 'oliver', 'martha', 'arthur', 'moira', 'tessa', 'rishi'
 ];
 
-// "Evan (Enhanced)" and "Evan" are the same voice to a reader choosing one
+// "Jamie (Premium)" and "Jamie" are the same voice to a reader choosing one
 function speechVoiceBaseName(voice: SpeechSynthesisVoice): string {
   return (voice.name || '')
     .replace(/\s*\(.*?\)\s*/g, ' ')
     .trim()
     .toLowerCase();
+}
+
+// How good a voice is likely to sound. Some platforms name the quality outright and some
+// only hint at it, so this combines the reader's preference order with what the name says.
+function speechVoiceQuality(voice: SpeechSynthesisVoice): number {
+  const base = speechVoiceBaseName(voice);
+  const raw = (voice.name || '').toLowerCase();
+  let value = 0;
+  const rank = PREFERRED_SPEECH_VOICES.indexOf(base);
+  if (rank !== -1) value += (PREFERRED_SPEECH_VOICES.length - rank) * 10;
+  if (/(enhanced|premium|neural|natural)/.test(raw)) value += 45;
+  if (voice.localService) value += 6;
+  if (voice.default) value += 4;
+  return value;
 }
 
 function resolveSpeechVoice(
@@ -179,28 +203,43 @@ function resolveSpeechVoice(
   const english = voices.filter(voice => /^en(-|_|$)/i.test(voice.lang || ''));
   const pool = english.length > 0 ? english : voices;
 
+  if (preference === SPEECH_VOICE_JAMIE_DEFAULT) {
+    const jamiePremium = pool
+      .filter(voice => speechVoiceBaseName(voice) === 'jamie' && /premium/i.test(voice.name || ''))
+      .sort((a, b) => speechVoiceQuality(b) - speechVoiceQuality(a));
+    return jamiePremium[0] || null;
+  }
+
   if (preference && preference !== SPEECH_VOICE_AUTO) {
     const chosen =
       voices.find(voice => voice.voiceURI === preference) ||
       voices.find(voice => voice.name === preference) ||
       pool.find(voice => speechVoiceBaseName(voice) === preference.toLowerCase());
-    if (chosen) return chosen;
+    return chosen || null;
   }
 
-  const score = (voice: SpeechSynthesisVoice): number => {
-    const base = speechVoiceBaseName(voice);
-    const raw = (voice.name || '').toLowerCase();
-    let value = 0;
-    const rank = PREFERRED_SPEECH_VOICES.indexOf(base);
-    if (rank !== -1) value += (PREFERRED_SPEECH_VOICES.length - rank) * 10;
-    // Some platforms name the quality outright; take it at face value
-    if (/(enhanced|premium|neural|natural)/.test(raw)) value += 45;
-    if (voice.localService) value += 6;
-    if (voice.default) value += 4;
-    return value;
-  };
+  // Automatic only speaks with a voice whose name says outright that it is a good one.
+  // iOS does not list the Enhanced and Premium voices chosen in Spoken Content, and forcing
+  // a compact voice from the short list it does expose would replace the good one with it —
+  // so with nothing better to pick, the choice is left to the device.
+  const marked = pool.filter(voice => /(enhanced|premium|neural|natural)/i.test(voice.name || ''));
+  if (marked.length === 0) return null;
 
-  return pool.slice().sort((a, b) => score(b) - score(a))[0] || null;
+  return marked.slice().sort((a, b) => speechVoiceQuality(b) - speechVoiceQuality(a))[0] || null;
+}
+
+// One entry per voice, not one per installed variant: some devices report "Daniel" twice
+// (compact and Enhanced) under the same name, and a picker listing both is a trap
+function speechVoiceChoices(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice[] {
+  const english = voices.filter(voice => /^en(-|_|$)/i.test(voice.lang || ''));
+  const pool = english.length > 0 ? english : voices;
+  const best = new Map<string, SpeechSynthesisVoice>();
+  for (const voice of pool) {
+    const key = `${speechVoiceBaseName(voice)}|${(voice.lang || '').toLowerCase()}`;
+    const kept = best.get(key);
+    if (!kept || speechVoiceQuality(voice) > speechVoiceQuality(kept)) best.set(key, voice);
+  }
+  return [...best.values()].sort((a, b) => speechVoiceBaseName(a).localeCompare(speechVoiceBaseName(b)));
 }
 
 // Feed bodies carry URLs, footnote marks and site furniture. Left alone, the voice reads
@@ -209,58 +248,115 @@ function normaliseForSpeech(text: string): string {
   if (!text) return '';
 
   let out = decodeArticleEntities(text)
-    .replace(/<[^>]*>/g, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+    // Figures are images and captions, not part of the article's spoken copy.
+    .replace(/<figure\b[^>]*>[\s\S]*?<\/figure\s*>/gi, ' ')
+    .replace(/<figcaption\b[^>]*>[\s\S]*?<\/figcaption\s*>/gi, ' ')
+    .replace(/<img\b[^>]*>/gi, ' ')
     .replace(/[\u200B-\u200D\uFEFF]/g, ' ')
     .replace(/\u00a0/g, ' ');
 
-  // Keep a markdown link's label, drop its target
-  out = out.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
-
+  // Drop image markup and its caption; keep the useful label of ordinary text links.
   out = out
-    .replace(/\b(?:https?:\/\/|ftp:\/\/|www\.)\S+/gi, ' ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/!\[[^\]]*\](?:\[[^\]]*\])?/g, ' ')
+    // Remove Markdown footnote references before ordinary link labels are kept.
+    .replace(/^\s*\[\^[^\]]+\]:.*$/gm, ' ')
+    .replace(/\[\^[^\]]+\](?:\s*\([^)]*\))?/g, ' ')
+    .replace(/\[\d+\](?:\s*\([^)]*\))?/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\[[^\]]*\]/g, '$1')
+    .replace(/^\s*\[[^\]]+\]:\s*\S+.*$/gm, ' ')
+    .replace(/<\/?[a-z][^>]*>/gi, ' ');
+
+  // A space inside "1. 79", "74, 000", "U. S." or "e. g." makes the engine stumble.
+  out = out
+    .replace(/(\d)([.,])\s+(\d)/g, '$1$2$3')
+    .replace(/\b(?:[A-Za-z]\.\s+){1,}[A-Za-z]\./g, run => run.replace(/\s+/g, ''));
+
+  const stripUrlKeepingPunctuation = (match: string) => {
+    const url = match.replace(/[.,!?;:)\]}]+$/g, '');
+    return ` ${match.slice(url.length)}`;
+  };
+  out = out
+    .replace(/\b(?:https?:\/\/|ftp:\/\/|mailto:|www\.)[^\s<>{}]+/gi, stripUrlKeepingPunctuation)
     .replace(/\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/gi, ' ')
-    .replace(/\b[\w-]+\.(?:com|org|net|io|co|uk|dev|ai|me|gov|edu|substack|app)\b(?:\/\S*)?/gi, ' ');
+    // Recognise ordinary multi-label domains with any alphabetic TLD, not just a short allowlist.
+    .replace(/\b(?:[a-z\d](?:[a-z\d-]*[a-z\d])?\.)+[a-z]{2,}(?::\d{2,5})?(?:[/?#][^\s<>{}]*)?/gi, stripUrlKeepingPunctuation);
 
-  // Footnote marks, bracketed asides and placeholder ellipses
+  // Footnote references, superscripts, editorial bracket asides and placeholder ellipses.
   out = out
-    .replace(/\[\s*(?:\.{2,}|…|\d+|\*|\u2020|\u2021|note\s*\d*|sic|photo|image|video|audio)[^\]]*\]/gi, ' ')
-    .replace(/\[\s*\]/g, ' ')
-    .replace(/\(\s*(?:\.{2,}|…)\s*\)/g, ' ')
-    .replace(/[\u00B9\u00B2\u00B3\u2070-\u209C]/g, ' ');
+    .replace(/^\s*\[\^[^\]]+\]:.*$/gm, ' ')
+    .replace(/\[\^?\d+\](?:\s*\([^)]*\))?/g, ' ')
+    .replace(/\(\s*(?:\.{2,}|…+)\s*\)/g, ' ')
+    .replace(/[\u00B9\u00B2\u00B3\u2020\u2021\u2070-\u209C]/g, ' ')
+    // Strip any remaining square-bracket aside, including [...] and [citation text].
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\[[^\]]*\]/g, ' ');
 
-  // Site furniture that arrives inside the body rather than beside it
+  // Remove caption-style lines and common subscription / article furniture wherever it is embedded.
   out = out
+    .replace(/^\s*(?:image|photo|photograph|caption|image caption|figure)\s*:\s*[^\n]*(?:\n|$)/gim, ' ')
+    .replace(/\(\s*(?:image|photo|photograph|caption|figure)\s*:[^)]*\)/gi, ' ')
+    .replace(/(^|[.!?]\s+)(?:click here|tap here|read more|continue reading|share this|advertisement)\b[^.!?\n]*(?:[.!?]|$)/gim, '$1 ')
     .replace(/\b(?:click|tap) here\b/gi, ' ')
-    .replace(/\bread (?:the )?(?:full|original|rest of (?:the|this)) (?:article|post|story)\b[^.]*\.?/gi, ' ')
-    .replace(/\bcontinue reading\b[^.]*\.?/gi, ' ')
-    .replace(/\b(?:share this|advertisement)\b[^.]*\.?/gi, ' ');
+    .replace(/\bread\s+(?:the\s+)?(?:full|original|rest\s+of\s+(?:the|this))\s+(?:article|post|story)\b[^.!?]*[.!?]?/gi, ' ')
+    .replace(/\b(?:read more|continue reading|share this|advertisement)\b/gi, ' ');
 
-  // Abbreviations, symbols and currency the engine otherwise spells out
+  // Remove Markdown formatting while retaining the words it decorates.
   out = out
-    .replace(/\be\.g\.\s*/gi, 'for example, ')
-    .replace(/\bi\.e\.\s*/gi, 'that is, ')
-    .replace(/\betc\.(?=\s|$)/gi, 'et cetera')
-    .replace(/\bvs\.?(?=\s)/gi, 'versus ')
-    .replace(/\bw\/(?=\s)/gi, 'with ')
-    .replace(/\bDr\.(?=\s)/g, 'Doctor ')
-    .replace(/\bMr\.(?=\s)/g, 'Mister ')
-    .replace(/\bMrs\.(?=\s)/g, 'Missus ')
-    .replace(/\bMs\.(?=\s)/g, 'Miz ')
-    .replace(/\bNo\.\s*(\d)/g, 'Number $1')
+    .replace(/^\s{0,3}#{1,6}\s*/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s*[-+*•·]\s+/gm, '')
+    .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm, ' ')
+    .replace(/```[^\n]*|```/g, ' ')
+    .replace(/`/g, '')
+    .replace(/~~|\*\*?|__?/g, ' ')
+    .replace(/\|/g, ' ');
+
+  // Abbreviations, numbers, symbols and currency the engine otherwise spells awkwardly.
+  const currencyNames: Record<string, string> = {
+    USD: 'US dollars', CAD: 'Canadian dollars', AUD: 'Australian dollars', NZD: 'New Zealand dollars',
+    GBP: 'pounds', EUR: 'euros', JPY: 'yen', CNY: 'yuan', INR: 'rupees', KRW: 'won', RUB: 'rubles'
+  };
+  out = out
+    .replace(/\be\s*\.\s*g\s*\.(?:\s*,)?\s*/gi, 'for example, ')
+    .replace(/\bi\s*\.\s*e\s*\.(?:\s*,)?\s*/gi, 'that is, ')
+    .replace(/\betc\.?(?=\s|$|[,;:!?])/gi, 'et cetera')
+    .replace(/\bvs\.?(?=\s|$|[,;:!?])/gi, 'versus')
+    .replace(/\bw\s*\/\s*o\b/gi, 'without')
+    .replace(/\bw\s*\/\s*/gi, 'with ')
+    .replace(/\bDr\.?(?=\s|$)/gi, 'Doctor')
+    .replace(/\bMr\.?(?=\s|$)/gi, 'Mister')
+    .replace(/\bMrs\.?(?=\s|$)/gi, 'Missus')
+    .replace(/\bMs\.?(?=\s|$)/gi, 'Miz')
+    .replace(/\bNo\.\s*(\d)/gi, 'Number $1')
+    .replace(/\b(US|CA|AU|NZ)\$\s*(\d[\d,]*(?:\.\d+)?)/gi, (_match, region: string, amount: string) => {
+      const name = currencyNames[`${region.toUpperCase()}D`];
+      return `${amount} ${name}`;
+    })
+    .replace(/\b([\d][\d,]*(?:\.\d+)?)\s*(USD|CAD|AUD|NZD|GBP|EUR|JPY|CNY|INR|KRW|RUB)\b/gi, (_match, amount: string, code: string) => `${amount} ${currencyNames[code.toUpperCase()]}`)
+    .replace(/\b(USD|CAD|AUD|NZD|GBP|EUR|JPY|CNY|INR|KRW|RUB)\s*(\d[\d,]*(?:\.\d+)?)/gi, (_match, code: string, amount: string) => `${amount} ${currencyNames[code.toUpperCase()]}`)
+    .replace(/\$\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 dollars')
+    .replace(/£\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 pounds')
+    .replace(/€\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 euros')
+    .replace(/¥\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 yen')
+    .replace(/₹\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 rupees')
+    .replace(/₩\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 won')
+    .replace(/₽\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 rubles')
+    .replace(/(\d[\d,]*(?:\.\d+)?)\s*%/g, '$1 percent')
     .replace(/&/g, ' and ')
     .replace(/%/g, ' percent')
-    .replace(/£\s?(\d[\d,.]*)/g, '$1 pounds')
-    .replace(/\$\s?(\d[\d,.]*)/g, '$1 dollars')
-    .replace(/€\s?(\d[\d,.]*)/g, '$1 euros')
     .replace(/×/g, ' by ')
     .replace(/→/g, ' to ')
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'")
-    .replace(/[—–]/g, ', ')
-    .replace(/[*•·#]/g, ' ');
+    .replace(/[—–]/g, ', ');
 
   return out
     .replace(/\s+/g, ' ')
+    .replace(/,\s*,/g, ',')
     .replace(/\s+([,.;:!?])/g, '$1')
     .replace(/([.!?])(?=["'(A-Z])/g, '$1 ')
     .trim();
@@ -277,7 +373,13 @@ function splitIntoSentences(text: string): string[] {
 
   while ((match = boundary.exec(clean)) !== null) {
     const end = match.index + match[0].length;
-    segments.push(clean.slice(cursor, end).trim());
+    const candidate = clean.slice(cursor, end).trim();
+    // "U.S." and "e.g." end in a full stop that is not the end of a sentence
+    if (/(?:[A-Za-z]\.){2,}$/.test(candidate)) {
+      boundary.lastIndex = end;
+      continue;
+    }
+    segments.push(candidate);
     cursor = end;
     while (clean[cursor] === ' ') cursor += 1;
     boundary.lastIndex = cursor;
@@ -676,9 +778,12 @@ export default function App() {
     paragraph: -1
   });
   const [speechVoices, setSpeechVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [speechVoiceUri, setSpeechVoiceUri] = useState<string>(
-    () => localStorage.getItem(SPEECH_VOICE_STORAGE_KEY) || SPEECH_VOICE_AUTO
-  );
+  const [speechVoiceUri, setSpeechVoiceUri] = useState<string>(() => {
+    const saved = localStorage.getItem(SPEECH_VOICE_STORAGE_KEY);
+    if (saved) return saved;
+    const previous = localStorage.getItem('curator_speech_voice_v3');
+    return previous && previous !== SPEECH_VOICE_AUTO ? previous : SPEECH_VOICE_JAMIE_DEFAULT;
+  });
   const [speechRate, setSpeechRate] = useState<number>(() => {
     const saved = Number(localStorage.getItem(SPEECH_RATE_STORAGE_KEY));
     return Number.isFinite(saved) && saved >= SPEECH_RATE_MIN && saved <= SPEECH_RATE_MAX
@@ -713,11 +818,6 @@ export default function App() {
     };
   }, []);
 
-  const speechFallbackLang =
-    typeof navigator !== 'undefined' && /^en(-|_|$)/i.test(navigator.language || '')
-      ? navigator.language
-      : SPEECH_FALLBACK_LANG;
-
   const automaticSpeechVoice = React.useMemo(
     () => resolveSpeechVoice(speechVoices, SPEECH_VOICE_AUTO),
     [speechVoices]
@@ -726,20 +826,21 @@ export default function App() {
   const activeSpeechVoice = React.useMemo(
     () => (speechVoiceUri === SPEECH_VOICE_AUTO
       ? automaticSpeechVoice
-      : resolveSpeechVoice(speechVoices, speechVoiceUri) || automaticSpeechVoice),
+      : resolveSpeechVoice(speechVoices, speechVoiceUri)),
     [speechVoices, speechVoiceUri, automaticSpeechVoice]
   );
 
-  const speechVoiceLabel = activeSpeechVoice ? activeSpeechVoice.name : 'system voice';
+  const speechVoiceLabel = activeSpeechVoice ? activeSpeechVoice.name : 'your device voice';
 
-  // Compact voices and Enhanced/Premium ones sit in the same list: English first, by name
-  const speechVoiceOptions = React.useMemo(() => {
-    const english = speechVoices.filter(voice => /^en(-|_|$)/i.test(voice.lang || ''));
-    const pool = english.length > 0 ? english : speechVoices;
-    return pool
-      .slice()
-      .sort((a, b) => speechVoiceBaseName(a).localeCompare(speechVoiceBaseName(b)));
-  }, [speechVoices]);
+  // One entry per voice, English first, by name
+  const speechVoiceOptions = React.useMemo(
+    () => speechVoiceChoices(speechVoices),
+    [speechVoices]
+  );
+  const jamiePremiumSpeechVoice = React.useMemo(
+    () => resolveSpeechVoice(speechVoices, SPEECH_VOICE_JAMIE_DEFAULT),
+    [speechVoices]
+  );
 
   useEffect(() => {
     localStorage.setItem('curator_saved_articles', JSON.stringify(savedArticles));
@@ -1697,9 +1798,19 @@ export default function App() {
   // position is the progress indicator.
 
   const configureSpeechUtterance = (utterance: SpeechSynthesisUtterance) => {
-    const voice = activeSpeechVoice;
-    if (voice) utterance.voice = voice;
-    utterance.lang = voice?.lang || speechFallbackLang;
+    // getVoices() can still be empty on the first read after mount, so ask it again here:
+    // the very first sentence should already use the chosen voice, not the system default.
+    const voice = activeSpeechVoice || (
+      typeof window !== 'undefined' && 'speechSynthesis' in window
+        ? resolveSpeechVoice(window.speechSynthesis.getVoices() || [], speechVoiceUri)
+        : null
+    );
+    // With no better voice identified, neither the voice nor the language is touched, so the
+    // device speaks with the voice chosen in Spoken Content — Jamie (Premium), here.
+    if (voice) {
+      utterance.voice = voice;
+      utterance.lang = voice.lang || SPEECH_FALLBACK_LANG;
+    }
     utterance.rate = speechRate;
   };
 
@@ -1908,6 +2019,7 @@ export default function App() {
     const utterance = new SpeechSynthesisUtterance('Curator. Your morning reading, read aloud.');
     configureSpeechUtterance(utterance);
     window.speechSynthesis.speak(utterance);
+    showToast(`Trying ${speechVoiceLabel} at ${speechRate.toFixed(2)}×`);
   };
 
   // Leaving the article ends the session, so speech never reads a page the reader closed
@@ -2303,8 +2415,9 @@ export default function App() {
                     <button
                       type="button"
                       onClick={handleStopReadAloud}
-                      className="p-1 text-slate-400 hover:text-rose-400 transition"
-                      title="Stop"
+                      className="w-8 h-8 -mr-1 flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800/70 transition"
+                      title="Stop reading aloud"
+                      aria-label="Stop reading aloud"
                     >
                       <Square className="w-3.5 h-3.5 fill-current" />
                     </button>
@@ -3991,19 +4104,28 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   onChange={e => setSpeechVoiceUri(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
                 >
-                  <option value={SPEECH_VOICE_AUTO}>
-                    {automaticSpeechVoice ? `Automatic — ${automaticSpeechVoice.name}` : 'Automatic'}
+                  <option value={SPEECH_VOICE_JAMIE_DEFAULT}>
+                    Jamie (Premium){jamiePremiumSpeechVoice?.lang ? ` · ${jamiePremiumSpeechVoice.lang}` : ''} — default
                   </option>
-                  {speechVoiceOptions.map(voice => (
+                  <option value={SPEECH_VOICE_AUTO}>
+                    {automaticSpeechVoice ? `Automatic — ${automaticSpeechVoice.name}` : 'Automatic — your device voice'}
+                  </option>
+                  {speechVoiceOptions
+                    .filter(voice => voice.voiceURI !== jamiePremiumSpeechVoice?.voiceURI)
+                    .map(voice => (
                     <option key={voice.voiceURI} value={voice.voiceURI}>
                       {voice.name} · {voice.lang}
                     </option>
                   ))}
                 </select>
                 <p className="text-[11px] text-slate-500 mt-1">
-                  {speechVoices.length > 0
-                    ? `${speechVoices.length} ${speechVoices.length === 1 ? 'voice' : 'voices'} reported by this device. Enhanced and Premium voices sound markedly better than the compact ones.`
+                  {speechVoiceOptions.length > 0
+                    ? `${speechVoiceOptions.length} ${speechVoiceOptions.length === 1 ? 'voice' : 'voices'} available on this device. Enhanced and Premium voices sound markedly better than the compact ones.`
                     : 'This device has not reported its voices yet — start Read aloud once and they appear here.'}
+                </p>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Jamie (Premium) is the default. If this browser does not expose that voice, Read aloud
+                  leaves voice selection to the device and its Spoken Content settings.
                 </p>
               </div>
 
