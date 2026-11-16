@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Generated review screenshots and artifacts
+artifacts/
+
+# Server-side usage tally written at runtime
+usage-stats.json

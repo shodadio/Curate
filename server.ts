@@ -6,14 +6,426 @@ import dns from 'dns';
 import http from 'http';
 import https from 'https';
 import net from 'net';
+import path from 'path';
+import fs from 'fs';
 
 dotenv.config();
 
 // Outbound fetch hardening: only public http(s) hosts, re-checked on every redirect hop
 const MAX_REDIRECTS = 4;
-const MAX_PAGE_BYTES = 2 * 1024 * 1024;
+const MAX_PAGE_BYTES = 8 * 1024 * 1024;
 
 class BlockedUrlError extends Error {}
+
+interface ProviderRequestConfig {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+}
+
+function providerEndpoint(baseUrl: string, route: string): string {
+  const url = new URL(baseUrl.trim());
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+    throw new Error('Provider base URL must be an HTTPS URL without credentials, query parameters, or a fragment.');
+  }
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/${route}`;
+  return url.toString();
+}
+
+async function postProviderJson(targetUrl: string, headers: Record<string, string>, body: unknown): Promise<any> {
+  const url = await assertPublicHttpUrl(targetUrl);
+  if (url.protocol !== 'https:') throw new Error('AI provider endpoints must use HTTPS.');
+
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      protocol: url.protocol,
+      hostname: url.hostname.replace(/^\[|\]$/g, ''),
+      port: url.port || 443,
+      path: `${url.pathname}${url.search}`,
+      method: 'POST',
+      lookup: guardedLookup as unknown as net.LookupFunction,
+      headers: { 'Content-Type': 'application/json', ...headers },
+    }, (res) => {
+      const status = res.statusCode || 0;
+      let text = '';
+      let size = 0;
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => {
+        size += Buffer.byteLength(chunk);
+        if (size > 2 * 1024 * 1024) {
+          res.destroy(new Error('AI provider response exceeded the 2 MB limit.'));
+          return;
+        }
+        text += chunk;
+      });
+      res.on('end', () => {
+        if (status < 200 || status >= 300) {
+          reject(new Error(`AI provider error: ${status} ${text.slice(0, 1000)}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(text));
+        } catch {
+          reject(new Error('AI provider returned invalid JSON.'));
+        }
+      });
+      res.on('error', reject);
+    });
+
+    req.setTimeout(30000, () => req.destroy(new Error('AI provider request timed out.')));
+    req.on('error', reject);
+    req.end(JSON.stringify(body));
+  });
+}
+
+function parseModelJson(text: string): any {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced ? fenced[1] : text).trim();
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    const array = candidate.match(/\[[\s\S]*\]/);
+    const object = candidate.match(/\{[\s\S]*\}/);
+    const recovered = array?.[0] || object?.[0];
+    if (recovered) return JSON.parse(recovered);
+    throw new Error('AI provider did not return valid JSON.');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Provider-agnostic semantic engine.
+// Runs on the feed text itself with no API key, so votes always change ranking.
+// Provider embeddings, when configured, are blended on top of these scores.
+// ---------------------------------------------------------------------------
+
+interface SemanticVoteExample {
+  id: string;
+  vote: 'like' | 'dislike';
+  title: string;
+  text: string;
+  timestamp: number;
+  source?: string;
+  folder?: string;
+}
+
+interface SemanticCandidate {
+  id: string;
+  title?: string;
+  summary?: string;
+  fullText?: string;
+  folder?: string;
+  categories?: string[];
+  source?: string;
+}
+
+const SEMANTIC_STOPWORDS = new Set(
+  (`a about above after again against all also although am an and any are as at be because been before being below
+   between both but by can could did do does doing down during each either few first for from further had has have
+   having he her here hers herself him himself his how i if in into is it its itself just like made make many may me
+   might more most much must my myself new no nor not now of off often on once one only or other our ours ourselves
+   out over own same she should since so some such than that the their theirs them themselves then there these they
+   this those through thus to too under until up upon very was we were what when where whether which while who whom
+   why will with within without would you your yours yourself yourselves`).split(/\s+/)
+);
+
+const semanticTokens = (text: string): string[] => {
+  const stripped = (text || '')
+    .replace(/<[^>]*>/g, ' ')
+    .toLowerCase();
+  const raw = stripped.match(/[a-z][a-z'-]{2,}/g) || [];
+  const tokens: string[] = [];
+  for (const token of raw) {
+    if (SEMANTIC_STOPWORDS.has(token)) continue;
+    tokens.push(token.length > 4 && token.endsWith('s') ? token.slice(0, -1) : token);
+  }
+  return tokens;
+};
+
+const semanticTermCounts = (text: string): Map<string, number> => {
+  const tokens = semanticTokens(text);
+  const counts = new Map<string, number>();
+  const bump = (term: string, amount: number) => {
+    if (!term) return;
+    counts.set(term, (counts.get(term) || 0) + amount);
+  };
+  tokens.forEach((token, index) => {
+    bump(token, 1);
+    const next = tokens[index + 1];
+    if (next) bump(`${token}_${next}`, 0.5);
+  });
+  return counts;
+};
+
+const composeSemanticText = (item: SemanticCandidate): string => {
+  const title = item.title || '';
+  const folder = item.folder || '';
+  const categories = Array.isArray(item.categories) ? item.categories.join('. ') : '';
+  const summary = item.summary || '';
+  const full = String(item.fullText || '').slice(0, 1800);
+  return `${title}. ${title}. ${title}. ${folder}. ${folder}. ${categories}. ${categories}. ${summary}. ${summary}. ${full}`;
+};
+
+const buildSemanticVectors = (documents: string[]): Array<Map<string, number>> => {
+  const counts = documents.map(semanticTermCounts);
+  const documentFrequency = new Map<string, number>();
+  counts.forEach(terms => {
+    terms.forEach((_value, term) => {
+      documentFrequency.set(term, (documentFrequency.get(term) || 0) + 1);
+    });
+  });
+  const total = Math.max(1, documents.length);
+
+  return counts.map(terms => {
+    const vector = new Map<string, number>();
+    let magnitude = 0;
+    terms.forEach((value, term) => {
+      const frequency = documentFrequency.get(term) || 1;
+      const weight = value * Math.log(1 + total / frequency);
+      if (weight <= 0) return;
+      vector.set(term, weight);
+      magnitude += weight * weight;
+    });
+    const norm = Math.sqrt(magnitude);
+    if (norm > 0) {
+      vector.forEach((value, term) => vector.set(term, value / norm));
+    }
+    return vector;
+  });
+};
+
+const sparseCosine = (left: Map<string, number>, right: Map<string, number>): number => {
+  if (left.size === 0 || right.size === 0) return 0;
+  const [small, large] = left.size <= right.size ? [left, right] : [right, left];
+  let dot = 0;
+  small.forEach((value, term) => {
+    const other = large.get(term);
+    if (other) dot += value * other;
+  });
+  return dot;
+};
+
+const buildSparseCentroid = (
+  vote: 'like' | 'dislike',
+  examples: SemanticVoteExample[],
+  vectors: Array<Map<string, number> | null>,
+): Map<string, number> | null => {
+  const halfLifeMs = 60 * 24 * 60 * 60 * 1000;
+  const centroid = new Map<string, number>();
+  let totalWeight = 0;
+
+  examples.forEach((example, index) => {
+    if (example.vote !== vote) return;
+    const vector = vectors[index];
+    if (!vector) return;
+    const ageMs = Math.max(0, Date.now() - example.timestamp);
+    const weight = Math.pow(0.5, ageMs / halfLifeMs);
+    vector.forEach((value, term) => centroid.set(term, (centroid.get(term) || 0) + value * weight));
+    totalWeight += weight;
+  });
+
+  if (totalWeight === 0 || centroid.size === 0) return null;
+  let magnitude = 0;
+  centroid.forEach(value => { magnitude += value * value; });
+  if (magnitude <= 0) return null;
+  const norm = Math.sqrt(magnitude);
+  centroid.forEach((value, term) => centroid.set(term, value / norm));
+  return centroid;
+};
+
+const localSemanticScores = (
+  feedback: SemanticVoteExample[],
+  candidates: SemanticCandidate[],
+): Map<string, number> => {
+  const scores = new Map<string, number>();
+  if (feedback.length === 0 || candidates.length === 0) return scores;
+
+  const candidateTexts = candidates.map(composeSemanticText);
+  const feedbackTexts = feedback.map(entry => `${entry.title}. ${entry.title}. ${entry.title}. ${entry.text}`);
+  const vectors = buildSemanticVectors([...candidateTexts, ...feedbackTexts]);
+  const feedbackVectors = vectors.slice(candidates.length);
+
+  const positive = buildSparseCentroid('like', feedback, feedbackVectors);
+  const negative = buildSparseCentroid('dislike', feedback, feedbackVectors);
+  if (!positive && !negative) return scores;
+
+  vectors.slice(0, candidates.length).forEach((vector, index) => {
+    const candidate = candidates[index];
+    if (!candidate || !candidate.id) return;
+    const positiveSimilarity = positive ? sparseCosine(vector, positive) : 0;
+    const negativeSimilarity = negative ? sparseCosine(vector, negative) : 0;
+    const score = positive && negative
+      ? (positiveSimilarity - negativeSimilarity) / 2
+      : positive
+        ? positiveSimilarity
+        : -negativeSimilarity;
+    if (Number.isFinite(score)) scores.set(candidate.id, score);
+  });
+
+  return scores;
+};
+
+// Recency from the feed's own publication date, falling back to a neutral value.
+const recencyWeight = (item: { publishedAtMs?: number }): number => {
+  const published = Number(item?.publishedAtMs);
+  if (!Number.isFinite(published) || published <= 0) return 0.45;
+  const ageDays = Math.max(0, (Date.now() - published) / (24 * 60 * 60 * 1000));
+  return Math.exp(-ageDays / 5);
+};
+
+// How fresh an article is, in words, for the editorial "why" line.
+const recencyPhrase = (item: { publishedAtMs?: number }): string => {
+  const published = Number(item?.publishedAtMs);
+  if (!Number.isFinite(published) || published <= 0) return '';
+  const ageHours = Math.max(0, (Date.now() - published) / (60 * 60 * 1000));
+  if (ageHours <= 24) return 'today';
+  if (ageHours <= 96) return 'this week';
+  if (ageHours <= 24 * 21) return 'this month';
+  return '';
+};
+
+// A distinct, specific "why" per card: reason first, then a rotating phrasing so a digest
+// drawn from one dominant feed does not repeat the same sentence on every card.
+const buildWhyLine = (
+  item: any,
+  index: number,
+  context: { liked: boolean; interest?: string; semanticScore: number },
+): string => {
+  const source = String(item.source || 'your feeds').trim();
+  const folder = String(item.folder || '').trim();
+  const ageLabel = recencyPhrase(item);
+
+  if (context.liked) {
+    return `Selected for your reading interest in ${folder || source}.`;
+  }
+  if (context.interest) {
+    return `Selected because you asked for more of ${context.interest}.`;
+  }
+  if (context.semanticScore > 0.28) {
+    return 'A close match to the pieces you have been upvoting.';
+  }
+  if (context.semanticScore > 0.12) {
+    return 'Shares the shape of articles you liked lately.';
+  }
+
+  const variants = folder
+    ? [
+        `New ${ageLabel || 'recently'} from ${source} · ${folder}.`,
+        `${folder} from ${source}, not yet on your shelf.`,
+        `From ${source}, filed under ${folder} — new to you.`,
+        `${source} on ${folder} — a fresh corner of your library.`,
+      ]
+    : [
+        `New ${ageLabel || 'recently'} from ${source}.`,
+        `From ${source}, not yet on your shelf.`,
+        `Fresh from ${source}, outside your last digest.`,
+        `${source} — new to this digest.`,
+      ];
+
+  return variants[index % variants.length];
+};
+
+// Stable per-seed tie-breaker so a refresh reshuffles ties without shuffling mid-read.
+const stableJitter = (seed: string, id: string): number => {
+  let hash = 2166136261;
+  const input = `${seed}|${id}`;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 1000) / 1000;
+};
+
+// Greedy selection that avoids one prolific feed taking over the whole digest.
+const selectDiverse = (
+  ranked: any[],
+  count: number,
+  maxPerSource: number,
+  priority: any[] = [],
+): any[] => {
+  if (count <= 0) return [];
+  const chosen: any[] = [];
+  const usedIds = new Set<string>();
+  const perSource = new Map<string, number>();
+
+  const add = (item: any, enforceCap: boolean) => {
+    if (chosen.length >= count || !item || !item.id || usedIds.has(item.id)) return;
+    const key = item.source || 'Unknown';
+    if (enforceCap && (perSource.get(key) || 0) >= maxPerSource) return;
+    usedIds.add(item.id);
+    perSource.set(key, (perSource.get(key) || 0) + 1);
+    chosen.push(item);
+  };
+
+  priority.forEach(item => add(item, true));
+  ranked.forEach(item => add(item, true));
+  if (chosen.length < count) ranked.forEach(item => add(item, false));
+  return chosen.slice(0, count);
+};
+
+// The reply text of an OpenAI-style chat completion, whether the provider returns a
+// plain string or an array of content parts.
+const readOpenAIChatText = (data: any): string => {
+  const content = data?.choices?.[0]?.message?.content;
+  return typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content.map((part: any) => typeof part?.text === 'string' ? part.text : '').join('')
+      : '';
+};
+
+async function callOpenAICompatible(config: ProviderRequestConfig, prompt: string): Promise<any> {
+  const data = await postProviderJson(
+    providerEndpoint(config.baseUrl, 'chat/completions'),
+    { Authorization: `Bearer ${config.apiKey}` },
+    { model: config.model, messages: [{ role: 'user', content: prompt }], max_tokens: 4096 },
+  );
+  recordModelUsage({
+    input: data?.usage?.prompt_tokens,
+    cachedInput: data?.usage?.prompt_tokens_details?.cached_tokens,
+    output: data?.usage?.completion_tokens,
+  });
+  const text = readOpenAIChatText(data);
+  if (!text) throw new Error('AI provider returned no message content.');
+  return parseModelJson(text);
+}
+
+async function postAnthropicMessage(
+  apiKey: string,
+  prompt: string,
+  model: string,
+  maxTokens: number,
+): Promise<string> {
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      messages: [{ role: 'user', content: prompt }]
+    })
+  });
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`Anthropic API error: ${resp.status} ${errText}`);
+  }
+  const data = await resp.json();
+  recordModelUsage({
+    input: data?.usage?.input_tokens,
+    cachedInput: data?.usage?.cache_read_input_tokens,
+    output: data?.usage?.output_tokens,
+  });
+  const text = data.content?.[0]?.text;
+  if (typeof text !== 'string') throw new Error('Anthropic returned no message content.');
+  return text;
+}
+
+async function callAnthropic(apiKey: string, prompt: string, model: string): Promise<any> {
+  return parseModelJson(await postAnthropicMessage(apiKey, prompt, model, 4096));
+}
 
 const BLOCKED_HOSTNAMES = new Set(['localhost', 'metadata.google.internal']);
 const BLOCKED_HOST_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa'];
@@ -112,7 +524,140 @@ interface PageResponse {
   text: string;
 }
 
+// ---------------------------------------------------------------------------
+// Usage tally
+// What the app actually asks of the network, counted where it happens: every
+// outbound HTTP request, every feed fetch, every AI call and its tokens. Daily
+// buckets are kept for four months so Settings can show day/week/month totals.
+// ---------------------------------------------------------------------------
+
+const USD_PER_GBP = 1.32; // £1 = $1.32
+// Published per-1M-token rates, off-peak; peak windows double them.
+const TOKEN_RATES = { inputMiss: 0.15, inputHit: 0.003, output: 0.6 };
+const PEAK_WINDOWS_UTC: Array<[number, number]> = [[1, 4], [6, 10]];
+const USAGE_RETENTION_DAYS = 120;
+
+interface UsageBucket {
+  date: string;
+  apiCalls: number;
+  outboundRequests: number;
+  feedFetches: number;
+  aiCalls: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  usd: number;
+}
+
+const emptyUsageBucket = (date: string): UsageBucket => ({
+  date,
+  apiCalls: 0,
+  outboundRequests: 0,
+  feedFetches: 0,
+  aiCalls: 0,
+  inputTokens: 0,
+  cachedInputTokens: 0,
+  outputTokens: 0,
+  usd: 0,
+});
+
+const usageBuckets = new Map<string, UsageBucket>();
+const USAGE_FILE = path.join(process.cwd(), 'usage-stats.json');
+let usageSaveTimer: NodeJS.Timeout | null = null;
+
+const utcDay = (at: number = Date.now()): string => new Date(at).toISOString().slice(0, 10);
+
+const loadUsage = () => {
+  try {
+    if (!fs.existsSync(USAGE_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(USAGE_FILE, 'utf8'));
+    if (!Array.isArray(raw?.days)) return;
+    raw.days.forEach((entry: any) => {
+      if (entry && typeof entry.date === 'string') {
+        usageBuckets.set(entry.date, { ...emptyUsageBucket(entry.date), ...entry });
+      }
+    });
+  } catch { /* a corrupt file just means a fresh tally */ }
+};
+
+const saveUsage = () => {
+  try {
+    const oldest = utcDay(Date.now() - USAGE_RETENTION_DAYS * 86400000);
+    [...usageBuckets.keys()].forEach(date => {
+      if (date < oldest) usageBuckets.delete(date);
+    });
+    const days = [...usageBuckets.values()].sort((a, b) => a.date.localeCompare(b.date));
+    fs.writeFileSync(USAGE_FILE, JSON.stringify({ days }));
+  } catch { /* tally is best-effort, never break a request over it */ }
+};
+
+// Batched write so a burst of feed fetches does not hit the disk per request
+const scheduleUsageSave = () => {
+  if (usageSaveTimer) return;
+  usageSaveTimer = setTimeout(() => {
+    usageSaveTimer = null;
+    saveUsage();
+  }, 4000);
+};
+
+const currentUsageBucket = (date: string = utcDay()): UsageBucket => {
+  let bucket = usageBuckets.get(date);
+  if (!bucket) {
+    bucket = emptyUsageBucket(date);
+    usageBuckets.set(date, bucket);
+  }
+  return bucket;
+};
+
+const usageDelta = (patch: Partial<Omit<UsageBucket, 'date'>>) => {
+  const bucket = currentUsageBucket();
+  (Object.keys(patch) as Array<keyof Omit<UsageBucket, 'date'>>).forEach(key => {
+    const value = patch[key];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      (bucket as any)[key] += value;
+    }
+  });
+  scheduleUsageSave();
+};
+
+// Mon–Fri 01:00–04:00 and 06:00–10:00 UTC are the provider's peak windows
+const isPeakPricing = (at: number = Date.now()): boolean => {
+  const date = new Date(at);
+  const day = date.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const hour = date.getUTCHours();
+  return PEAK_WINDOWS_UTC.some(([start, end]) => hour >= start && hour < end);
+};
+
+// One AI call plus whatever token counts the provider reported for it
+const recordModelUsage = (usage: { input?: number; cachedInput?: number; output?: number } | null | undefined) => {
+  const input = Math.max(0, Number(usage?.input) || 0);
+  const cachedInput = Math.min(input, Math.max(0, Number(usage?.cachedInput) || 0));
+  const output = Math.max(0, Number(usage?.output) || 0);
+  const multiplier = isPeakPricing() ? 2 : 1;
+  const usd = (
+    (input - cachedInput) * TOKEN_RATES.inputMiss +
+    cachedInput * TOKEN_RATES.inputHit +
+    output * TOKEN_RATES.output
+  ) / 1_000_000 * multiplier;
+
+  usageDelta({ aiCalls: 1, inputTokens: input, cachedInputTokens: cachedInput, outputTokens: output, usd });
+};
+
+// Gemini reports usage in its own shape
+const recordGeminiUsage = (response: any) => {
+  const meta = response?.usageMetadata;
+  recordModelUsage({
+    input: meta?.promptTokenCount,
+    cachedInput: meta?.cachedContentTokenCount,
+    output: meta?.candidatesTokenCount,
+  });
+};
+
+loadUsage();
+
 function requestOnce(url: URL, timeoutMs: number): Promise<{ redirectTo?: string; page?: PageResponse }> {
+  usageDelta({ outboundRequests: 1 });
   return new Promise((resolve, reject) => {
     const isHttps = url.protocol === 'https:';
     const requester = isHttps ? https.request : http.request;
@@ -180,7 +725,12 @@ async function fetchPublicPage(targetUrl: string, timeoutMs = 4500): Promise<Pag
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '25mb' }));
+  // Count the calls the app makes into its own server (the usage route excludes itself)
+  app.use('/api', (req, _res, next) => {
+    if (!req.path.startsWith('/usage')) usageDelta({ apiCalls: 1 });
+    next();
+  });
 
   const PORT = process.env.PORT || 3000;
 
@@ -196,8 +746,258 @@ async function startServer() {
         },
       })
     : null;
+  const semanticEmbeddingCache = new Map<string, number[]>();
+  const vectorSimilarity = (left: number[], right: number[]): number => {
+    if (left.length !== right.length || left.length === 0) return 0;
+    return left.reduce((sum, value, index) => sum + value * right[index], 0);
+  };
+  const buildFeedbackCentroid = (
+    vote: 'like' | 'dislike',
+    examples: Array<{ vote: 'like' | 'dislike'; timestamp: number }>,
+    embeddings: Array<number[] | null>,
+  ): number[] | null => {
+    let centroid: number[] = [];
+    let totalWeight = 0;
+    const halfLifeMs = 90 * 24 * 60 * 60 * 1000;
+
+    examples.forEach((example, index) => {
+      const vector = embeddings[index];
+      if (example.vote !== vote || !vector) return;
+      if (centroid.length === 0) centroid = Array(vector.length).fill(0);
+      if (centroid.length !== vector.length) return;
+      const ageMs = Math.max(0, Date.now() - example.timestamp);
+      const weight = Math.pow(0.5, ageMs / halfLifeMs);
+      vector.forEach((value, dimension) => {
+        centroid[dimension] += value * weight;
+      });
+      totalWeight += weight;
+    });
+
+    if (totalWeight === 0) return null;
+    const magnitude = Math.sqrt(centroid.reduce((sum, value) => sum + value * value, 0));
+    return magnitude > 0 ? centroid.map(value => value / magnitude) : null;
+  };
+
+  const embedSemanticTexts = async (
+    texts: string[],
+    config: { provider: string; apiKey: string; baseUrl: string; model: string },
+  ): Promise<Array<number[] | null>> => {
+    const results: Array<number[] | null> = Array(texts.length).fill(null);
+    const provider = config.provider;
+    if (provider === 'none' || texts.length === 0) return results;
+
+    const apiKey = config.apiKey || (provider === 'gemini' ? process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '' : '');
+    const model = config.model.trim() || (provider === 'gemini' ? 'gemini-embedding-001' : 'text-embedding-3-small');
+    const baseUrl = config.baseUrl.trim();
+    if (!apiKey || (provider === 'openai-compatible' && !baseUrl)) return results;
+    if (provider !== 'openai-compatible' && provider !== 'gemini') return results;
+
+    const cachePrefix = `${provider}|${baseUrl}|${model}|`;
+    const pending: Array<{ index: number; text: string; cacheKey: string }> = [];
+    texts.forEach((text, index) => {
+      const cacheKey = `${cachePrefix}${text}`;
+      const cached = semanticEmbeddingCache.get(cacheKey);
+      if (cached) results[index] = cached;
+      else pending.push({ index, text, cacheKey });
+    });
+
+    const gemini = provider === 'gemini'
+      ? new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+      : null;
+
+    for (let start = 0; start < pending.length; start += 50) {
+      const batch = pending.slice(start, start + 50);
+      let vectors: any[] = [];
+      if (provider === 'gemini' && gemini) {
+        const response = await gemini.models.embedContent({
+          model,
+          contents: batch.map(item => item.text),
+          config: { taskType: 'SEMANTIC_SIMILARITY', outputDimensionality: 768 },
+        });
+        recordGeminiUsage(response);
+        vectors = (response.embeddings || []).map(item => item?.values);
+      } else {
+        const response = await postProviderJson(
+          providerEndpoint(baseUrl, 'embeddings'),
+          { Authorization: `Bearer ${apiKey}` },
+          { model, input: batch.map(item => item.text) },
+        );
+        recordModelUsage({ input: response?.usage?.prompt_tokens, output: 0 });
+        vectors = Array.isArray(response.data)
+          ? [...response.data].sort((a: any, b: any) => (a.index || 0) - (b.index || 0)).map((item: any) => item.embedding)
+          : [];
+      }
+
+      batch.forEach((item, index) => {
+        const values = vectors[index];
+        if (!Array.isArray(values) || values.length === 0) return;
+        const rawVector = values.map(Number);
+        if (rawVector.some(value => !Number.isFinite(value))) return;
+        const magnitude = Math.sqrt(rawVector.reduce((sum, value) => sum + value * value, 0));
+        if (magnitude === 0) return;
+        const vector = rawVector.map(value => value / magnitude);
+        results[item.index] = vector;
+        if (semanticEmbeddingCache.size >= 1000) {
+          const oldestKey = semanticEmbeddingCache.keys().next().value;
+          if (oldestKey) semanticEmbeddingCache.delete(oldestKey);
+        }
+        semanticEmbeddingCache.set(item.cacheKey, vector);
+      });
+    }
+
+    return results;
+  };
+
+  // Lightweight liveness check used at app startup before provider requests are attempted.
+  app.get('/api/health', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ok: true, service: 'curator' });
+  });
 
   // API Routes
+  app.get('/api/usage', (_req, res) => {
+    const today = utcDay();
+    const sumOver = (days: number): UsageBucket => {
+      const from = utcDay(Date.now() - (days - 1) * 86400000);
+      const total = emptyUsageBucket(`${from}..${today}`);
+      usageBuckets.forEach(bucket => {
+        if (bucket.date < from || bucket.date > today) return;
+        total.apiCalls += bucket.apiCalls;
+        total.outboundRequests += bucket.outboundRequests;
+        total.feedFetches += bucket.feedFetches;
+        total.aiCalls += bucket.aiCalls;
+        total.inputTokens += bucket.inputTokens;
+        total.cachedInputTokens += bucket.cachedInputTokens;
+        total.outputTokens += bucket.outputTokens;
+        total.usd += bucket.usd;
+      });
+      return total;
+    };
+    const withPounds = (bucket: UsageBucket) => ({ ...bucket, gbp: bucket.usd / USD_PER_GBP });
+    const monthStart = utcDay(Date.now() - 29 * 86400000);
+
+    res.json({
+      today: withPounds(sumOver(1)),
+      week: withPounds(sumOver(7)),
+      month: withPounds(sumOver(30)),
+      days: [...usageBuckets.values()]
+        .filter(bucket => bucket.date >= monthStart)
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .map(withPounds),
+      usdPerGbp: USD_PER_GBP,
+      peakNow: isPeakPricing(),
+      rates: TOKEN_RATES,
+      retentionDays: USAGE_RETENTION_DAYS,
+    });
+  });
+
+  app.get('/api/semantic-status', (_req, res) => {
+    res.json({
+      geminiConfigured: Boolean(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY),
+      localEngine: true,
+    });
+  });
+
+  // "Test API": one minimal request with the settings shown in the app, so a wrong key,
+  // URL or model surfaces in Settings instead of silently falling back during a digest.
+  app.post('/api/test-provider', async (req, res) => {
+    const started = Date.now();
+    const kind = req.body?.kind === 'embedding' ? 'embedding' : 'chat';
+    const provider = String(req.body?.provider || '').trim();
+    const apiKey = String(req.body?.apiKey || '').trim();
+    const baseUrl = String(req.body?.baseUrl || '').trim();
+    const requestedModel = String(req.body?.model || '').trim();
+    const pingPrompt = 'Reply with the single word: pong';
+
+    try {
+      if (kind === 'chat') {
+        if (provider === 'deterministic') {
+          return res.json({ ok: true, provider, model: 'built-in', latencyMs: 0, reply: 'Built-in engine — nothing to reach.' });
+        }
+
+        if (provider === 'openai-compatible') {
+          if (!apiKey) throw new Error('Add a chat API key first.');
+          if (!baseUrl) throw new Error('Add a chat API base URL first.');
+          const model = requestedModel || 'gpt-4o-mini';
+          const data = await postProviderJson(
+            providerEndpoint(baseUrl, 'chat/completions'),
+            { Authorization: `Bearer ${apiKey}` },
+            { model, messages: [{ role: 'user', content: pingPrompt }], max_tokens: 16 },
+          );
+          const reply = readOpenAIChatText(data).trim();
+          if (!reply) throw new Error('The provider answered but returned no text.');
+          return res.json({ ok: true, provider, model, latencyMs: Date.now() - started, reply });
+        }
+
+        if (provider === 'anthropic') {
+          if (!apiKey) throw new Error('Add an Anthropic API key first.');
+          const model = requestedModel || 'claude-3-5-sonnet-20241022';
+          const reply = (await postAnthropicMessage(apiKey, pingPrompt, model, 16)).trim();
+          return res.json({ ok: true, provider, model, latencyMs: Date.now() - started, reply });
+        }
+
+        if (provider === 'gemini') {
+          const gemini = apiKey
+            ? new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+            : ai;
+          if (!gemini) throw new Error('Add a Gemini key here or set GEMINI_API_KEY on the server.');
+          const model = requestedModel || 'gemini-2.5-flash';
+          const response = await gemini.models.generateContent({
+            model,
+            contents: pingPrompt,
+            config: { maxOutputTokens: 16 },
+          });
+          recordGeminiUsage(response);
+          const reply = String(response.text || '').trim();
+          if (!reply) throw new Error('Gemini answered but returned no text.');
+          return res.json({ ok: true, provider, model, latencyMs: Date.now() - started, reply });
+        }
+
+        throw new Error(`Unknown provider “${provider}”.`);
+      }
+
+      // Embeddings ping: verifies the key, endpoint and model, and reports vector width.
+      if (provider === 'none') {
+        return res.json({ ok: true, provider, model: 'built-in', latencyMs: 0 });
+      }
+      if (provider !== 'openai-compatible' && provider !== 'gemini') {
+        throw new Error(`Unknown embeddings provider “${provider}”.`);
+      }
+      if (provider === 'gemini' && !apiKey && !ai) {
+        throw new Error('Add a Gemini key here or set GEMINI_API_KEY on the server.');
+      }
+      if (provider === 'openai-compatible') {
+        if (!apiKey) throw new Error('Add an embeddings API key, or reuse the chat key, first.');
+        if (!baseUrl) throw new Error('Add an embeddings API base URL first.');
+      }
+
+      const vectors = await embedSemanticTexts(['Curator ping'], {
+        provider,
+        apiKey,
+        baseUrl,
+        model: requestedModel,
+      });
+      const vector = vectors[0];
+      if (!vector || vector.length === 0) {
+        throw new Error('No embedding came back — check the key, base URL and model.');
+      }
+
+      return res.json({
+        ok: true,
+        provider,
+        model: requestedModel || (provider === 'gemini' ? 'gemini-embedding-001' : 'text-embedding-3-small'),
+        latencyMs: Date.now() - started,
+        dimensions: vector.length,
+      });
+    } catch (err: any) {
+      return res.json({
+        ok: false,
+        error: err?.message || 'The test request failed.',
+        latencyMs: Date.now() - started,
+      });
+    }
+  });
+
   // OPML Parser endpoint
   app.post('/api/parse-opml', (req, res) => {
     try {
@@ -208,6 +1008,15 @@ async function startServer() {
 
       const decodeXml = (str: string) =>
         str
+          .replace(/&#(x[0-9a-f]+|[0-9]+);/gi, (entity, value: string) => {
+            const codePoint = value[0].toLowerCase() === 'x'
+              ? parseInt(value.slice(1), 16)
+              : parseInt(value, 10);
+            return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff &&
+              !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+              ? String.fromCodePoint(codePoint)
+              : entity;
+          })
           .replace(/&amp;/g, '&')
           .replace(/&lt;/g, '<')
           .replace(/&gt;/g, '>')
@@ -227,23 +1036,72 @@ async function startServer() {
         title: string;
         feedUrl: string;
         folder: string;
+        categories: string[];
         status: 'active' | 'failing';
         failingReason?: string;
       }> = [];
       const failures: Array<{ title: string; reason: string }> = [];
       const seenUrls = new Set<string>();
 
-      // Tokenize all <outline ...> opening/self-closing tags and </outline> closing tags
-      const tagRegex = /<\/outline\s*>|<outline\b[^>]*\/?>/gi;
+      // Scan outline tags without treating a '>' inside a quoted attribute as the end of a tag.
+      const outlineTags: string[] = [];
+      let cursor = 0;
+      while ((cursor = opmlText.indexOf('<', cursor)) !== -1) {
+        if (opmlText.startsWith('<!--', cursor)) {
+          const commentEnd = opmlText.indexOf('-->', cursor + 4);
+          cursor = commentEnd === -1 ? opmlText.length : commentEnd + 3;
+          continue;
+        }
+        if (opmlText.startsWith('<![CDATA[', cursor)) {
+          const cdataEnd = opmlText.indexOf(']]>', cursor + 9);
+          cursor = cdataEnd === -1 ? opmlText.length : cdataEnd + 3;
+          continue;
+        }
+        if (opmlText.startsWith('<!', cursor) || opmlText.startsWith('<?', cursor)) {
+          const declarationEnd = opmlText.indexOf('>', cursor + 2);
+          cursor = declarationEnd === -1 ? opmlText.length : declarationEnd + 1;
+          continue;
+        }
+
+        const remainder = opmlText.slice(cursor);
+        const closingTag = remainder.match(/^<\/(?:[\w.-]+:)?outline\s*>/i);
+        if (closingTag) {
+          outlineTags.push(closingTag[0]);
+          cursor += closingTag[0].length;
+          continue;
+        }
+
+        const openingTag = remainder.match(/^<(?:[\w.-]+:)?outline(?=[\s/>])/i);
+        if (!openingTag) {
+          cursor += 1;
+          continue;
+        }
+
+        let end = cursor + openingTag[0].length;
+        let quote: string | null = null;
+        for (; end < opmlText.length; end += 1) {
+          const char = opmlText[end];
+          if (quote) {
+            if (char === quote) quote = null;
+          } else if (char === '"' || char === "'") {
+            quote = char;
+          } else if (char === '>') {
+            break;
+          }
+        }
+        if (end >= opmlText.length) break;
+
+        outlineTags.push(opmlText.slice(cursor, end + 1));
+        cursor = end + 1;
+      }
+
       const folderStack: string[] = [];
-      let match: RegExpExecArray | null;
       let foundAnyOutline = false;
 
-      while ((match = tagRegex.exec(opmlText)) !== null) {
-        const tag = match[0];
+      for (const tag of outlineTags) {
         foundAnyOutline = true;
 
-        if (/^<\/outline/i.test(tag)) {
+        if (/^<\/(?:[\w.-]+:)?outline/i.test(tag)) {
           if (folderStack.length > 0) {
             folderStack.pop();
           }
@@ -254,6 +1112,21 @@ async function startServer() {
         const xmlUrl = getAttr(tag, 'xmlUrl');
         const title = getAttr(tag, 'title') || getAttr(tag, 'text') || '';
         const categoryAttr = getAttr(tag, 'category');
+        const curatorCategoriesAttr = getAttr(tag, 'curatorCategories');
+        let curatorCategories: string[] | undefined;
+        if (curatorCategoriesAttr !== undefined) {
+          try {
+            const parsedCategories = JSON.parse(curatorCategoriesAttr);
+            if (Array.isArray(parsedCategories)) {
+              curatorCategories = parsedCategories
+                .filter((value: any) => typeof value === 'string')
+                .map((value: string) => value.replace(/\s+/g, ' ').trim().slice(0, 40))
+                .filter((value: string, index: number, values: string[]) => value && values.findIndex(other => other.toLowerCase() === value.toLowerCase()) === index);
+            }
+          } catch {
+            // Ignore invalid Curator metadata and use the ordinary OPML category below.
+          }
+        }
         const typeAttr = getAttr(tag, 'type');
 
         if (xmlUrl !== undefined) {
@@ -288,6 +1161,7 @@ async function startServer() {
               title: cleanTitle,
               feedUrl: xmlUrl,
               folder,
+              categories: curatorCategories ?? [folder],
               status: 'failing',
               failingReason: 'Invalid feed URL format',
             });
@@ -298,6 +1172,7 @@ async function startServer() {
               title: cleanTitle,
               feedUrl: xmlUrl,
               folder,
+              categories: curatorCategories ?? [folder],
               status: 'active',
             });
           }
@@ -340,10 +1215,547 @@ async function startServer() {
     }
   });
 
-  // Curate daily digest using Gemini
+  // In-memory feed cache with 5-minute TTL to keep requests snappy
+  interface FeedCacheEntry {
+    timestamp: number;
+    items: any[];
+  }
+  const feedCache = new Map<string, FeedCacheEntry>();
+  const FEED_CACHE_TTL = 5 * 60 * 1000;
+  const normalizeFeedCategories = (raw: unknown, folder: string): string[] => {
+    const labels = Array.isArray(raw) ? raw : [];
+    const seen = new Set<string>();
+    const categories: string[] = [];
+    for (const value of labels) {
+      if (typeof value !== 'string') continue;
+      const label = value.replace(/\s+/g, ' ').trim().slice(0, 40);
+      const key = label.toLowerCase();
+      if (!label || seen.has(key)) continue;
+      seen.add(key);
+      categories.push(label);
+    }
+    return Array.isArray(raw) ? categories : [folder || 'General'];
+  };
+
+  const DEFAULT_FEEDS = [
+    { title: 'Marginal Revolution', feedUrl: 'https://marginalrevolution.com/feed', folder: 'Economics' },
+    { title: 'Dan Luu', feedUrl: 'https://danluu.com/atom.xml', folder: 'Tech & Engineering' },
+    { title: 'Simon Willison', feedUrl: 'https://simonwillison.net/atom/entries/', folder: 'Software & AI' },
+    { title: 'Ars Technica', feedUrl: 'https://feeds.arstechnica.com/arstechnica/index', folder: 'Tech & Policy' },
+    { title: 'Stratechery', feedUrl: 'https://stratechery.com/feed/', folder: 'Tech & Strategy' },
+    { title: 'A List Apart', feedUrl: 'https://alistapart.com/main/feed/', folder: 'Design & Craft' },
+    { title: 'Aeon Magazine', feedUrl: 'https://aeon.co/feed.rss', folder: 'Philosophy & Culture' },
+    { title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech' }
+  ];
+
+  // Feeds mix named and numeric XML entities; anything left undecoded renders as "&amp;#8217;"
+  // style noise in the reader, so decode both, then the literal ampersand last.
+  const decodeEntities = (str: string): string =>
+    str
+      .replace(/&#x([0-9a-f]+);/gi, (entity, hex: string) => {
+        const code = parseInt(hex, 16);
+        return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
+          ? String.fromCodePoint(code)
+          : entity;
+      })
+      .replace(/&#(\d+);/g, (entity, dec: string) => {
+        const code = parseInt(dec, 10);
+        return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
+          ? String.fromCodePoint(code)
+          : entity;
+      })
+      .replace(/&bull;/gi, '•')
+      .replace(/&middot;/gi, '·')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&mdash;/gi, '—')
+      .replace(/&ndash;/gi, '–')
+      .replace(/&hellip;/gi, '…')
+      .replace(/&rsquo;|&lsquo;/gi, '’')
+      .replace(/&rdquo;|&ldquo;/gi, '”')
+      .replace(/&quot;/gi, '"')
+      .replace(/&apos;|&#39;/gi, "'")
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&amp;/gi, '&');
+
+  const cleanHtml = (str: string): string => {
+    if (!str) return '';
+    return decodeEntities(
+      str
+        .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+    )
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/[ \t\u00a0]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  // Paragraph-shaped plain text for the reader: real paragraphs, no stray lines,
+  // no promo/repeated boilerplate, no unicode debris.
+  const htmlToReadableText = (html: string): string => {
+    if (!html) return '';
+
+    const stripped = html
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<figcaption[\s\S]*?<\/figcaption>/gi, '')
+      .replace(/<figure[\s\S]*?<\/figure>/gi, '')
+      .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|h[1-6]|blockquote|section|article)>/gi, '\n\n')
+      .replace(/<li[^>]*>/gi, '\n• ')
+      .replace(/<\/li>/gi, '\n\n')
+      .replace(/<[^>]+>/g, ' ');
+
+    const decoded = decodeEntities(stripped);
+
+    return decoded
+      .replace(/\r\n?/g, '\n')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/ *\n */g, '\n')
+      // Only a word that has run into the next one is repaired here. The old rule also fired
+      // inside decimals, thousands separators and dotted abbreviations ("1.79", "74,000",
+      // "U.S.", "e.g."), which then reached the reader — and the read-aloud voice — in
+      // pieces, because a stray full stop reads as the end of a sentence.
+      .replace(/([a-z])([,;:])(?=[A-Za-z])/g, '$1$2 ')
+      .replace(/([a-z])([.!?])(?=[A-Z][a-z])/g, '$1$2 ')
+      .replace(/\n{3,}/g, '\n\n')
+      .split(/\n{2,}/)
+      .map(paragraph => {
+        let next = paragraph
+          .replace(/\s*\n\s*/g, ' ')
+          .replace(/\s+([,.;:!?])/g, '$1')
+          // Inline tags were stripped to spaces, which leaves "“ defund the police ”"
+          .replace(/([“‘(])\s+/g, '$1')
+          .replace(/\s+([”’)])/g, '$1')
+          .replace(/\s{2,}/g, ' ')
+          .trim();
+        // A stripped inline link can leave a paragraph starting with the punctuation that followed it.
+        if (/^[,;:.]/.test(next)) {
+          next = next.replace(/^[,;:.]+\s*/, '');
+          next = next.charAt(0).toUpperCase() + next.slice(1);
+        }
+        return next;
+      })
+      .filter(paragraph => paragraph.length > 0 && /[\p{L}\p{N}]/u.test(paragraph))
+      .filter(paragraph => !(paragraph.length < 180 && /^(click here|subscribe|sign up|follow me|read more|share this|advertisement)\b/i.test(paragraph)))
+      .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph))
+      .join('\n\n');
+  };
+
+  const formatPublishDate = (dateStr: string): string => {
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr || 'Recently';
+      const now = Date.now();
+      const diffMs = now - d.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMins / 60);
+      const diffDays = Math.floor(diffHours / 24);
+
+      if (diffMins < 60 && diffMins >= 0) {
+        return `Today · ${Math.max(1, diffMins)}m ago`;
+      }
+      if (diffHours < 24 && diffHours >= 0) {
+        return `Today · ${diffHours}h ago`;
+      }
+      if (diffDays === 1) {
+        return 'Yesterday';
+      }
+      if (diffDays < 7 && diffDays > 1) {
+        return `${diffDays} days ago`;
+      }
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    } catch {
+      return 'Recently';
+    }
+  };
+
+  // The publication's own blurb, taken from the feed metadata that is already being
+  // downloaded: RSS <description> inside <channel>, or Atom's feed-level <subtitle>.
+  // Caching it on the source means showing a description costs no extra request.
+  const parseFeedChannelDescription = (xml: string): string => {
+    if (!xml) return '';
+    // Feed metadata sits before the first item, so a post's own <description> can never
+    // be mistaken for the publication's.
+    const beforeFirstItem = xml.split(/<(?:item|entry)\b/i)[0] || '';
+    const candidates = [
+      beforeFirstItem.match(/<description[^>]*>([\s\S]*?)<\/description>/i),
+      beforeFirstItem.match(/<subtitle[^>]*>([\s\S]*?)<\/subtitle>/i),
+      beforeFirstItem.match(/<itunes:summary[^>]*>([\s\S]*?)<\/itunes:summary>/i),
+    ];
+
+    let description = '';
+    for (const match of candidates) {
+      const text = match ? cleanHtml(match[1]) : '';
+      if (text) {
+        description = text;
+        break;
+      }
+    }
+    if (!description) return '';
+    return description.length > 300
+      ? `${description.slice(0, 297).replace(/\s+\S*$/, '')}…`
+      : description;
+  };
+
+  const parseFeedItems = (xml: string, sourceTitle: string, folder: string, baseUrl: string, categories: string[]): any[] => {
+    const items: any[] = [];
+    const feedDescription = parseFeedChannelDescription(xml);
+    const regex = /<(?:item|entry)\b[^>]*>([\s\S]*?)<\/(?:item|entry)>/gi;
+    let m: RegExpExecArray | null;
+
+    while ((m = regex.exec(xml)) !== null && items.length < 15) {
+      const block = m[1];
+      const titleMatch = block.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      const title = cleanHtml(titleMatch ? titleMatch[1] : 'Untitled');
+      if (!title || title.length < 2) continue;
+
+      let link = '';
+      const linkHrefMatch = block.match(/<link\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/i);
+      if (linkHrefMatch && linkHrefMatch[1]) {
+        link = linkHrefMatch[1].trim();
+      } else {
+        const linkTagMatch = block.match(/<link[^>]*>([\s\S]*?)<\/link>/i);
+        if (linkTagMatch && linkTagMatch[1]) {
+          link = cleanHtml(linkTagMatch[1]).trim();
+        }
+      }
+      if (!link) {
+        const guidMatch = block.match(/<guid[^>]*>([\s\S]*?)<\/guid>/i) || block.match(/<id[^>]*>([\s\S]*?)<\/id>/i);
+        if (guidMatch && guidMatch[1] && guidMatch[1].startsWith('http')) {
+          link = cleanHtml(guidMatch[1]).trim();
+        }
+      }
+      if (!link && baseUrl) link = baseUrl;
+      if (link.startsWith('/') && baseUrl) {
+        try { link = new URL(link, baseUrl).toString(); } catch { /* ignore */ }
+      }
+
+      const dateMatch = block.match(/<(?:pubDate|published|updated|dc:date)[^>]*>([\s\S]*?)<\/(?:pubDate|published|updated|dc:date)>/i);
+      const rawDate = dateMatch ? cleanHtml(dateMatch[1]) : '';
+      // Some feeds publish a year-less date ("Sep 11"). Date() anchors those to 2001,
+      // which would file this year's posts below everything else, so pin the current year.
+      const dated = rawDate && !/\b\d{4}\b/.test(rawDate)
+        ? `${rawDate} ${new Date().getFullYear()}`
+        : rawDate;
+      const publishedAt = formatPublishDate(dated);
+      const publishedAtMs = dated ? new Date(dated).getTime() : NaN;
+
+      const contentMatch = block.match(/<(?:content:encoded|content)[^>]*>([\s\S]*?)<\/(?:content:encoded|content)>/i);
+      const descMatch = block.match(/<description[^>]*>([\s\S]*?)<\/description>/i);
+      const summaryMatch = block.match(/<summary[^>]*>([\s\S]*?)<\/summary>/i);
+
+      const fullRaw = contentMatch ? contentMatch[1] : (descMatch ? descMatch[1] : (summaryMatch ? summaryMatch[1] : ''));
+      const cleanFull = htmlToReadableText(fullRaw);
+
+      const summaryRaw = summaryMatch ? summaryMatch[1] : (descMatch ? descMatch[1] : fullRaw);
+      let summary = cleanHtml(summaryRaw);
+      if (summary.length > 280) {
+        summary = summary.slice(0, 277).replace(/\s+\S*$/, '') + '...';
+      }
+      if (!summary) {
+        summary = title;
+      }
+
+      let bannerImage: string | undefined;
+      const mediaTags = block.match(/<media:(?:content|thumbnail)\b[^>]*>/gi) || [];
+      for (const tag of mediaTags) {
+        const urlMatch = tag.match(/\burl\s*=\s*["']([^"']+)["']/i);
+        const isImage = /<media:thumbnail\b/i.test(tag) ||
+          /\bmedium\s*=\s*["']image["']/i.test(tag) ||
+          /\btype\s*=\s*["']image\/[^"']+["']/i.test(tag) ||
+          (urlMatch && /\.(?:avif|gif|jpe?g|png|webp)(?:[?#]|$)/i.test(urlMatch[1]));
+        if (isImage && urlMatch) {
+          bannerImage = urlMatch[1];
+          break;
+        }
+      }
+
+      if (!bannerImage) {
+        const enclosureMatch = block.match(/<enclosure\b[^>]*url\s*=\s*["']([^"']+)["'][^>]*type\s*=\s*["']image\/[^"']+["'][^>]*>/i) ||
+          block.match(/<enclosure\b[^>]*type\s*=\s*["']image\/[^"']+["'][^>]*url\s*=\s*["']([^"']+)["'][^>]*>/i);
+        if (enclosureMatch && enclosureMatch[1]) bannerImage = enclosureMatch[1];
+      }
+
+      if (!bannerImage) {
+        const imgMatch = fullRaw.match(/<img\b[^>]*src\s*=\s*["'](https?:\/\/[^"']+)["'][^>]*>/i);
+        if (imgMatch && imgMatch[1] && !imgMatch[1].includes('feedburner') && !imgMatch[1].includes('tracking') && !imgMatch[1].includes('spacer')) {
+          bannerImage = imgMatch[1];
+        }
+      }
+
+      const words = cleanFull.split(/\s+/).filter(Boolean).length;
+      const minutes = Math.max(2, Math.round(words / 200));
+      const readTime = `${minutes} min read`;
+      const hasContinuationMarker = /(?:\.{3}|…|\[\s*…\s*\])\s*$/.test(cleanFull) ||
+        /\b(?:continue reading|read (?:the )?(?:full )?(?:article|story)|read more)\b/i.test(cleanFull.slice(-250)) ||
+        /\b(?:continue reading|read more)\b/i.test(fullRaw);
+
+      const idHash = Buffer.from(link || title).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 16);
+      const id = `live_${idHash}`;
+
+      items.push({
+        id,
+        source: sourceTitle,
+        sourceDescription: feedDescription || undefined,
+        folder: folder || 'General',
+        categories,
+        title,
+        summary,
+        readTime,
+        url: link,
+        fullText: cleanFull.length > 120 ? cleanFull : (summary + '\n\n' + 'Read the complete article directly at: ' + link),
+        _needsArticleFetch: Boolean(link && cleanFull.length > 80 && hasContinuationMarker),
+        publishedAt,
+        publishedAtMs: Number.isFinite(publishedAtMs) ? publishedAtMs : undefined,
+        bannerImage,
+        isOutOfBubble: false,
+        why: `From your ${sourceTitle} subscription.`
+      });
+    }
+    return items;
+  };
+
+  interface ArticleTextCacheEntry {
+    timestamp: number;
+    text: string;
+  }
+  const articleTextCache = new Map<string, ArticleTextCacheEntry>();
+  const ARTICLE_TEXT_CACHE_TTL = 24 * 60 * 60 * 1000;
+  const ARTICLE_TEXT_FAILURE_TTL = 10 * 60 * 1000;
+  const MAX_ARTICLE_TEXT_CACHE_ENTRIES = 300;
+
+  const extractArticleBody = (html: string): string => {
+    const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
+    const mainMatch = articleMatch ? null : html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
+    let body = articleMatch?.[1] || mainMatch?.[1] || '';
+    if (!body) return '';
+
+    body = body
+      .replace(/<(figure|figcaption|audio|video|iframe|script|style|noscript|svg|form|button|nav|header|footer)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+      .replace(/<h1\b[^>]*>[\s\S]*?<\/h1\s*>/gi, ' ');
+
+    const excludedClassNames = /(?:^|[\s_-])(?:author|byline|related|recommend(?:ation|ed)?|newsletter|subscribe|share|social|audio|player|caption|tldr|standfirst|dek|bio|advert|promoted|read[-_ ]?more|post[-_ ]?meta|article[-_ ]?meta|outbrain|taboola)(?=$|[\s_-])/i;
+    const taggedBlocks = /<(div|section|aside|p|h[2-6]|ul|ol)\b[^>]*(?:class|id)\s*=\s*["'][^"']*["'][^>]*>[\s\S]*?<\/\1\s*>/gi;
+    for (let pass = 0; pass < 8; pass += 1) {
+      let removed = false;
+      body = body.replace(taggedBlocks, block => {
+        const openingTag = block.match(/^<[^>]+>/)?.[0] || '';
+        const labels = [...openingTag.matchAll(/(?:class|id)\s*=\s*["']([^"']*)["']/gi)]
+          .map(match => match[1]);
+        if (!labels.some(label => excludedClassNames.test(label))) return block;
+        removed = true;
+        return ' ';
+      });
+      if (!removed) break;
+    }
+
+    const text = htmlToReadableText(body);
+    const paragraphs = text.split(/\n{2,}/).filter(paragraph => paragraph.trim().length > 0);
+    if (text.length < 600 || paragraphs.length < 3) return '';
+    if (/\b(?:subscribe|sign up|create an account)\b.{0,80}\b(?:continue|read|access)\b|\b(?:sign|log) in to\b.{0,80}\b(?:continue|read|access)\b/i.test(text)) {
+      return '';
+    }
+    return text;
+  };
+
+  const fetchArticleBody = async (targetUrl: string): Promise<string | null> => {
+    let cacheKey = '';
+    try {
+      const parsedUrl = new URL(targetUrl);
+      parsedUrl.hash = '';
+      cacheKey = parsedUrl.toString();
+    } catch {
+      return null;
+    }
+
+    const cached = articleTextCache.get(cacheKey);
+    const cacheTtl = cached?.text ? ARTICLE_TEXT_CACHE_TTL : ARTICLE_TEXT_FAILURE_TTL;
+    if (cached && Date.now() - cached.timestamp < cacheTtl) return cached.text || null;
+    if (cached) articleTextCache.delete(cacheKey);
+
+    let text = '';
+    try {
+      // Reuse the same public-host, redirect, timeout, and response-size checks as feed fetching.
+      const page = await fetchPublicPage(cacheKey, 6000);
+      if (page.ok && (!page.contentType || /(?:text\/html|application\/xhtml\+xml)/i.test(page.contentType))) {
+        text = extractArticleBody(page.text);
+      }
+    } catch {
+      // Preserve the feed excerpt when an article is unavailable, blocked, or fails extraction.
+    }
+
+    if (articleTextCache.size >= MAX_ARTICLE_TEXT_CACHE_ENTRIES) {
+      const oldestKey = articleTextCache.keys().next().value;
+      if (oldestKey) articleTextCache.delete(oldestKey);
+    }
+    articleTextCache.set(cacheKey, { timestamp: Date.now(), text });
+    return text || null;
+  };
+
+  const enrichSelectedArticles = async (digest: any[]): Promise<any[]> => {
+    const targets = digest
+      .filter(item => item?._needsArticleFetch && typeof item.url === 'string')
+      .slice(0, 6);
+    let nextTarget = 0;
+    const workerCount = Math.min(3, targets.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextTarget < targets.length) {
+        const item = targets[nextTarget++];
+        const articleText = await fetchArticleBody(item.url);
+        if (!articleText) continue;
+        item.fullText = articleText;
+        const words = articleText.split(/\s+/).filter(Boolean).length;
+        item.readTime = `${Math.max(2, Math.round(words / 200))} min read`;
+      }
+    }));
+
+    return digest.map(item => {
+      const { _needsArticleFetch, ...article } = item;
+      return article;
+    });
+  };
+
+  const fetchFeedWithStatus = async (
+    feedUrl: string,
+    sourceTitle: string,
+    folder: string,
+    categories?: unknown,
+  ): Promise<{ items: any[]; error?: string }> => {
+    if (!feedUrl) return { items: [], error: 'No feed URL set' };
+    const itemCategories = normalizeFeedCategories(categories, folder);
+    const cached = feedCache.get(feedUrl);
+    if (cached && Date.now() - cached.timestamp < FEED_CACHE_TTL) {
+      return { items: cached.items.map(item => ({ ...item, categories: itemCategories })) };
+    }
+    try {
+      usageDelta({ feedFetches: 1 });
+      const page = await fetchPublicPage(feedUrl, 7000);
+      if (page && page.ok && page.text) {
+        const parsed = parseFeedItems(page.text, sourceTitle, folder, feedUrl, itemCategories);
+        if (parsed.length > 0) {
+          feedCache.set(feedUrl, { timestamp: Date.now(), items: parsed });
+          return { items: parsed };
+        }
+        return { items: [], error: 'No readable articles in the feed' };
+      }
+      return { items: [], error: `Feed responded with ${page?.status ?? 'an error'}` };
+    } catch (err: any) {
+      console.warn(`[FeedFetch] Failed to fetch feed for "${sourceTitle}" (${feedUrl}):`, err.message);
+      return { items: [], error: err?.message || 'Feed could not be reached' };
+    }
+  };
+
+  const fetchFeedArticles = async (feedUrl: string, sourceTitle: string, folder: string, categories?: unknown): Promise<any[]> =>
+    (await fetchFeedWithStatus(feedUrl, sourceTitle, folder, categories)).items;
+
+  // Curate daily digest from live feeds using configured provider adapters or deterministic ranking
   app.post('/api/curate', async (req, res) => {
     try {
-      const { sources, signals, readingStats, serendipityDial, itemCount = 6 } = req.body;
+      const { sources: clientSources, signals, readingStats, serendipityDial = 30, itemCount = 6 } = req.body;
+      const requestedProvider = typeof req.body.provider === 'string' ? req.body.provider : 'deterministic';
+      const provider = requestedProvider === 'openai' ? 'openai-compatible' : requestedProvider;
+      const clientApiKey = typeof req.body.apiKey === 'string' ? req.body.apiKey : '';
+      const clientBaseUrl = typeof req.body.baseUrl === 'string' ? req.body.baseUrl.trim() : '';
+      const clientModel = typeof req.body.model === 'string' ? req.body.model.trim() : '';
+      const requestedEmbeddingProvider = typeof req.body.embeddingProvider === 'string' ? req.body.embeddingProvider : 'none';
+      const embeddingProvider = ['none', 'gemini', 'openai-compatible'].includes(requestedEmbeddingProvider)
+        ? requestedEmbeddingProvider
+        : 'none';
+      const embeddingConfig = {
+        provider: embeddingProvider,
+        apiKey: (typeof req.body.embeddingApiKey === 'string' ? req.body.embeddingApiKey.trim() : '') ||
+          (embeddingProvider === provider ? clientApiKey.trim() : ''),
+        baseUrl: (typeof req.body.embeddingBaseUrl === 'string' ? req.body.embeddingBaseUrl.trim() : '') ||
+          (embeddingProvider === provider ? clientBaseUrl : ''),
+        model: typeof req.body.embeddingModel === 'string' ? req.body.embeddingModel.trim() : '',
+      };
+      const feedbackExamples: SemanticVoteExample[] =
+        Array.isArray(req.body.feedback)
+          ? req.body.feedback
+              .filter((entry: any) => entry && typeof entry.id === 'string' &&
+                (entry.vote === 'like' || entry.vote === 'dislike') &&
+                typeof entry.title === 'string' && typeof entry.text === 'string' &&
+                Number.isFinite(entry.timestamp))
+              .slice(-40)
+              .map((entry: any) => ({
+                id: entry.id.slice(0, 200),
+                vote: entry.vote,
+                title: entry.title.slice(0, 300),
+                text: entry.text.slice(0, 3000),
+                timestamp: entry.timestamp,
+                source: typeof entry.source === 'string' ? entry.source.slice(0, 120) : undefined,
+                folder: typeof entry.folder === 'string' ? entry.folder.slice(0, 120) : undefined,
+              }))
+          : [];
+
+      const wantsFreshDigest = Boolean(req.body.fresh);
+      const seed = typeof req.body.seed === 'string' || typeof req.body.seed === 'number'
+        ? String(req.body.seed)
+        : String(Date.now());
+
+      const activeSources = Array.isArray(clientSources) && clientSources.length > 0
+        ? clientSources.filter((s: any) => s.status !== 'failing')
+        : DEFAULT_FEEDS;
+
+      // 1. Fetch live articles from candidate sources in parallel.
+      // A library can hold far more feeds than one run can fetch, so a fresh run rotates
+      // through the wider library instead of only ever reading the first ten feeds.
+      const MAX_SOURCES_PER_RUN = 14;
+      const orderedSources = activeSources.length > MAX_SOURCES_PER_RUN
+        ? [...activeSources].sort((a: any, b: any) =>
+            stableJitter(seed, String(a.feedUrl || a.id || '')) -
+            stableJitter(seed, String(b.feedUrl || b.id || ''))
+          )
+        : activeSources;
+      const runSources = orderedSources.slice(0, MAX_SOURCES_PER_RUN);
+
+      const feedResults = await Promise.allSettled(
+        runSources.map((s: any) => fetchFeedWithStatus(s.feedUrl, s.title, s.folder, s.categories))
+      );
+
+      const feedFailures: Array<{ title: string; feedUrl?: string; reason: string }> = [];
+      let candidatePool: any[] = [];
+      runSources.forEach((source: any, index: number) => {
+        const result = feedResults[index];
+        if (!result || result.status === 'rejected') {
+          feedFailures.push({ title: source.title || 'Source', feedUrl: source.feedUrl, reason: 'Request failed' });
+          return;
+        }
+        if (result.value.error) {
+          feedFailures.push({ title: source.title || 'Source', feedUrl: source.feedUrl, reason: result.value.error });
+        }
+        candidatePool.push(...result.value.items);
+      });
+
+      // If pool is sparse, fetch from default verified feeds as supplement
+      if (candidatePool.length < 4) {
+        const defResults = await Promise.allSettled(
+          DEFAULT_FEEDS.map(f => fetchFeedArticles(f.feedUrl, f.title, f.folder))
+        );
+        for (const r of defResults) {
+          if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+            candidatePool.push(...r.value);
+          }
+        }
+      }
+
+      // Deduplicate candidates by url or title
+      const seenKeys = new Set<string>();
+      candidatePool = candidatePool.filter(item => {
+        if (!item || !item.title) return false;
+        const key = item.url || item.id || item.title;
+        if (seenKeys.has(key)) return false;
+        seenKeys.add(key);
+        return true;
+      });
 
       const moreTopics: string[] = Array.isArray(signals?.moreTopics)
         ? signals.moreTopics
@@ -353,644 +1765,500 @@ async function startServer() {
         : Array.isArray(signals?.less) ? signals.less : [];
       const moreIds: string[] = Array.isArray(signals?.moreIds) ? signals.moreIds : [];
       const lessIds: string[] = Array.isArray(signals?.lessIds) ? signals.lessIds : [];
+      // Declared interests match whole-word and case-insensitively; category labels are checked
+      // exactly first, so a chip named "Art" never fires on "artificial".
+      const normalizeInterestLabel = (value: string): string =>
+        String(value || '')
+          .toLowerCase()
+          .replace(/[^a-z0-9&+]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
 
-      // If Gemini API is available, use it to generate highly tailored editorial digest items and why-reasons
-      if (ai) {
-        try {
-          const prompt = `You are a sophisticated personal reading editor. Your task is to curate a daily reading digest of exactly ${itemCount} items based on the user's subscriptions, recent reading signals, and a serendipity dial (${serendipityDial}% out of bubble).
+      const matchesInterest = (item: any, label: string): boolean => {
+        const needle = normalizeInterestLabel(label);
+        if (!needle) return false;
+        if (Array.isArray(item.categories) && item.categories.some((category: unknown) => normalizeInterestLabel(String(category || '')) === needle)) return true;
+        const haystack = ` ${normalizeInterestLabel(`${item.title || ''} ${item.summary || ''}`)} `;
+        return haystack.includes(` ${needle} `);
+      };
 
-Subscriptions available: ${JSON.stringify(sources?.slice(0, 30) || [])}
-User explicit READING PREFERENCES:
-- Prioritized Reading Topics & Themes (MORE): ${JSON.stringify(moreTopics)}
-- De-emphasized Reading Topics & Themes (LESS): ${JSON.stringify(lessTopics)}
-- Specific article IDs voted thumbs-up: ${JSON.stringify(moreIds)}
-- Specific article IDs voted thumbs-down: ${JSON.stringify(lessIds)}
-Implicit reading completion stats (articles/topics finished): ${JSON.stringify(readingStats || {})}
-Serendipity Dial setting: ${serendipityDial}% (0% = stay close to established interests; 100% = strong stretch into new intellectual territories).
-
-CRITICAL CURATION PRINCIPLES (READING PREFERENCES VS. AUTHOR/FEED PREFERENCES):
-1. The user's thumbs-up and thumbs-down signals represent topical READING PREFERENCES (intellectual domains, formats, and themes such as economic history, institutional design, philosophy, or architectural craft), NOT author or feed subscription preferences.
-2. DO NOT exclude, unsubscribe, or mute entire feeds/authors when a topic is marked LESS. All subscribed feeds remain active and eligible; simply surface articles from those feeds that match the user's preferred reading topics, and avoid the de-emphasized topics.
-3. Prioritize topics in MORE across all the user's subscribed feeds and writers.
-4. Editorial "why" rationale: Explain why the piece was selected based on topical curiosity, intellectual depth, or category relevance (e.g., "In your Strategy & Craft reading queue", "Follows your interest in economic history", "A deliberate stretch into architectural history"). Never state "More from this author/feed".
-5. Generate exactly ${itemCount} articles.
-6. At least 1 (or 2 if serendipity dial is >= 40) must be an "isOutOfBubble": true stretch item from outside standard interests, clearly labelled as a stretch.
-7. Each item needs:
-   - id: unique string
-   - title: compelling article title
-   - source: source publication or author name
-   - folder: category folder/topic
-   - readTime: estimated reading time (e.g. "6 min read")
-   - why: ONE short sentence of plain English explaining the reading rationale
-   - summary: 2-3 sentence teaser
-   - url: simulated article url
-   - fullText: full article text (400-600 words of rich, thoughtful essay or long-form prose suitable for a clean reading view).
-   - isOutOfBubble: boolean (true for stretch items)
-
-Return ONLY valid JSON array of objects with these exact keys.`;
-
-          const response = await ai.models.generateContent({
-            model: 'gemini-4-hydrogen',
-            contents: prompt,
-            config: {
-              responseMimeType: 'application/json'
-            }
+      // Older votes carry ids but no stored excerpt. Recover the article text from the live
+      // pool so the semantic engine has examples to learn from straight away.
+      if (feedbackExamples.length < 40 && (moreIds.length > 0 || lessIds.length > 0)) {
+        const poolById = new Map<string, any>(candidatePool.map(item => [item.id, item]));
+        const knownFeedbackIds = new Set(feedbackExamples.map(entry => entry.id));
+        const recover = (ids: string[], vote: 'like' | 'dislike') => {
+          ids.forEach(id => {
+            if (feedbackExamples.length >= 40 || knownFeedbackIds.has(id)) return;
+            const item = poolById.get(id);
+            if (!item || !item.title) return;
+            knownFeedbackIds.add(id);
+            feedbackExamples.push({
+              id,
+              vote,
+              title: String(item.title).slice(0, 300),
+              text: `${item.title}\n${item.summary || ''}\n${item.fullText || ''}`.slice(0, 3000),
+              timestamp: Date.now(),
+              source: item.source,
+              folder: item.folder,
+            });
           });
+        };
+        recover(moreIds, 'like');
+        recover(lessIds, 'dislike');
+      }
 
-          if (response.text) {
-            const data = JSON.parse(response.text);
-            if (Array.isArray(data) && data.length > 0) {
-              return res.json({ digest: data, generatedByAI: true });
-            }
-          }
-        } catch {
-          console.warn('[Curator] AI generation unavailable, serving high-signal editorial curation algorithm.');
+      // Downvoted articles are dropped outright. Interest-level "less" chips only down-weight
+      // further below, because one broad chip must not be able to empty the digest.
+      candidatePool = candidatePool.filter(item => !lessIds.includes(item.id));
+
+      // Freshness: what the browser already showed, so a refresh never repeats itself.
+      const recentlyShown: Array<{ id: string; shownAt: number }> = Array.isArray(req.body.recentlyShown)
+        ? req.body.recentlyShown
+            .filter((entry: any) => entry && typeof entry.id === 'string' && Number.isFinite(entry.shownAt))
+            .slice(-200)
+            .map((entry: any) => ({ id: entry.id, shownAt: Number(entry.shownAt) }))
+        : [];
+      const previousDigestIds = new Set<string>(
+        Array.isArray(req.body.previousDigestIds)
+          ? req.body.previousDigestIds.filter((id: any) => typeof id === 'string')
+          : []
+      );
+      const nowMs = Date.now();
+      const exposurePenalty = new Map<string, number>();
+      const deprioritizedIds = new Set<string>();
+      recentlyShown.forEach(entry => {
+        const ageHours = Math.max(0, (nowMs - entry.shownAt) / (60 * 60 * 1000));
+        const penalty = ageHours < 18 ? 65 : ageHours < 72 ? 28 : ageHours < 336 ? 8 : 0;
+        if (penalty > 0) {
+          exposurePenalty.set(entry.id, Math.max(exposurePenalty.get(entry.id) || 0, penalty));
+        }
+      });
+
+      // A manual refresh keeps the current digest's articles out of the pool when there is room.
+      if (wantsFreshDigest && previousDigestIds.size > 0) {
+        const withoutPrevious = candidatePool.filter(item => !previousDigestIds.has(item.id));
+        if (withoutPrevious.length >= itemCount) {
+          candidatePool = withoutPrevious;
         }
       }
 
-      // Curated pool with real signal-aware ranking when AI key is missing or call fails
-      const pool = [
-        {
-          id: 'item_0',
-          title: 'Nobody Ever Gets Credit for Fixing Problems that Never Happened',
-          source: 'Nicole Williams',
-          folder: 'Strategy & Craft',
-          readTime: '6 min read',
-          why: 'You finish this writer almost every time.',
-          summary: 'Working harder pays off fast; working smarter pays off with interest. The fire you put out earns a thank you; the fire you prevented earns nothing.',
-          url: 'https://substack.com/@pmresearcher/fixing-unseen-problems',
-          bannerImage: 'https://images.unsplash.com/photo-1508873696983-2df5293cb32f?auto=format&fit=crop&w=1200&q=80',
-          fullText: `What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing.
-
-In organizational dynamics, heroic firefighting is visible, dramatic, and emotionally compelling. When a server crashes at 2 AM or a supply chain breaks on a holiday weekend, the engineer or manager who stays up all night to patch the leak is celebrated. They receive public recognition, awards, and promotions because everyone witnessed the catastrophe and its subsequent resolution.
-
-Quiet prevention, by contrast, is completely invisible. The architectural refactor that eliminated the concurrency race condition before it ever triggered an outage produces no metrics, no alarms, and no drama. Nobody sends an email saying: "Congratulations, the system did not crash today."
-
-To build lasting systems—whether technical architectures, institutions, or personal intellectual routines—we must cultivate taste for the uncelebrated disciplines: calm prevention, rigorous invariants, and quiet curation.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_1',
-          title: 'The Architecture of Long-Lived Systems and Institutional Memory',
-          source: 'Dan Luu',
-          folder: 'Tech & Engineering',
-          readTime: '7 min read',
-          why: 'You finish this writer almost every time.',
-          summary: 'An exploration of how organizations maintain technical knowledge across decades without falling victim to institutional amnesia.',
-          url: 'https://danluu.com/systems-memory',
-          fullText: `When building software or large institutions, the hardest problem is rarely writing the initial code or establishing the charter. The hardest problem is ensuring that the tacit knowledge of why decisions were made survives the departure of the people who made them.
-
-In most modern engineering teams, documentation decays rapidly because it is treated as a chore rather than a living artifact. When an engineer leaves, their mental model of the system leaves with them. Over time, the codebase becomes a series of archaeological layers where current maintainers are afraid to touch certain modules because nobody remembers what load-bearing assumptions they rely on.
-
-Contrast this with organizations that treat institutional memory as a first-class engineering discipline. In these environments, every significant architectural refactoring begins with a design doc that records not just the chosen path, but the three discarded alternatives and the precise failure modes that ruled them out. When new engineers join, they do not just read the code; they read the intellectual history of the product.
-
-The lesson for individual readers and curators is similar. Our reading diets often suffer from amnesia. We consume hundreds of articles a week, retaining fleeting impressions while forgetting the foundational frameworks that connected them. Building a personal reading digest is not just about finding new things to read; it is about creating a deliberate anchor for what we choose to retain.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_2',
-          title: 'Venetian Banking Innovations and the Birth of Modern Credit',
-          source: 'Marginal Revolution',
-          folder: 'Economics',
-          readTime: '9 min read',
-          why: 'Follows on from the Byzantine trade piece you read last week.',
-          summary: 'How 14th-century merchants in the Venetian lagoon invented bills of exchange and fractional reserve practices that powered the Renaissance.',
-          url: 'https://marginalrevolution.com/venice-credit',
-          fullText: `In the crowded piazzas of 14th-century Venice, merchants faced a logistical nightmare. Transporting gold coin across pirate-infested Mediterranean trade routes was both dangerous and inefficient. Out of this necessity arose the giro bank and the bill of exchange—instruments that transformed credit from a personal favor between acquaintances into a liquid, transferable financial asset.
-
-A merchant in Constantinople could deposit silver with a banker and receive a scrap of parchment. Upon arriving in Venice, he could present that parchment to a correspondent banker and collect local currency without a single ounce of metal crossing the sea. More importantly, those parchment bills could be endorsed and passed to third parties to settle debts, effectively creating an early form of private paper money.
-
-This financial leap was not merely technical; it required a profound evolution in institutional trust. Venice established specialized maritime courts that resolved commercial disputes in days rather than months, ensuring that the velocity of capital remained high. When trust is codified into reliable legal frameworks, economies unlock unprecedented productive capacity.
-
-For the modern reader interested in economic history, the trajectory from Byzantine trade networks to Venetian banking and onward to Renaissance finance illustrates how trade routes are invariably preceded by financial innovation.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_3',
-          title: 'The Unseen Geometry of Traditional Japanese Joinery',
-          source: 'A List Apart',
-          folder: 'Design',
-          readTime: '5 min read',
-          why: 'In your design folder.',
-          summary: 'Why interlocking timber joints without nails or glue achieve seismic resilience and enduring aesthetic harmony.',
-          url: 'https://alistapart.com/japanese-joinery',
-          fullText: `In traditional Japanese timber architecture, master carpenters construct soaring temples and multi-story pagodas without a single nail, screw, or drop of glue. Instead, they rely on complex interlocking joints—such as the sashigane and kanawa tsugi—that lock tighter as wood expands and contracts with humidity and seismic tremors.
-
-This approach reflects a philosophy where structure and ornamentation are inseparable. The joint is both the engineering mechanism that bears the load and the visual signature of the craftsperson. Every angle is calculated to distribute stress across multiple vectors, allowing ancient wooden structures to sway gracefully during earthquakes rather than fracturing under rigid resistance.
-
-Digital design often suffers from the opposite impulse: adding layers of surface decoration while hiding the structural fragility underneath. When we examine how great systems are built, whether in timber or software, the most resilient designs are those where every connection is self-supporting and transparent.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_4',
-          title: 'Stratechery: The Aggregation Theory of Modern Media',
-          source: 'Stratechery by Ben Thompson',
-          folder: 'Tech & Strategy',
-          readTime: '11 min read',
-          why: 'You finish this writer almost every time.',
-          summary: 'How the internet shifted power from content producers to content aggregators, and what comes next.',
-          url: 'https://stratechery.com/aggregation-theory',
-          fullText: `For decades, media companies enjoyed local monopolies because distribution was physically constrained. If you owned the printing press, the delivery trucks, or the cable television lines, you controlled access to the audience. Content creators had to partner with distributors on unfavorable terms because there was no alternative path to the consumer.
-
-The internet inverted this power dynamic completely. Distribution marginal cost dropped to zero, and all content became instantly accessible globally. In this new paradigm, the bottleneck shifted from distribution to discovery.
-
-Enter the Aggregator. Companies like Google, Facebook, Apple, and Spotify do not produce content; they aggregate users by providing superior discovery and curation experiences. Because the aggregator owns the primary relationship with the consumer, suppliers of content—news publishers, musicians, independent writers—must compete for placement on the aggregator's terms.
-
-Understanding Aggregation Theory is essential for anyone trying to make sense of modern digital media ecosystems. It explains why traditional paywalls succeed for niche professional monopolies while general interest publications struggle to maintain independent pricing power.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_5',
-          title: 'Deep Time and the 10,000-Year Clock',
-          source: 'Long Now Foundation',
-          folder: 'Philosophy & Long-term',
-          readTime: '6 min read',
-          why: 'In your philosophy folder.',
-          summary: 'Designing mechanical artifacts intended to run accurately for millennia requires rethinking human impatience.',
-          url: 'https://longnow.org/10000-year-clock',
-          fullText: `Modern civilization suffers from a chronic temporal myopia. We plan in quarterly earnings reports, political election cycles, and 24-hour news cycles. Yet the most profound challenges facing humanity—ecological stewardship, nuclear waste management, infrastructure resilience—operate on timescales of centuries and millennia.
-
-The 10,000-Year Clock, designed to tick once a year, chime once a century, and have its cuckoo come out every millennium, is an exercise in shifting human perspective. To build an artifact that can endure for ten millennia, engineers must solve problems of material fatigue, thermal expansion, and human curiosity that most modern projects never encounter.
-
-When we force ourselves to think in deep time, our daily priorities shift. We realize that most of the urgent noise that consumes our morning attention is ephemeral, while the quiet, compounding choices we make today are what truly shape the world our descendants inherit.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_6',
-          title: 'Why Small Tools Outlast Grand Platforms',
-          source: 'Dan Luu',
-          folder: 'Tech & Engineering',
-          readTime: '8 min read',
-          why: 'Consistent with the engineering essays you read to the end.',
-          summary: 'A look at unix utilities, plain text formats, and why narrow software endures while ambitious suites collapse.',
-          url: 'https://danluu.com/small-tools',
-          fullText: `Every decade brings a wave of all-in-one platforms promising to unify communication, documents, tasks, and knowledge under a single proprietary roof. Almost inevitably, those platforms grow sluggish, accumulate conflicting workflows, and eventually vanish when corporate priorities shift.
-
-Meanwhile, small single-purpose tools built around open formats keep working quietly for thirty or forty years. Their durability comes from restraint: they do one job cleanly, expose predictable interfaces, and refuse to trap user data inside opaque silos.
-
-For anyone designing personal software, this is a liberating principle. When a tool has a narrow mandate and clear boundaries, it remains comprehensible to its user long after larger products become burdensome.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_7',
-          title: 'The Medici Ledger: Double-Entry Bookkeeping as Cultural Engine',
-          source: 'Marginal Revolution',
-          folder: 'Economics',
-          readTime: '7 min read',
-          why: 'Next step from Venetian credit into Renaissance finance.',
-          summary: 'How systematic balance sheets allowed Florentine merchants to coordinate branches across Europe without losing control.',
-          url: 'https://marginalrevolution.com/medici-ledger',
-          fullText: `Before double-entry bookkeeping spread across northern Italy, even wealthy trading houses struggled to tell whether a distant voyage had truly turned a profit or simply moved cash from one pocket to another. Luca Pacioli's codification of Venetian accounting methods turned commerce into a legible discipline.
-
-With debits and credits mirrored across every transaction, partners in Florence could audit branches in Bruges or London with confidence. Accounting did not merely record Renaissance wealth; it made long-distance trust scalable.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_8',
-          title: 'Scaling Laws and the Economics of Inference',
-          source: 'The Anthropic Stack',
-          folder: 'Tech & AI',
-          readTime: '10 min read',
-          why: 'In your Tech & AI folder.',
-          summary: 'Why the bottleneck in applied machine intelligence is shifting from training runs to latency, verification, and cost per decision.',
-          url: 'https://anthropic.com/research/inference-economics',
-          fullText: `For several years, progress in machine intelligence was measured primarily by the size of training clusters. Now the decisive engineering frontier lies in inference: how much reasoning can be delivered reliably within a tight budget of latency and compute.
-
-When intelligence becomes cheap enough to run quietly in the background—curating feeds, verifying citations, or parsing messy documents—the user interface changes. Instead of prompting a chat box, people interact with calm editorial tools that do the sifting ahead of time.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_9',
-          title: 'The Quiet Rise of Municipal Water Architects',
-          source: 'Prospect Magazine',
-          folder: 'Culture',
-          readTime: '6 min read',
-          why: 'In your Culture folder.',
-          summary: 'Inside the unglamorous civic engineering reshaping how European cities survive simultaneous droughts and flash floods.',
-          url: 'https://prospectmagazine.co.uk/water-architects',
-          fullText: `Beneath every resilient city lies an invisible choreography of retention basins, permeable stone plazas, and gravity-fed canals. While skyline towers draw headlines, urban hydrologists are quietly rewriting the rules of civic design so neighborhoods absorb sudden storms instead of channeling them into overwhelmed rivers.
-
-Walking through rebuilt squares in Rotterdam or Lyon, most residents notice only shaded trees and stepped amphitheaters—unaware that the entire plaza doubles as a flood buffer.`,
-          isOutOfBubble: false
-        },
-        {
-          id: 'item_10',
-          title: 'The Sonification of Stellar Nurseries: Listening to Nebulae',
-          source: 'The New Yorker - Books',
-          folder: 'Culture',
-          readTime: '8 min read',
-          why: 'Deliberate stretch: Outside your usual tech and economics routine.',
-          summary: 'How astronomers are translating James Webb Space Telescope infrared data into audible soundscapes.',
-          url: 'https://www.newyorker.com/science/stellar-sonification',
-          fullText: `For centuries, astronomy has been an overwhelmingly visual science. We chart the universe through photographs rendered in false color, mapping light waves that our eyes cannot naturally perceive. But in recent years, astrophysicists and sound artists have begun translating astronomical telescope data into audible frequencies—a process known as sonification.
-
-When the infrared emissions of the Carina Nebula or the Pillars of Creation are mapped onto pitch, tempo, and timbre, something extraordinary happens. Dense regions of collapsing gas translate into deep, resonant bass drones, while newborn stars twinkling in the cluster sound like crystalline chimes cascading across the stereo field.
-
-This auditory rendering does more than provide an artistic spectacle for planetarium visitors. It allows researchers to perceive complex spatial patterns in stellar data that might go unnoticed in visual spectrograms. The human ear is remarkably acute at discerning overlapping acoustic frequencies and rhythmic anomalies.
-
-For readers whose typical intellectual diet is anchored in economics, technology, and policy, stepping into the auditory universe of stellar sonification offers a profound reminder of the beauty of interdisciplinary perception.`,
-          isOutOfBubble: true
-        },
-        {
-          id: 'item_11',
-          title: 'How Medieval Bell Founders Tuned Bronze by Ear',
-          source: 'World Politics & History',
-          folder: 'History',
-          readTime: '7 min read',
-          why: 'Deliberate stretch: Craft acoustics from outside your usual reading trail.',
-          summary: 'Before electronic frequency analyzers, Flemish foundry families discovered how lathe-scraping inner ribs unlocked pure harmonic overtones.',
-          url: 'https://worldhistory.com/bell-acoustics',
-          fullText: `A church bell does not produce a single musical note; it rings with a complex stack of partials that can easily clash into a metallic clang. In the seventeenth century, brothers Pieter and François Hemony solved a puzzle that had stumped European metalworkers for centuries: how to cast and shave bronze profiles so five distinct overtones align in clear harmony.
-
-Working with nothing more than tuning rods and disciplined ears, they turned civic bell towers into precision instruments heard across entire valleys.`,
-          isOutOfBubble: true
-        }
-      ];
-
-      const matchesTopicSignal = (item: typeof pool[0], topicList: string[]) =>
-        topicList.some(sig => {
-          const s = sig.toLowerCase().trim();
-          if (!s) return false;
-          return (
-            item.folder.toLowerCase() === s ||
-            item.title.toLowerCase().includes(s) ||
-            item.summary.toLowerCase().includes(s)
-          );
+      // Provider-free semantic ranking: votes change the digest even with no API key.
+      const semanticScores = new Map<string, number>();
+      if (feedbackExamples.length > 0 && candidatePool.length > 0) {
+        localSemanticScores(feedbackExamples, candidatePool).forEach((value, key) => {
+          semanticScores.set(key, value);
         });
+      }
 
-      const activeSourceNames = new Set(
-        Array.isArray(sources)
-          ? sources.filter((s: any) => s.status !== 'failing').map((s: any) => String(s.title).toLowerCase())
-          : []
+      // Optional provider embeddings sharpen those scores; they never silently replace them.
+      let providerSemanticMatches = 0;
+      const semanticItems = candidatePool.slice(0, 80);
+      if (embeddingProvider !== 'none' && feedbackExamples.length > 0 && semanticItems.length > 0) {
+        try {
+          const feedbackTexts = feedbackExamples.map(entry => `${entry.title}\n${entry.text}`.slice(0, 3200));
+          const candidateTexts = semanticItems.map(item =>
+            `${item.title || ''}\n${item.folder || ''}\n${Array.isArray(item.categories) ? item.categories.join(' ') : ''}\n${item.summary || ''}\n${item.fullText || ''}`
+              .replace(/<[^>]*>/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 3000)
+          );
+          const vectors = await embedSemanticTexts([...feedbackTexts, ...candidateTexts], embeddingConfig);
+          const positiveCentroid = buildFeedbackCentroid('like', feedbackExamples, vectors);
+          const negativeCentroid = buildFeedbackCentroid('dislike', feedbackExamples, vectors);
+          const candidateVectors = vectors.slice(feedbackExamples.length);
+
+          candidateVectors.forEach((vector, index) => {
+            if (!vector) return;
+            const positiveSimilarity = positiveCentroid ? vectorSimilarity(vector, positiveCentroid) : 0;
+            const negativeSimilarity = negativeCentroid ? vectorSimilarity(vector, negativeCentroid) : 0;
+            const providerScore = (positiveSimilarity - negativeSimilarity) / 2;
+            const itemId = semanticItems[index]?.id;
+            if (!itemId) return;
+            const localScore = semanticScores.get(itemId) || 0;
+            semanticScores.set(itemId, providerScore * 0.65 + localScore * 0.35);
+            providerSemanticMatches += 1;
+          });
+        } catch (err: any) {
+          console.warn('[Curator] Provider embeddings unavailable, continuing with the built-in semantic engine:', err?.message || err);
+        }
+      }
+
+      const scoredPool = candidatePool
+        .map((item: any) => {
+          const semanticScore = semanticScores.get(item.id) || 0;
+          const liked = moreIds.includes(item.id);
+          const interestLabel = moreTopics.find((label: string) => matchesInterest(item, label)) || '';
+          const lessLabel = lessTopics.find((label: string) => matchesInterest(item, label)) || '';
+          const penalty = exposurePenalty.get(item.id) || 0;
+          if (penalty > 0) deprioritizedIds.add(item.id);
+
+          let score = recencyWeight(item) * 45
+            + semanticScore * 120
+            + stableJitter(seed, item.id) * 12
+            - penalty;
+          if (liked) score += 30;
+          if (interestLabel) score += 25;
+          if (lessLabel) score -= 40;
+          if (readingStats && readingStats[item.id]?.finished) score += 8;
+
+          return {
+            ...item,
+            isOutOfBubble: false,
+            _score: score,
+            _semantic: semanticScore,
+            _interest: interestLabel,
+            _less: lessLabel,
+          };
+        })
+        .sort((a, b) => b._score - a._score);
+
+      // Assign a distinct editorial reason per card, in final ranked order.
+      scoredPool.forEach((entry: any, index: number) => {
+        entry.why = buildWhyLine(entry, index, {
+          liked: moreIds.includes(entry.id),
+          interest: String(entry._interest || ''),
+          semanticScore: Number(entry._semantic) || 0,
+        });
+      });
+
+      const rankedItems = scoredPool.map(({ _score, _semantic, _interest, _less, ...rest }: any) => rest);
+
+      const distinctSources = new Set(
+        rankedItems.map(item => item.source).filter((value): value is string => Boolean(value))
+      ).size;
+      const maxPerSource = Math.max(
+        2,
+        Math.min(itemCount, Math.ceil(itemCount / Math.max(1, distinctSources)))
       );
 
-      const scored = pool
-        .filter(item => !lessIds.includes(item.id) && !matchesTopicSignal(item, lessTopics))
-        .map((item, idx) => {
-          let score = 100 - idx;
-          let why = item.why;
+      const semanticSummary = {
+        feedbackExamples: feedbackExamples.length,
+        providerVectors: providerSemanticMatches,
+        deprioritized: deprioritizedIds.size,
+        localEngine: true,
+      };
 
-          if (activeSourceNames.has(item.source.toLowerCase())) {
-            score += 10;
+      const feedReport = {
+        attempted: runSources.length,
+        // The list is capped for the wire; failedCount carries the real number so the
+        // "N of M feeds" line never under-reports a wide outage.
+        failed: feedFailures.slice(0, 12),
+        failedCount: feedFailures.length,
+      };
+
+      // 2. Curate using AI if requested and candidate pool is ready
+      if (provider !== 'deterministic' && candidatePool.length >= 4) {
+        const candidatesForAi = scoredPool.slice(0, 30).map((item: any, idx: number) => ({
+          idx,
+          id: item.id,
+          title: item.title,
+          source: item.source,
+          folder: item.folder,
+          categories: item.categories,
+          summary: item.summary,
+          readTime: item.readTime,
+          isLiked: moreIds.includes(item.id),
+          matchesPreferredTopic: Boolean(item._interest),
+          matchesLessTopic: Boolean(item._less),
+          semanticScore: Number((item._semantic || 0).toFixed(3))
+        }));
+
+        const prompt = `You are a sophisticated personal reading editor. Your task is to curate a daily reading digest of exactly ${itemCount} items by selecting the best articles from the live candidate pool below based on the user's signals and serendipity setting (${serendipityDial}%).
+
+Live Candidate Articles:
+${JSON.stringify(candidatesForAi)}
+
+User Reading Preferences:
+- Prioritized Topics (MORE): ${JSON.stringify(moreTopics)}
+- De-emphasized Topics (LESS): ${JSON.stringify(lessTopics)}
+- Candidate isLiked and matchesPreferredTopic flags reflect exact article/topic feedback; matchesLessTopic marks a topic the reader asked for less of.
+- semanticScore is a relevance score built from your recent positive minus negative article votes (Curator's built-in semantic engine, plus your embeddings provider when configured); higher values are a better match.
+- Articles thumbs-up: ${JSON.stringify(moreIds)}
+- Articles thumbs-down: ${JSON.stringify(lessIds)} (exact downvoted articles and any legacy less topics are already excluded)
+Serendipity Dial: ${serendipityDial}% (0% = stay close to established interests; 100% = stretch into unfamiliar intellectual territories).
+
+CURATION RULES:
+1. Select exactly ${itemCount} unique items from the candidate pool using their "idx".
+2. Strongly prioritize candidates marked isLiked, matchesPreferredTopic, or with higher semanticScore; avoid candidates marked matchesLessTopic and negative semanticScore candidates when similar alternatives exist.
+3. At least 1 (or 2 if serendipity >= 40) should be an "isOutOfBubble": true stretch item from a folder different from the user's top interests.
+4. For each selected item, write a 1-sentence editorial "why" rationale explaining why this piece was selected (e.g. "Selected for your reading interest in Economics", "A thoughtful design retrospective", "Deliberate stretch: outside your usual tech routine").
+5. Candidates are already ordered by publication recency, topic fit and semantic match, and pieces shown in recent digests are down-ranked. Prefer items nearer the top of the list.
+6. Return ONLY a JSON array of objects with keys: "idx" (number), "why" (string), "isOutOfBubble" (boolean).`;
+
+        let aiSelections: Array<{ idx: number; why: string; isOutOfBubble: boolean }> | null = null;
+
+        if (provider === 'openai-compatible' && clientApiKey.trim() && clientBaseUrl && clientModel) {
+          try {
+            const parsed = await callOpenAICompatible({
+              apiKey: clientApiKey.trim(),
+              baseUrl: clientBaseUrl,
+              model: clientModel,
+            }, prompt);
+            const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
+            if (Array.isArray(list) && list.length > 0) aiSelections = list;
+          } catch (e: any) {
+            console.warn('[Curator] OpenAI-compatible curation failed, falling back:', e.message);
           }
-          if (moreIds.includes(item.id) || matchesTopicSignal(item, moreTopics)) {
-            score += 35;
-            why = `Selected for your reading interest in ${item.folder}.`;
+        } else if (provider === 'anthropic' && clientApiKey.trim()) {
+          try {
+            const parsed = await callAnthropic(clientApiKey.trim(), prompt, clientModel || 'claude-3-5-sonnet-20241022');
+            const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
+            if (Array.isArray(list) && list.length > 0) aiSelections = list;
+          } catch (e: any) {
+            console.warn('[Curator] Anthropic curation failed, falling back:', e.message);
           }
-          if (readingStats && readingStats[item.id]?.finished) {
-            score += 5;
+        } else if (provider === 'gemini') {
+          const activeAi = clientApiKey.trim()
+            ? new GoogleGenAI({ apiKey: clientApiKey.trim(), httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+            : ai;
+
+          if (activeAi) {
+            try {
+              const response = await activeAi.models.generateContent({
+                model: clientModel || 'gemini-2.5-flash',
+                contents: prompt,
+                config: { responseMimeType: 'application/json' }
+              });
+              recordGeminiUsage(response);
+              if (response.text) {
+                const parsed = parseModelJson(response.text);
+                const list = Array.isArray(parsed) ? parsed : (parsed?.items || parsed?.selections || parsed?.digest);
+                if (Array.isArray(list) && list.length > 0) aiSelections = list;
+              }
+            } catch (err: any) {
+              console.warn('[Curator] Gemini curation failed:', err.message);
+            }
+          }
+        }
+
+        if (aiSelections && aiSelections.length > 0) {
+          const chosenArticles: any[] = [];
+          const usedIdx = new Set<number>();
+          for (const sel of aiSelections) {
+            const idx = Number(sel?.idx);
+            const entry = scoredPool[idx];
+            if (!entry || usedIdx.has(idx)) continue;
+            usedIdx.add(idx);
+            const { _score, _semantic, ...rest } = entry;
+            chosenArticles.push({
+              ...rest,
+              why: typeof sel.why === 'string' && sel.why.trim() ? sel.why : rest.why,
+              isOutOfBubble: Boolean(sel.isOutOfBubble)
+            });
           }
 
-          return { ...item, why, _score: score };
+          const aiDigest = selectDiverse(rankedItems, itemCount, maxPerSource, chosenArticles);
+          if (aiDigest.length >= Math.min(itemCount, Math.max(1, candidatePool.length))) {
+            const enrichedDigest = await enrichSelectedArticles(aiDigest);
+            return res.json({ digest: enrichedDigest, generatedByAI: true, semanticSummary, feedReport });
+          }
+        }
+      }
+
+      // 3. Deterministic signal-aware curation over the semantically ranked pool
+      const likedExamples = feedbackExamples.filter(entry => entry.vote === 'like');
+      const familiarSources = new Set(
+        likedExamples.map(entry => entry.source).filter((value): value is string => Boolean(value))
+      );
+      const familiarFolders = new Set(
+        likedExamples.map(entry => entry.folder).filter((value): value is string => Boolean(value))
+      );
+      if (familiarFolders.size === 0 && rankedItems.length > 0) {
+        const folderCounts = new Map<string, number>();
+        rankedItems.slice(0, 10).forEach(item => {
+          const key = item.folder || '';
+          if (!key) return;
+          folderCounts.set(key, (folderCounts.get(key) || 0) + 1);
         });
+        const leadingFolder = [...folderCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+        if (leadingFolder) familiarFolders.add(leadingFolder);
+      }
 
-      const inBubble = scored
-        .filter(i => !i.isOutOfBubble)
-        .sort((a, b) => b._score - a._score);
+      const stretchTarget = serendipityDial >= 50
+        ? Math.min(2, itemCount)
+        : serendipityDial >= 20
+          ? Math.min(1, itemCount)
+          : 0;
+      const stretchItems: any[] = [];
+      if (stretchTarget > 0) {
+        for (const item of rankedItems) {
+          if (stretchItems.length >= stretchTarget) break;
+          const source = item.source || '';
+          const folder = item.folder || '';
+          if (familiarSources.has(source) || familiarFolders.has(folder)) continue;
+          const publishedMs = Number(item.publishedAtMs);
+          if (Number.isFinite(publishedMs) && Date.now() - publishedMs > 45 * 24 * 60 * 60 * 1000) continue;
+          stretchItems.push({
+            ...item,
+            isOutOfBubble: true,
+            why: `Deliberate stretch: outside your usual ${familiarFolders.size > 0 ? [...familiarFolders][0] : (folder || 'reading')} routine.`
+          });
+        }
+      }
 
-      const outBubble = scored
-        .filter(i => i.isOutOfBubble)
-        .sort((a, b) => b._score - a._score);
+      const stretchIds = new Set(stretchItems.map(item => item.id));
+      const regular = selectDiverse(
+        rankedItems.filter(item => !stretchIds.has(item.id)),
+        Math.max(0, itemCount - stretchItems.length),
+        maxPerSource
+      );
+      const digest = [...regular, ...stretchItems].slice(0, itemCount);
+      const enrichedDigest = await enrichSelectedArticles(digest);
 
-      const stretchTarget = serendipityDial >= 50 ? Math.min(2, outBubble.length) : Math.min(1, outBubble.length);
-      const regularTarget = Math.max(0, itemCount - stretchTarget);
-
-      const selected = [
-        ...inBubble.slice(0, regularTarget),
-        ...outBubble.slice(0, stretchTarget)
-      ].map(({ _score, ...rest }) => rest);
-
-      res.json({ digest: selected, generatedByAI: false });
+      res.json({ digest: enrichedDigest, generatedByAI: false, semanticSummary, feedReport });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to generate digest' });
     }
   });
 
-  // Comprehensive multi-source feed stream endpoint
-  app.post('/api/feed-stream', async (req, res) => {
+  // Calibration pool for the setup wizard: a spread of recent articles to vote on
+  app.post('/api/calibrate', async (req, res) => {
     try {
-      const { sourceTitle } = req.body;
+      const { sources: clientSources, excludeIds } = req.body;
+      const activeSources = Array.isArray(clientSources) && clientSources.length > 0
+        ? clientSources.filter((s: any) => s.status !== 'failing')
+        : DEFAULT_FEEDS;
 
-      const feedArticles = [
-        {
-          id: 'fa_nw_1',
-          source: 'Nicole Williams',
-          folder: 'Strategy & Craft',
-          title: 'Nobody Ever Gets Credit for Fixing Problems that Never Happened',
-          publishedAt: 'Today · 30m ago',
-          readTime: '6 min read',
-          summary: 'What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing.',
-          url: 'https://substack.com/@pmresearcher/fixing-unseen-problems',
-          fullText: `What gets seen gets rewarded. The fire you put out earns a thank you. The fire you prevented earns nothing.
+      const seed = String(Date.now());
+      const ordered = activeSources.length > 14
+        ? [...activeSources].sort((a: any, b: any) =>
+            stableJitter(seed, String(a.feedUrl || a.id || '')) -
+            stableJitter(seed, String(b.feedUrl || b.id || ''))
+          )
+        : activeSources;
 
-In organizational dynamics, heroic firefighting is visible, dramatic, and emotionally compelling. When a server crashes at 2 AM or a supply chain breaks on a holiday weekend, the engineer or manager who stays up all night to patch the leak is celebrated.
+      const feedResults = await Promise.allSettled(
+        ordered.slice(0, 14).map((s: any) => fetchFeedArticles(s.feedUrl, s.title, s.folder, s.categories))
+      );
 
-Quiet prevention, by contrast, is completely invisible. The architectural refactor that eliminated the concurrency race condition before it ever triggered an outage produces no metrics, no alarms, and no drama.`,
-          bannerImage: 'https://images.unsplash.com/photo-1508873696983-2df5293cb32f?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Top pick from PM Researcher.'
-        },
-        {
-          id: 'fa_ant_1',
-          source: 'The Anthropic Stack',
-          folder: 'Tech & AI',
-          title: 'Scaling Laws and the Economics of Inference',
-          publishedAt: 'Today · 35m ago',
-          readTime: '10 min read',
-          summary: 'Why the engineering bottleneck in machine intelligence is shifting from massive training runs to inference throughput, verification budgets, and latency guarantees.',
-          url: 'https://anthropic.com/research/inference-economics',
-          fullText: `For several years, progress in machine intelligence was measured primarily by the scale of training compute. Today, the decisive competitive frontier is inference: how much reasoning can be executed reliably within strict latency envelopes.
+      const excluded = new Set<string>(
+        Array.isArray(excludeIds) ? excludeIds.filter((id: any) => typeof id === 'string') : []
+      );
 
-When inference becomes abundant and fast, applications shift from synchronous chat interfaces to quiet background editors. Instead of asking a prompt box for suggestions, tools pre-compute digests, verify citations, and organize material before the user even opens their screen.
-
-This architectural shift rewards software that exercises editorial restraint. The goal is no longer generating maximal text, but delivering dense, high-signal curation that respects human attention.`,
-          bannerImage: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'In your Tech & AI folder.'
-        },
-        {
-          id: 'fa_ant_2',
-          source: 'The Anthropic Stack',
-          folder: 'Tech & AI',
-          title: 'Constitutional Steering: Guiding Agentic Workflows with Verifiable Invariants',
-          publishedAt: 'Yesterday · 4:15 PM',
-          readTime: '8 min read',
-          summary: 'How system-level constitutions and invariant tests keep multi-step autonomous processes aligned without brittleness.',
-          url: 'https://anthropic.com/research/constitutional-steering',
-          fullText: `Autonomous agents often derail not because their core logic fails, but because small drift across sequential tool invocations compounds into hallucination.
-
-By enforcing verifiable invariants at boundary transitions, systems can maintain predictable trajectory. The key is treating every intermediate tool call as an auditable contract with strict post-conditions rather than an opaque block of text.`,
-          bannerImage: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Follows your interest in software architecture.'
-        },
-        {
-          id: 'fa_ant_3',
-          source: 'The Anthropic Stack',
-          folder: 'Tech & AI',
-          title: 'Measuring Latency Floor Reductions in Parallel Tool Invocations',
-          publishedAt: 'Nov 11 · 9:00 AM',
-          readTime: '6 min read',
-          summary: 'Benchmarking the architectural advantages of co-executing verification tools in single rounds.',
-          url: 'https://anthropic.com/research/tool-latency-floors',
-          fullText: `When client applications wait for sequential roundtrips between distributed services, latency degrades user engagement quickly.
-
-Batching queries into single parallel dispatches reduces P95 turnaround times significantly while keeping system state atomic. This design pattern proves critical for responsive mobile web applications.`,
-          bannerImage: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Engineering mechanics from The Anthropic Stack.'
-        },
-        {
-          id: 'fa_wh_1',
-          source: 'World Politics & History',
-          folder: 'History',
-          title: 'How Medieval Bell Founders Tuned Bronze by Ear',
-          publishedAt: 'Today · 1h ago',
-          readTime: '7 min read',
-          summary: 'Before electronic spectrum analyzers, Flemish foundry masters learned how shaving internal bronze ribs unlocked harmonic resonance across five octaves.',
-          url: 'https://worldhistory.com/bell-acoustics',
-          fullText: `A cast church bell produces five distinct acoustic overtones: the strike note, the hum, the tierce, the quint, and the nominal. In unmachined bells, these partials clash discordantly.
-
-In the seventeenth century, the Hemony brothers perfected vertical lathe carving on bronze bells, cutting away metal from specific inner rings until the five frequencies resonated in pure concord. This acoustic breakthrough transformed European cityscapes into harmonious musical landscapes.`,
-          bannerImage: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'In your History folder.'
-        },
-        {
-          id: 'fa_wh_2',
-          source: 'World Politics & History',
-          folder: 'History',
-          title: 'The Grain Routes of Byzantium: Logistics of Imperial Survival',
-          publishedAt: 'Yesterday · 2:30 PM',
-          readTime: '9 min read',
-          summary: 'How Constantinople survived centuries of siege through fortified granaries, maritime grain fleets, and price stabilization laws.',
-          url: 'https://worldhistory.com/byzantine-grain-routes',
-          fullText: `The survival of Byzantium was fundamentally an exercise in grain logistics. With hundreds of thousands of citizens confined behind the Theodosian walls, supply lines from Egypt and the Black Sea coasts had to remain unbroken.
-
-The empire established the praefectus annonae to oversee shipping manifests, build earthquake-resilient stone silos, and distribute bread rations during famine. When military lines broke, administrative logistics kept civilization afloat.`,
-          bannerImage: 'https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Direct continuation of the Byzantine trade series.'
-        },
-        {
-          id: 'fa_prospect_1',
-          source: 'Prospect Magazine',
-          folder: 'Culture',
-          title: 'The Quiet Rise of Municipal Water Architects',
-          publishedAt: 'Today · 2h ago',
-          readTime: '6 min read',
-          summary: 'Inside the unglamorous civic civil engineering reshaping how European cities absorb torrential storms while restoring urban biodiversity.',
-          url: 'https://prospectmagazine.co.uk/water-architects',
-          fullText: `Beneath every resilient metropolis lies a network of retention ponds, subterranean drainage channels, and porous paving stones designed to prevent street inundation.
-
-In Rotterdam, public squares serve as basketball courts in dry weather and sunken retention basins during cloudbursts. Rather than hiding storm water in concrete culverts, contemporary urban hydrologists integrate water openly into public civic life.`,
-          bannerImage: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'In your Culture folder.'
-        },
-        {
-          id: 'fa_prospect_2',
-          source: 'Prospect Magazine',
-          folder: 'Culture',
-          title: 'The Rebirth of European Night Trains and Slow Transit',
-          publishedAt: 'Nov 12 · 11:20 AM',
-          readTime: '7 min read',
-          summary: 'Why overnight sleeper lines from Vienna to Brussels are filling up with travelers who value unhurried transit over airport security lines.',
-          url: 'https://prospectmagazine.co.uk/night-trains',
-          fullText: `As aviation taxes and airport congestion mount, European travelers are returning to overnight sleeper routes. Falling asleep in Berlin and waking up in Paris offers a restorative rhythm lost in short-haul air travel.
-
-The renaissance of cross-border rail highlights a broader shift toward deliberate slowness in personal technology, travel, and media consumption.`,
-          bannerImage: 'https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'From Prospect Magazine.'
-        },
-        {
-          id: 'fa_bhaskar_1',
-          source: 'Dr. Bhaskar Economics',
-          folder: 'Economics',
-          title: 'Fractional Reserve Mechanics in Early Renaissance Trading Hubs',
-          publishedAt: 'Today · 3h ago',
-          readTime: '9 min read',
-          summary: 'How deposit receipts in Genoa and Venice evolved into liquid secondary credit instruments that bypassed papal usury restrictions.',
-          url: 'https://bhaskar.econ/fractional-reserve-genoa',
-          fullText: `Medieval merchant bankers discovered that only a small portion of deposited gold coin was ever withdrawn simultaneously. By issuing transfer receipts to settlement merchants, banks unlocked multiplier credit that fueled naval shipping.
-
-This paper analyses how maritime credit contracts evolved within commercial guilds to establish early capital reserves without central bank oversight.`,
-          bannerImage: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'In your Economics folder.'
-        },
-        {
-          id: 'fa_dan_1',
-          source: 'Dan Luu',
-          folder: 'Tech & Engineering',
-          title: 'The Architecture of Long-Lived Systems and Institutional Memory',
-          publishedAt: 'Today · 4h ago',
-          readTime: '7 min read',
-          summary: 'An exploration of how engineering organizations preserve architectural rationale across decades without succumbing to institutional amnesia.',
-          url: 'https://danluu.com/systems-memory',
-          fullText: `When building software or large institutions, the hardest problem is rarely writing the initial code or establishing the charter. The hardest problem is ensuring that the tacit knowledge of why decisions were made survives the departure of the people who made them.
-
-In most modern engineering teams, documentation decays rapidly because it is treated as a chore rather than a living artifact. When an engineer leaves, their mental model of the system leaves with them. Over time, the codebase becomes a series of archaeological layers where current maintainers are afraid to touch certain modules because nobody remembers what load-bearing assumptions they rely on.`,
-          bannerImage: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'You finish this writer almost every time.'
-        },
-        {
-          id: 'fa_dan_2',
-          source: 'Dan Luu',
-          folder: 'Tech & Engineering',
-          title: 'Why Small Tools Outlast Grand Platforms',
-          publishedAt: 'Yesterday · 10:00 AM',
-          readTime: '8 min read',
-          summary: 'A look at unix utilities, plain text formats, and why narrow software endures while ambitious suites collapse under feature bloat.',
-          url: 'https://danluu.com/small-tools',
-          fullText: `Every decade brings a wave of all-in-one platforms promising to unify communication, documents, tasks, and knowledge under a single proprietary roof. Almost inevitably, those platforms grow sluggish, accumulate conflicting workflows, and eventually vanish when corporate priorities shift.
-
-Meanwhile, small single-purpose tools built around open formats keep working quietly for thirty or forty years. Their durability comes from restraint: they do one job cleanly, expose predictable interfaces, and refuse to trap user data inside opaque silos.`,
-          bannerImage: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Dan Luu engineering archive.'
-        },
-        {
-          id: 'fa_strat_1',
-          source: 'Stratechery by Ben Thompson',
-          folder: 'Tech & Strategy',
-          title: 'Stratechery: The Aggregation Theory of Modern Media',
-          publishedAt: 'Today · 5h ago',
-          readTime: '11 min read',
-          summary: 'How zero marginal distribution cost inverted media power dynamics, and why owning discovery dominates owning supply.',
-          url: 'https://stratechery.com/aggregation-theory',
-          fullText: `For decades, media companies enjoyed local monopolies because distribution was physically constrained. If you owned the printing press, the delivery trucks, or the cable television lines, you controlled access to the audience.
-
-The internet inverted this power dynamic completely. Distribution marginal cost dropped to zero, and all content became instantly accessible globally. In this new paradigm, the bottleneck shifted from distribution to discovery.`,
-          bannerImage: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'You finish this writer almost every time.'
-        },
-        {
-          id: 'fa_mr_1',
-          source: 'Marginal Revolution',
-          folder: 'Economics',
-          title: 'Venetian Banking Innovations and the Birth of Modern Credit',
-          publishedAt: 'Today · 6h ago',
-          readTime: '9 min read',
-          summary: 'How 14th-century merchants in the Venetian lagoon invented bills of exchange and giro banking that powered the Renaissance.',
-          url: 'https://marginalrevolution.com/venice-credit',
-          fullText: `In the crowded piazzas of 14th-century Venice, merchants faced a logistical nightmare. Transporting gold coin across pirate-infested Mediterranean trade routes was both dangerous and inefficient. Out of this necessity arose the giro bank and the bill of exchange—instruments that transformed credit from a personal favor between acquaintances into a liquid, transferable financial asset.`,
-          bannerImage: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Follows on from the Byzantine trade piece.'
-        },
-        {
-          id: 'fa_mr_2',
-          source: 'Marginal Revolution',
-          folder: 'Economics',
-          title: 'The Medici Ledger: Double-Entry Bookkeeping as Cultural Engine',
-          publishedAt: 'Yesterday · 8:15 AM',
-          readTime: '7 min read',
-          summary: 'How systematic balance sheets allowed Florentine merchant houses to coordinate overseas branches with audit confidence.',
-          url: 'https://marginalrevolution.com/medici-ledger',
-          fullText: `Before double-entry bookkeeping spread across northern Italy, even wealthy trading houses struggled to tell whether a distant voyage had truly turned a profit or simply moved cash from one pocket to another. Luca Pacioli's codification of Venetian accounting methods turned commerce into a legible discipline.`,
-          bannerImage: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'Next step in Renaissance financial history.'
-        },
-        {
-          id: 'fa_ala_1',
-          source: 'A List Apart',
-          folder: 'Design',
-          title: 'The Unseen Geometry of Traditional Japanese Joinery',
-          publishedAt: 'Today · 7h ago',
-          readTime: '5 min read',
-          summary: 'Why interlocking timber joints without nails or glue achieve seismic resilience and timeless aesthetic harmony.',
-          url: 'https://alistapart.com/japanese-joinery',
-          fullText: `In traditional Japanese timber architecture, master carpenters construct soaring temples and multi-story pagodas without a single nail, screw, or drop of glue. Instead, they rely on complex interlocking joints—such as the sashigane and kanawa tsugi—that lock tighter as wood expands and contracts with humidity and seismic tremors.`,
-          bannerImage: 'https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'In your Design folder.'
-        },
-        {
-          id: 'fa_longnow_1',
-          source: 'Long Now Foundation',
-          folder: 'Philosophy & Long-term',
-          title: 'Deep Time and the 10,000-Year Clock',
-          publishedAt: 'Yesterday · 5:00 PM',
-          readTime: '6 min read',
-          summary: 'Designing mechanical artifacts intended to run accurately for millennia requires rethinking human impatience.',
-          url: 'https://longnow.org/10000-year-clock',
-          fullText: `Modern civilization suffers from a chronic temporal myopia. We plan in quarterly earnings reports, political election cycles, and 24-hour news cycles. Yet the most profound challenges facing humanity—ecological stewardship, nuclear waste management, infrastructure resilience—operate on timescales of centuries and millennia.`,
-          bannerImage: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: false,
-          why: 'In your Philosophy folder.'
-        },
-        {
-          id: 'fa_ny_1',
-          source: 'The New Yorker - Books',
-          folder: 'Culture',
-          title: 'The Sonification of Stellar Nurseries: Listening to Nebulae',
-          publishedAt: 'Nov 12 · 2:00 PM',
-          readTime: '8 min read',
-          summary: 'How astronomers are translating James Webb Space Telescope infrared data into audible soundscapes.',
-          url: 'https://www.newyorker.com/science/stellar-sonification',
-          fullText: `For centuries, astronomy has been an overwhelmingly visual science. We chart the universe through photographs rendered in false color, mapping light waves that our eyes cannot naturally perceive. But in recent years, astrophysicists and sound artists have begun translating astronomical telescope data into audible frequencies—a process known as sonification.`,
-          bannerImage: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80',
-          isOutOfBubble: true,
-          why: 'Deliberate stretch: Outside your usual tech and economics routine.'
-        }
-      ];
-
-      // If a specific source title or ID was selected, filter by that source
-      let filtered = feedArticles;
-      if (sourceTitle && sourceTitle.trim() && sourceTitle !== 'all') {
-        const queryNorm = sourceTitle.trim().toLowerCase();
-        filtered = feedArticles.filter(
-          item =>
-            item.source.toLowerCase() === queryNorm ||
-            item.source.toLowerCase().includes(queryNorm) ||
-            queryNorm.includes(item.source.toLowerCase())
-        );
-
-        // If it's a custom source without pre-baked articles, synthesize realistic articles
-        if (filtered.length === 0) {
-          filtered = [
-            {
-              id: `fa_custom_${Date.now()}_1`,
-              source: sourceTitle,
-              folder: 'Custom Feed',
-              title: `Latest Dispatches from ${sourceTitle}`,
-              publishedAt: 'Today · 15m ago',
-              readTime: '6 min read',
-              summary: `Recent analytical reporting and essays directly from the ${sourceTitle} publication stream.`,
-              url: `https://example.com/${encodeURIComponent(sourceTitle)}`,
-              fullText: `This entry represents the live syndicated article stream from ${sourceTitle}. In this stream, entries appear in chronological arrival order—providing the traditional, comprehensive view of everything published by this author or organization.\n\nWhile Curator's morning digest distills five to eight items with editorial explanations, this Feeds tab gives you unfiltered access to the complete chronological stream whenever you want to browse all entries.`,
-              bannerImage: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80',
-              isOutOfBubble: false,
-              why: `From your ${sourceTitle} subscription.`
-            },
-            {
-              id: `fa_custom_${Date.now()}_2`,
-              source: sourceTitle,
-              folder: 'Custom Feed',
-              title: `Archived Note: Foundational Perspectives on ${sourceTitle}`,
-              publishedAt: 'Yesterday · 3:45 PM',
-              readTime: '5 min read',
-              summary: `Earlier commentary and historical analysis published in the ${sourceTitle} feed.`,
-              url: `https://example.com/${encodeURIComponent(sourceTitle)}/archive`,
-              fullText: `A deeper retrospective from ${sourceTitle}. Reading older entries in an author's archive helps uncover the foundational mental models that inform their current viewpoints.\n\nTraditional RSS streams allow you to track the evolution of an author's thinking over time without algorithmic interference.`,
-              bannerImage: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
-              isOutOfBubble: false,
-              why: `Archived article from ${sourceTitle}.`
-            }
-          ];
+      let pool: any[] = [];
+      for (const result of feedResults) {
+        if (result.status === 'fulfilled' && Array.isArray(result.value)) {
+          pool.push(...result.value);
         }
       }
+
+      const seen = new Set<string>();
+      pool = pool
+        .filter(item => {
+          if (!item || !item.id || !item.title) return false;
+          if (excluded.has(item.id) || seen.has(item.id)) return false;
+          seen.add(item.id);
+          return true;
+        })
+        .sort((a, b) => {
+          const left = Number(a.publishedAtMs);
+          const right = Number(b.publishedAtMs);
+          return (Number.isFinite(right) ? right : 0) - (Number.isFinite(left) ? left : 0);
+        });
+
+      const perSource = new Map<string, number>();
+      const candidates: any[] = [];
+      for (const item of pool) {
+        if (candidates.length >= 12) break;
+        const key = item.source || 'Unknown';
+        const used = perSource.get(key) || 0;
+        if (used >= 2) continue;
+        perSource.set(key, used + 1);
+        candidates.push({
+          id: item.id,
+          title: item.title,
+          source: item.source,
+          sourceDescription: item.sourceDescription,
+          folder: item.folder,
+          categories: item.categories,
+          summary: item.summary,
+          readTime: item.readTime,
+          url: item.url,
+          fullText: String(item.fullText || '').slice(0, 1500),
+          publishedAt: item.publishedAt,
+          bannerImage: item.bannerImage,
+          isOutOfBubble: false,
+          why: 'Calibration sample',
+        });
+      }
+
+      if (candidates.length === 0) {
+        return res.status(404).json({ error: 'No live articles were available to calibrate with.' });
+      }
+
+      res.json({ candidates });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Could not build a calibration list' });
+    }
+  });
+
+  // Comprehensive multi-source live feed stream endpoint
+  app.post('/api/feed-stream', async (req, res) => {
+    try {
+      const { sourceTitle, sources: clientSources } = req.body;
+      const allSources = Array.isArray(clientSources) && clientSources.length > 0
+        ? clientSources
+        : DEFAULT_FEEDS;
+
+      let targetFeeds: Array<{ title: string; feedUrl: string; folder: string; categories?: string[] }> = [];
+
+      if (sourceTitle && sourceTitle.trim() && sourceTitle !== 'all') {
+        const queryNorm = sourceTitle.trim().toLowerCase();
+        const matched = allSources.filter((s: any) =>
+          String(s.title || '').toLowerCase() === queryNorm ||
+          String(s.title || '').toLowerCase().includes(queryNorm) ||
+          queryNorm.includes(String(s.title || '').toLowerCase()) ||
+          String(s.id || '') === sourceTitle
+        );
+        if (matched.length > 0) {
+          targetFeeds = matched;
+        } else {
+          const defMatch = DEFAULT_FEEDS.filter(s =>
+            s.title.toLowerCase().includes(queryNorm) || queryNorm.includes(s.title.toLowerCase())
+          );
+          targetFeeds = defMatch.length > 0 ? defMatch : [{ title: sourceTitle, feedUrl: '', folder: 'Custom Feed' }];
+        }
+      } else {
+        targetFeeds = allSources.filter((s: any) => s.status !== 'failing').slice(0, 24);
+      }
+
+      const results = await Promise.allSettled(
+        targetFeeds.map(f => fetchFeedArticles(f.feedUrl, f.title, f.folder, f.categories))
+      );
+
+      let articles: any[] = [];
+      for (const r of results) {
+        if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+          articles.push(...r.value);
+        }
+      }
+
+      if (articles.length === 0 && targetFeeds !== DEFAULT_FEEDS) {
+        const defResults = await Promise.allSettled(
+          DEFAULT_FEEDS.slice(0, 4).map(f => fetchFeedArticles(f.feedUrl, f.title, f.folder))
+        );
+        for (const r of defResults) {
+          if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+            articles.push(...r.value);
+          }
+        }
+      }
+
+      // Feeds arrive in parallel, so the merged list would otherwise be grouped by source
+      // rather than the newest-first order the stream promises.
+      articles.sort((a: any, b: any) => {
+        const left = Number(a?.publishedAtMs);
+        const right = Number(b?.publishedAtMs);
+        return (Number.isFinite(right) ? right : 0) - (Number.isFinite(left) ? left : 0);
+      });
 
       res.json({
         success: true,
         source: sourceTitle || 'all',
-        total: filtered.length,
-        articles: filtered
+        total: articles.length,
+        articles
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to retrieve feed stream' });
@@ -1311,17 +2579,16 @@ The internet inverted this power dynamic completely. Distribution marginal cost 
   // Google Search Grounding + RSS Feed Investigation endpoint
   app.post('/api/discover-sources', async (req, res) => {
     try {
-      const { query } = req.body;
+      const { query, apiKey: clientApiKey } = req.body;
       if (!query || typeof query !== 'string' || !query.trim()) {
         return res.status(400).json({ error: 'Search terms are required.' });
       }
 
-      if (!ai) {
-        return res.status(503).json({
-          error: 'Google Search discovery requires a configured GEMINI_API_KEY on the server.',
-        });
-      }
+      const trimmedClientKey = typeof clientApiKey === 'string' ? clientApiKey.trim() : '';
 
+      const discoveryAi = trimmedClientKey
+        ? new GoogleGenAI({ apiKey: trimmedClientKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+        : ai;
 
       const prompt = `Use Google Search to find 5 to 6 high-quality independent publications, blogs, newsletters, or editorial websites relevant to this search topic: "${query.trim()}".
 
@@ -1345,15 +2612,19 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
         summary?: string;
       }> = [];
 
-      if (ai) {
+      const isValidCandidate = (item: any) =>
+        Boolean(item && typeof item.title === 'string' && typeof item.siteUrl === 'string');
+
+      if (discoveryAi) {
         try {
-          const response = await ai.models.generateContent({
-            model: 'gemini-4-hydrogen',
+          const response = await discoveryAi.models.generateContent({
+            model: process.env.GEMINI_DISCOVERY_MODEL || 'gemini-2.5-flash',
             contents: prompt,
             config: {
               tools: [{ googleSearch: {} }],
             },
           });
+          recordGeminiUsage(response);
 
           rawText = response.text || '';
           const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
@@ -1509,12 +2780,22 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
     }
   });
 
-  // Vite middleware for development (HMR disabled in cloud iframe to prevent WebSocket closed errors)
-  const vite = await createViteServer({
-    server: { middlewareMode: true, hmr: false }
-  });
-
-  app.use(vite.middlewares);
+  if (process.env.NODE_ENV === 'production') {
+    // Serve the client built by `npm run build` instead of mounting the dev middleware
+    const distDir = path.resolve(process.cwd(), 'dist');
+    app.use(express.static(distDir, { index: false, maxAge: '1h' }));
+    app.get('*', (_req, res) => res.sendFile(path.join(distDir, 'index.html')));
+  } else {
+    // Vite middleware for development (HMR disabled in cloud iframe to prevent WebSocket closed errors)
+    const vite = await createViteServer({
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        allowedHosts: true,
+      }
+    });
+    app.use(vite.middlewares);
+  }
 
   app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);

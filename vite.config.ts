@@ -11,7 +11,7 @@ export default defineConfig(() => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
+        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'fonts/*.woff2'],
         manifest: {
           id: '/',
           name: 'Curator — Daily Curated Reading Digest',
@@ -51,6 +51,7 @@ export default defineConfig(() => {
     server: {
       // HMR is disabled in AI Studio cloud iframe environment to prevent WebSocket closed errors.
       hmr: false,
+      allowedHosts: ['thecurator.ai.studio', '.ai.studio', '.run.app', 'localhost', '127.0.0.1'],
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },

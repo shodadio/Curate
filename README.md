@@ -17,13 +17,13 @@
 - [Editorial Philosophy](#editorial-philosophy)
 - [Key Features](#key-features)
   - [1. Daily Curated Digest](#1-daily-curated-digest)
-  - [2. "Out of the Bubble" Serendipity](#2-out-of-the-bubble-serendipity)
-  - [3. Signal Tuning with Undo / Redo Safeguards](#3-signal-tuning-with-undo--redo-safeguards)
+  - [2. Deliberate Stretch ("Out of the Bubble" picks)](#2-deliberate-stretch-out-of-the-bubble-picks)
+  - [3. Signal Tuning with Undo Safeguards](#3-signal-tuning-with-undo-safeguards)
   - [4. Google Search RSS Discovery & Feed Synthesis](#4-google-search-rss-discovery--feed-synthesis)
   - [5. Outbound SSRF Hardening & Network Security](#5-outbound-ssrf-hardening--network-security)
   - [6. High-Signal Deterministic Fallback Engine](#6-high-signal-deterministic-fallback-engine)
   - [7. OPML Import & Export](#7-opml-import--export)
-  - [8. Distraction-Free Reader & iOS Web Speech Read Aloud](#8-distraction-free-reader--ios-web-speech-read-aloud)
+  - [8. Distraction-Free Reader & Onboard Read Aloud](#8-distraction-free-reader--onboard-read-aloud)
   - [9. Mobile & iOS Safari Viewport Hardening](#9-mobile--ios-safari-viewport-hardening)
   - [10. Progressive Web App (PWA) Support](#10-progressive-web-app-pwa-support)
 - [System Architecture](#system-architecture)
@@ -52,7 +52,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 **Curator** reintroduces the classic ritual of the **finite morning edition**:
 - **Finite editions**: Choose between 3, 5, 8, 12, or 15 high-signal pieces each morning. When you reach the bottom, you are done for the day.
 - **Editorial signal over clickbait**: Evaluates articles based on analytical depth, evergreen value, and original reporting rather than sensationalism.
-- **Serendipity by design**: Includes deliberate "Out of the Bubble" selections from history, philosophy, design, and economics to prevent intellectual echo chambers.
+- **Deliberate stretch by design**: The digest includes "Out of the Bubble" selections from history, philosophy, design, and economics — tuned by the **Serendipity** slider in the Today controls — to prevent intellectual echo chambers.
 - **Forgiving user controls**: Any negative preference signal (such as clicking "Fewer like this") provides an immediate inline undo confirmation and interactive toast fallback, ensuring accidental taps never purge content permanently.
 
 ---
@@ -64,18 +64,19 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Dynamic Summaries**: Automatically generates concise, informative executive summaries and reading notes.
 - **Editorial Ranking**: Scores articles on analytical density, source reputation, topic diversity, and personal reading history.
 
-### 2. "Out of the Bubble" Serendipity
+### 2. Deliberate Stretch ("Out of the Bubble" picks)
+- The Today controls label the dial **Serendipity**, and the digest section carrying these picks is titled **Deliberate Stretch — Outside Your Usual Bubble**.
 - Deliberately identifies and highlights articles outside your standard reading habits.
 - Pulls from foundational domains such as long-term thinking, political philosophy, urbanism, and deep history to challenge assumptions and spark creative cross-pollination.
 
-### 3. Signal Tuning with Undo / Redo Safeguards
+### 3. Signal Tuning with Undo Safeguards
 - **Streamlined Icon-Only Controls**: Clean, minimalist thumbs-up and thumbs-down icon buttons on cards keep the layout uncluttered without extraneous "More" or "Less" text labels.
 - **More Like This**: Boosts weights for related topics and source categories (amber highlight on activation).
 - **Fewer Like This**: Deprioritizes recurring themes without abrupt card deletion (rose highlight on activation).
-- **Undo / Redo Fallback**:
-  - When clicking "Fewer", the card morphs into an inline placeholder with `[ ⟲ Undo / Redo ]` and a dismiss option.
-  - An interactive toast notification persists for 7 seconds with a direct one-click `Undo / Redo` action.
-  - Inside the reader modal, clicking "Fewer" preserves your place and displays a reversible `✓ Fewer like this (Undo)` state without closing the article.
+- **Undo fallback**:
+  - When clicking "Fewer", the card morphs into an inline placeholder with an **Undo** button and a dismiss option.
+  - A toast notification appears with a direct one-click **Undo** action.
+  - Inside the reader modal, clicking "Fewer" preserves your place and shows an **Undo** button without closing the article.
 
 ### 4. Google Search RSS Discovery & Feed Synthesis
 - **Search Authors & Outlets**: Enter the name of any publication, thinker, or newsletter (e.g., *Stratechery*, *Marginal Revolution*, *Dan Luu*).
@@ -88,26 +89,28 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Safe Redirect Resolution**: Limits redirect hops to 4 with re-validation on every hop.
 - **Payload Size Cap**: Enforces a strict 2MB maximum page download limit (`MAX_PAGE_BYTES`) to prevent denial-of-service memory exhaustion.
 
-### 6. High-Signal Deterministic Fallback Engine
-- If the Gemini API key is not present or an AI service error occurs, Curator automatically and seamlessly falls back to its built-in **Deterministic Editorial Signal Engine**.
-- The deterministic algorithm scores articles using title heuristics, domain authority rankings, content length metrics, and time-decay curves.
-- The user's reading flow is never blocked or interrupted by network or API availability issues.
+### 6. Provider-Configurable Curation & Semantic Ranking
+- Digest curation can use a configurable OpenAI-compatible chat endpoint, Anthropic, optional Gemini, or the built-in deterministic engine.
+- Semantic ranking uses a separately configured OpenAI-compatible embeddings endpoint or optional Gemini embeddings, with provider/model/base URL settings in the app.
+- Feedback examples remain browser-local; embedding vectors are short-lived server-memory cache entries. If an API is unavailable, Curator falls back to deterministic ranking.
+- Google Search grounding is an optional source-discovery adapter; without it, source discovery uses Curator's built-in publication directory.
 
 ### 7. OPML Import & Export
 - **One-Click Migration**: Import existing subscriptions from Feedly, Inoreader, NetNewsWire, Readwise Reader, Reeder, or NewsBlur.
 - **Folder Preservation**: Preserves nested categories, folders, and custom tags.
 - **Export Anytime**: Download a clean, standardized `.opml` XML file containing your complete watch list.
 
-### 8. Distraction-Free Reader & iOS Web Speech Read Aloud
-- **Typographic Discipline**: Clean reading interface using *Lora* (serif body), *Plus Jakarta Sans* (interface), and *JetBrains Mono* (metadata).
-- **Native Web Speech Read Aloud**:
-  - Integrated text-to-speech audio player powered by the browser's native `window.speechSynthesis`.
-  - Fully compatible with iOS Safari and modern mobile browsers.
-  - Play, pause, resume, and stop controls with progress tracking.
+### 8. Distraction-Free Reader & Onboard Read Aloud
+- **Typographic Discipline**: One self-hosted variable family, *Inter* (roman 47 KB + italic 51 KB woff2, `font-display: optional`), used for the interface, reading bodies, wordmark and metadata alike — no Google Fonts requests, so text never reflows or changes face after first paint.
+- **Native Read Aloud**:
+  - A sentence-by-sentence queue over the browser's own `window.speechSynthesis`, so an article is never cut off by the engine's long-utterance limit (Chrome stops at roughly fifteen seconds, iOS stalls on very long strings), and every paragraph break gets a natural beat.
+  - Defaults to **Jamie (Premium)** at a calm 0.95× rate when the browser exposes that voice; otherwise it leaves voice selection to the device's Spoken Content settings. Automatic mode prefers voices explicitly named Enhanced, Premium, Neural or Natural. Other installed voices and any speed can be chosen by hand in **Settings → Read aloud**, with a *Hear this voice* preview.
+  - Live progress bar with paragraph and sentence position, the spoken paragraph highlighted, and tap-any-paragraph to listen from that point.
+  - Feed debris — URLs, footnote marks, bracket asides, "Read more" furniture, abbreviations and currency — is normalised out of the text before it reaches the voice.
 - **Scroll Depth Tracker**: Automatically tracks reading progress and marks articles as finished once the user scrolls past 85% depth.
 
 ### 9. Mobile & iOS Safari Viewport Hardening
-- **Zero Horizontal Bleed**: `overflow-x: hidden`, `width: 100%`, and `background-color: #020617` enforced across `html`, `body`, `#root`, and layout wrappers.
+- **Zero Horizontal Bleed**: `overflow-x: clip`, `width: 100%`, and `background-color: #020617` enforced across `html`, `body`, `#root`, and layout wrappers. Clipping avoids creating an overflow scroll container that can interrupt the sticky header.
 - **Safe Area Insets**: Uses `viewport-fit=cover` and responsive padding (`px-4 sm:px-6`) to prevent notch clipping or cut-off margins on mobile viewports.
 - **Floating Bottom Dock**: Floating navigation dock centered using `left-1/2 -translate-x-1/2` and clamped to `w-[calc(100%-2rem)] max-w-lg`, preventing horizontal page jitter.
 
@@ -125,11 +128,11 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                       Client (React 19)                         │
-│  - Plus Jakarta Sans + Lora + JetBrains Mono                    │
+│  - Inter (self-hosted, sole family)                                │
 │  - Top Header Navigation with Refresh & Settings Controls       │
 │  - Bottom Dock Navigation (Today, Feeds, Saved, Sources)        │
-│  - Signal Tuning with Undo/Redo Fallbacks                       │
-│  - Web Speech API Audio Player                                  │
+│  - Signal Tuning with Undo Fallbacks                            │
+│  - Sentence-Queued Read Aloud (voice + rate)                    │
 │  - LocalStorage State Manager (Bookmarks, Stats, Signal Weights)│
 └────────────────────────────────┬────────────────────────────────┘
                                  │ HTTP / JSON
@@ -145,11 +148,11 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 │  • /api/parse-opml                                              │
 ├────────────────────────────────┬────────────────────────────────┤
 │                                │                                │
-│        Google GenAI SDK        │   Deterministic Signal Engine  │
-│      (gemini-2.5-flash)        │      (Automatic Fallback)      │
-│  - Deep article curation       │  - Analytical density scoring  │
-│  - Executive summaries         │  - Anti-clickbait heuristics   │
-│  - "Out of Bubble" serendipity │  - Domain authority ranking    │
+│      Provider Adapters         │   Built-in Semantic Engine     │
+│  - OpenAI-compatible APIs      │      (Always On, No Key)       │
+│  - Optional Anthropic/Gemini   │  - TF-IDF article similarity   │
+│  - Separate embedding API      │  - Vote-weighted centroids     │
+│                                │  - Recency + exposure decay    │
 └────────────────────────────────┴────────────────────────────────┘
 ```
 
@@ -160,6 +163,21 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 ### `POST /api/curate`
 Accepts a list of sources, item count target (3–15), and optional topic preference adjustments. Gathers recent feed entries and returns ranked, summarized digest articles with an "Out of the Bubble" pick.
 
+Ranking happens in three layers, and all three run without any API key:
+
+1. **Built-in semantic engine** — TF-IDF vectors over each article's title, folder, summary and excerpt, compared against recency-weighted centroids of your liked and disliked articles. Legacy votes (ids without a stored excerpt) are recovered from the live pool so the engine learns immediately.
+2. **Freshness** — articles you have already been shown are down-weighted (heavy for 18 hours, lighter for up to two weeks), and a manual refresh keeps the current digest's articles out of the pool when there is room. Feed libraries wider than one run can fetch are rotated by a per-request seed.
+3. **Optional provider embeddings** — when an OpenAI-compatible or Gemini embeddings endpoint is configured, provider similarity is blended 65/35 with the built-in scores. Provider failures fall back to the built-in engine rather than silently disabling semantic ranking.
+
+### Setup and calibration
+A cold profile has nothing to rank against, so the app ships a three-step setup flow (shown on first run when no votes exist, and re-runnable from **Settings → Your reading preferences → Teach Curator with articles**):
+
+1. **Sources** — shows the feed count and scans them.
+2. **Calibration** — presents up to 12 recent articles from across the library (max 2 per source) with *More like this* / *Not for me*. Each tap is written to the browser-local profile exactly like a digest vote.
+3. **Engine** — confirms the built-in engine is on and builds the first digest. Embeddings providers stay optional.
+
+Calibration is served by `POST /api/calibrate` with `{ sources, excludeIds }` and returns up to 12 candidate articles, newest first and spread across sources. It uses the same feed cache as curation, so a scan immediately followed by a digest does not re-download every feed.
+
 **Request Body:**
 ```json
 {
@@ -167,6 +185,13 @@ Accepts a list of sources, item count target (3–15), and optional topic prefer
     { "id": "src_0", "title": "Nicole Williams", "feedUrl": "https://pmresearcher.substack.com/feed", "folder": "Strategy & Craft" }
   ],
   "signals": { "more": ["Technology"], "less": ["Crypto"] },
+  "feedback": [
+    { "id": "live_ab12", "vote": "like", "title": "The Architecture of Deep Focus", "text": "…", "timestamp": 1732000000000, "source": "Nicole Williams", "folder": "Strategy & Craft" }
+  ],
+  "recentlyShown": [{ "id": "live_cd34", "shownAt": 1732000000000 }],
+  "previousDigestIds": ["live_cd34"],
+  "fresh": true,
+  "seed": "1732000000000-0.42",
   "itemCount": 6,
   "serendipityDial": 20
 }
@@ -242,7 +267,7 @@ Synthesizes a live RSS 2.0 XML feed for websites that do not provide native feed
 ### Prerequisites
 - **Node.js**: v18.0.0 or higher
 - **npm**: v9.0.0 or higher
-- *(Optional)* **Gemini API Key**: A free API key from [Google AI Studio](https://aistudio.google.com/). If omitted, Curator automatically runs using the built-in Deterministic Editorial Engine.
+- *(Optional)* Provider API keys: configure an OpenAI-compatible endpoint, Anthropic, or Gemini in Curator's Settings. A server-side Gemini key is optional for Google Search-grounded discovery and Gemini-provider fallback.
 
 ### Installation
 
@@ -261,14 +286,15 @@ Synthesizes a live RSS 2.0 XML feed for websites that do not provide native feed
 
 Create a `.env` file in the project root:
 ```env
-# Optional: Google AI Studio Gemini API Key for AI curation & summaries
+# Optional server-side Gemini key for Google Search grounding,
+# or when Gemini is selected as the curation/embedding provider.
 GEMINI_API_KEY=your_gemini_api_key_here
 
 # Server port (defaults to 3000)
 PORT=3000
 ```
 
-> **Note**: If `GEMINI_API_KEY` is not provided, Curator automatically operates on its Deterministic Editorial Engine with zero configuration required.
+> **Note**: Other provider keys and OpenAI-compatible base URLs are configured in Curator's Settings and stored in this browser. Without an AI provider, Curator uses deterministic curation.
 
 ### Running Locally
 

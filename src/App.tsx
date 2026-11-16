@@ -4,8 +4,17 @@ import {
   Download, Upload, Sliders, ExternalLink, ArrowLeft, Sparkles, 
   AlertCircle, X, Home, Compass,
   ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square,
-  RotateCcw, EyeOff
+  RotateCcw, EyeOff, BarChart3, Clock, ArrowRight, ChevronDown, Activity
 } from 'lucide-react';
+import QRCode from 'qrcode';
+import { createPortal } from 'react-dom';
+import { CuratorMark } from './components/CuratorLogo';
+import { WeeklyReviewModal, WeeklyReadingItem } from './components/WeeklyReviewModal';
+import { InterestsEditor } from './components/InterestsEditor';
+import { ProviderTestButton } from './components/ProviderTestButton';
+import { FeedbackActions } from './components/FeedbackActions';
+import { DigestEmptyState } from './components/DigestEmptyState';
+import { loadInterests, saveInterests, suggestionsFromFolders, type InterestSet } from './interests';
 
 interface DiscoveredSource {
   title: string;
@@ -25,6 +34,7 @@ interface DigestItem {
   title: string;
   source: string;
   folder: string;
+  categories?: string[];
   readTime: string;
   why: string;
   summary: string;
@@ -35,6 +45,8 @@ interface DigestItem {
   avatar?: string;
   publishedAt?: string;
   quote?: string;
+  // The publication's own blurb, carried on the articles a feed returns
+  sourceDescription?: string;
 }
 
 interface SourceItem {
@@ -42,19 +54,450 @@ interface SourceItem {
   title: string;
   feedUrl: string;
   folder: string;
+  categories: string[];
   status: 'active' | 'failing';
   failingReason?: string;
   lastSyncedAt?: number;
   avatar?: string;
+  // The feed's channel description, cached from the last successful fetch
+  description?: string;
 }
 
-// Digest size choices for today's issue, expressed as a range of items.
-// The count is the top of the range, so "0-10" shows the 10 best items of the day.
-const DIGEST_SIZE_RANGES = [
-  { label: '0-10', count: 10 },
-  { label: '10-20', count: 20 },
-  { label: '20-30', count: 30 },
-] as const;
+interface SemanticFeedbackItem {
+  id: string;
+  vote: 'like' | 'dislike';
+  title: string;
+  text: string;
+  timestamp: number;
+  source?: string;
+  folder?: string;
+}
+
+const normalizeCategoryLabels = (raw: unknown, fallback?: string): string[] => {
+  const labels = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of labels) {
+    if (typeof value !== 'string') continue;
+    const normalized = value.replace(/\s+/g, ' ').trim().slice(0, 40);
+    const label = normalized.toLowerCase() === 'uncategorized' ? 'General' : normalized;
+    const key = label.toLowerCase();
+    if (!label || seen.has(key)) continue;
+    seen.add(key);
+    result.push(label);
+  }
+  if (result.length === 0 && !Array.isArray(raw) && fallback?.trim()) {
+    const normalizedFallback = fallback.replace(/\s+/g, ' ').trim().slice(0, 40);
+    result.push(normalizedFallback.toLowerCase() === 'uncategorized' ? 'General' : normalizedFallback);
+  }
+  return result;
+};
+
+// Show a feed URL short enough to scan: host plus a path cut on a slash, never
+// mid-word. The full URL stays on the title tooltip.
+function formatFeedUrlForDisplay(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname.replace(/\/+$/, '');
+    const text = parsed.hostname + path;
+    if (text.length <= 44) return text;
+    const trimmed = path.slice(0, Math.max(0, 44 - parsed.hostname.length));
+    const cut = trimmed.lastIndexOf('/');
+    return parsed.hostname + (cut > 0 ? trimmed.slice(0, cut) : trimmed) + '…';
+  } catch {
+    return url;
+  }
+}
+
+function decodeArticleEntities(text: string): string {
+  return (text || '')
+    .replace(/&#x([0-9a-f]+);/gi, (entity, hex: string) => {
+      const code = parseInt(hex, 16);
+      return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
+        ? String.fromCodePoint(code)
+        : entity;
+    })
+    .replace(/&#(\d+);/g, (entity, dec: string) => {
+      const code = parseInt(dec, 10);
+      return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
+        ? String.fromCodePoint(code)
+        : entity;
+    })
+    .replace(/&bull;/gi, '•')
+    .replace(/&middot;/gi, '·')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&mdash;/gi, '—')
+    .replace(/&ndash;/gi, '–')
+    .replace(/&hellip;/gi, '…')
+    .replace(/&rsquo;|&lsquo;/gi, '’')
+    .replace(/&rdquo;|&ldquo;/gi, '”')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;|&#39;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&');
+}
+
+// Reader-side clean-up in case cached feed text still carries markup debris.
+function buildArticleParagraphs(text: string): string[] {
+  if (!text) return [];
+  const clean = decodeArticleEntities(text)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    // Articles stored before the cleaner was fixed still carry a space inside "U. S.",
+    // "1. 79" and "74, 000"; repair them here so old saves read correctly too
+    .replace(/(\d)([.,])\s+(\d)/g, '$1$2$3')
+    .replace(/\b(?:[A-Za-z]\.\s+){1,}[A-Za-z]\./g, run => run.replace(/\s+/g, ''))
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    // Only a word that has run into the next one is repaired here. The old rule also fired
+    // inside decimals, thousands separators and dotted abbreviations ("1. 79", "74, 000",
+    // "U. S.", "e. g."), which the reader showed that way and the voice then read in pieces.
+    .replace(/([a-z])([,;:])(?=[A-Za-z])/g, '$1$2 ')
+    .replace(/([a-z])([.!?])(?=[A-Z][a-z])/g, '$1$2 ')
+    .replace(/\n{3,}/g, '\n\n');
+
+  return clean
+    .split(/\n{2,}/)
+    .map(paragraph => {
+      let next = paragraph
+        .replace(/\s*\n\s*/g, ' ')
+        .replace(/\s+([,.;:!?])/g, '$1')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+      // A stripped inline link can leave a paragraph starting with the punctuation that followed it.
+      if (/^[,;:.]/.test(next)) {
+        next = next.replace(/^[,;:.]+\s*/, '');
+        next = next.charAt(0).toUpperCase() + next.slice(1);
+      }
+      return next;
+    })
+    .filter(paragraph => paragraph.length > 0 && /[\p{L}\p{N}]/u.test(paragraph))
+    .filter(paragraph => !(paragraph.length < 180 && /^(click here|subscribe|sign up|follow me|read more|share this|advertisement)\b/i.test(paragraph)))
+    .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph));
+}
+
+// ---- Read Aloud: text preparation and the spoken queue -----------------------
+
+interface SpeechChunk {
+  text: string;
+  // -1 for the title, byline and summary; otherwise the rendered paragraph it belongs to
+  paragraphIndex: number;
+}
+
+// Browsers cut a long utterance off (Chrome after roughly fifteen seconds, iOS stalls),
+// so the reader speaks a sentence at a time: 220 characters is comfortably inside every
+// engine's comfort zone, and the paragraph beat keeps the prose from running together.
+const SPEECH_MAX_CHUNK_CHARS = 220;
+const SPEECH_SENTENCE_PAUSE_MS = 40;
+const SPEECH_PARAGRAPH_PAUSE_MS = 340;
+
+const SPEECH_RATE_DEFAULT = 0.95;
+const SPEECH_RATE_MIN = 0.7;
+const SPEECH_RATE_MAX = 1.5;
+const SPEECH_FALLBACK_LANG = 'en-GB';
+
+const SPEECH_VOICE_AUTO = 'auto';
+const SPEECH_VOICE_JAMIE_DEFAULT = 'default-jamie-premium';
+// v4 defaults to Jamie (Premium), while retaining an explicitly chosen voice from v3.
+const SPEECH_VOICE_STORAGE_KEY = 'curator_speech_voice_v4';
+const SPEECH_RATE_STORAGE_KEY = 'curator_speech_rate';
+
+// Jamie (Premium) is the default read-aloud voice. Only some browsers put the quality in
+// the name, so the preference order also helps identify the best voice when variants tie.
+const PREFERRED_SPEECH_VOICES = [
+  'jamie', 'evan', 'ava', 'zoe', 'allison', 'nathan', 'samantha', 'daniel',
+  'serena', 'karen', 'oliver', 'martha', 'arthur', 'moira', 'tessa', 'rishi'
+];
+
+// "Jamie (Premium)" and "Jamie" are the same voice to a reader choosing one
+function speechVoiceBaseName(voice: SpeechSynthesisVoice): string {
+  return (voice.name || '')
+    .replace(/\s*\(.*?\)\s*/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+// How good a voice is likely to sound. Some platforms name the quality outright and some
+// only hint at it, so this combines the reader's preference order with what the name says.
+function speechVoiceQuality(voice: SpeechSynthesisVoice): number {
+  const base = speechVoiceBaseName(voice);
+  const raw = (voice.name || '').toLowerCase();
+  let value = 0;
+  const rank = PREFERRED_SPEECH_VOICES.indexOf(base);
+  if (rank !== -1) value += (PREFERRED_SPEECH_VOICES.length - rank) * 10;
+  if (/(enhanced|premium|neural|natural)/.test(raw)) value += 45;
+  if (voice.localService) value += 6;
+  if (voice.default) value += 4;
+  return value;
+}
+
+function resolveSpeechVoice(
+  voices: SpeechSynthesisVoice[],
+  preference: string
+): SpeechSynthesisVoice | null {
+  if (!voices || voices.length === 0) return null;
+
+  // Speak the language the reader is reading in: the interface is English throughout
+  const english = voices.filter(voice => /^en(-|_|$)/i.test(voice.lang || ''));
+  const pool = english.length > 0 ? english : voices;
+
+  if (preference === SPEECH_VOICE_JAMIE_DEFAULT) {
+    const jamiePremium = pool
+      .filter(voice => speechVoiceBaseName(voice) === 'jamie' && /premium/i.test(voice.name || ''))
+      .sort((a, b) => speechVoiceQuality(b) - speechVoiceQuality(a));
+    return jamiePremium[0] || null;
+  }
+
+  if (preference && preference !== SPEECH_VOICE_AUTO) {
+    const chosen =
+      voices.find(voice => voice.voiceURI === preference) ||
+      voices.find(voice => voice.name === preference) ||
+      pool.find(voice => speechVoiceBaseName(voice) === preference.toLowerCase());
+    return chosen || null;
+  }
+
+  // Automatic only speaks with a voice whose name says outright that it is a good one.
+  // iOS does not list the Enhanced and Premium voices chosen in Spoken Content, and forcing
+  // a compact voice from the short list it does expose would replace the good one with it —
+  // so with nothing better to pick, the choice is left to the device.
+  const marked = pool.filter(voice => /(enhanced|premium|neural|natural)/i.test(voice.name || ''));
+  if (marked.length === 0) return null;
+
+  return marked.slice().sort((a, b) => speechVoiceQuality(b) - speechVoiceQuality(a))[0] || null;
+}
+
+// Sound-effect and joke voices iOS ships (Zarvox, Bahh, Bells…) never suit reading news;
+// the picker only offers real speech voices.
+const NOVELTY_SPEECH_VOICE_NAMES = new Set([
+  'albert', 'bad news', 'bahh', 'bells', 'boing', 'bubbles', 'bungler', 'cello',
+  'deranged', 'good news', 'grandma', 'grandpa', 'hysterical', 'jester', 'organ',
+  'superstar', 'trinoids', 'whisper', 'wobble', 'zarvox'
+]);
+
+// One entry per voice, not one per installed variant: some devices report "Daniel" twice
+// (compact and Enhanced) under the same name, and a picker listing both is a trap
+function speechVoiceChoices(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice[] {
+  const english = voices.filter(voice => /^en(-|_|$)/i.test(voice.lang || ''));
+  const englishPool = english.length > 0 ? english : voices;
+  const pool = englishPool.filter(voice => !NOVELTY_SPEECH_VOICE_NAMES.has(speechVoiceBaseName(voice)));
+  const best = new Map<string, SpeechSynthesisVoice>();
+  for (const voice of pool) {
+    const key = `${speechVoiceBaseName(voice)}|${(voice.lang || '').toLowerCase()}`;
+    const kept = best.get(key);
+    if (!kept || speechVoiceQuality(voice) > speechVoiceQuality(kept)) best.set(key, voice);
+  }
+  return [...best.values()].sort((a, b) => speechVoiceBaseName(a).localeCompare(speechVoiceBaseName(b)));
+}
+
+// Feed bodies carry URLs, footnote marks and site furniture. Left alone, the voice reads
+// addresses out one character at a time, which is the quickest way to make it sound cheap.
+function normaliseForSpeech(text: string): string {
+  if (!text) return '';
+
+  let out = decodeArticleEntities(text)
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+    // Figures are images and captions, not part of the article's spoken copy.
+    .replace(/<figure\b[^>]*>[\s\S]*?<\/figure\s*>/gi, ' ')
+    .replace(/<figcaption\b[^>]*>[\s\S]*?<\/figcaption\s*>/gi, ' ')
+    .replace(/<img\b[^>]*>/gi, ' ')
+    .replace(/[\u200B-\u200D\uFEFF]/g, ' ')
+    .replace(/\u00a0/g, ' ');
+
+  // Drop image markup and its caption; keep the useful label of ordinary text links.
+  out = out
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/!\[[^\]]*\](?:\[[^\]]*\])?/g, ' ')
+    // Remove Markdown footnote references before ordinary link labels are kept.
+    .replace(/^\s*\[\^[^\]]+\]:.*$/gm, ' ')
+    .replace(/\[\^[^\]]+\](?:\s*\([^)]*\))?/g, ' ')
+    .replace(/\[\d+\](?:\s*\([^)]*\))?/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\[[^\]]*\]/g, '$1')
+    .replace(/^\s*\[[^\]]+\]:\s*\S+.*$/gm, ' ')
+    .replace(/<\/?[a-z][^>]*>/gi, ' ');
+
+  // A space inside "1. 79", "74, 000", "U. S." or "e. g." makes the engine stumble.
+  out = out
+    .replace(/(\d)([.,])\s+(\d)/g, '$1$2$3')
+    .replace(/\b(?:[A-Za-z]\.\s+){1,}[A-Za-z]\./g, run => run.replace(/\s+/g, ''));
+
+  const stripUrlKeepingPunctuation = (match: string) => {
+    const url = match.replace(/[.,!?;:)\]}]+$/g, '');
+    return ` ${match.slice(url.length)}`;
+  };
+  out = out
+    .replace(/\b(?:https?:\/\/|ftp:\/\/|mailto:|www\.)[^\s<>{}]+/gi, stripUrlKeepingPunctuation)
+    .replace(/\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/gi, ' ')
+    // Recognise ordinary multi-label domains with any alphabetic TLD, not just a short allowlist.
+    .replace(/\b(?:[a-z\d](?:[a-z\d-]*[a-z\d])?\.)+[a-z]{2,}(?::\d{2,5})?(?:[/?#][^\s<>{}]*)?/gi, stripUrlKeepingPunctuation);
+
+  // Footnote references, superscripts, editorial bracket asides and placeholder ellipses.
+  out = out
+    .replace(/^\s*\[\^[^\]]+\]:.*$/gm, ' ')
+    .replace(/\[\^?\d+\](?:\s*\([^)]*\))?/g, ' ')
+    .replace(/\(\s*(?:\.{2,}|…+)\s*\)/g, ' ')
+    .replace(/[\u00B9\u00B2\u00B3\u2020\u2021\u2070-\u209C]/g, ' ')
+    // Strip any remaining square-bracket aside, including [...] and [citation text].
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\[[^\]]*\]/g, ' ');
+
+  // Remove caption-style lines and common subscription / article furniture wherever it is embedded.
+  out = out
+    .replace(/^\s*(?:image|photo|photograph|caption|image caption|figure)\s*:\s*[^\n]*(?:\n|$)/gim, ' ')
+    .replace(/\(\s*(?:image|photo|photograph|caption|figure)\s*:[^)]*\)/gi, ' ')
+    .replace(/(^|[.!?]\s+)(?:click here|tap here|read more|continue reading|share this|advertisement)\b[^.!?\n]*(?:[.!?]|$)/gim, '$1 ')
+    .replace(/\b(?:click|tap) here\b/gi, ' ')
+    .replace(/\bread\s+(?:the\s+)?(?:full|original|rest\s+of\s+(?:the|this))\s+(?:article|post|story)\b[^.!?]*[.!?]?/gi, ' ')
+    .replace(/\b(?:read more|continue reading|share this|advertisement)\b/gi, ' ');
+
+  // Remove Markdown formatting while retaining the words it decorates.
+  out = out
+    .replace(/^\s{0,3}#{1,6}\s*/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s*[-+*•·]\s+/gm, '')
+    .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm, ' ')
+    .replace(/```[^\n]*|```/g, ' ')
+    .replace(/`/g, '')
+    .replace(/~~|\*\*?|__?/g, ' ')
+    .replace(/\|/g, ' ');
+
+  // Abbreviations, numbers, symbols and currency the engine otherwise spells awkwardly.
+  const currencyNames: Record<string, string> = {
+    USD: 'US dollars', CAD: 'Canadian dollars', AUD: 'Australian dollars', NZD: 'New Zealand dollars',
+    GBP: 'pounds', EUR: 'euros', JPY: 'yen', CNY: 'yuan', INR: 'rupees', KRW: 'won', RUB: 'rubles'
+  };
+  out = out
+    .replace(/\be\s*\.\s*g\s*\.(?:\s*,)?\s*/gi, 'for example, ')
+    .replace(/\bi\s*\.\s*e\s*\.(?:\s*,)?\s*/gi, 'that is, ')
+    .replace(/\betc\.?(?=\s|$|[,;:!?])/gi, 'et cetera')
+    .replace(/\bvs\.?(?=\s|$|[,;:!?])/gi, 'versus')
+    .replace(/\bw\s*\/\s*o\b/gi, 'without')
+    .replace(/\bw\s*\/\s*/gi, 'with ')
+    .replace(/\bDr\.?(?=\s|$)/gi, 'Doctor')
+    .replace(/\bMr\.?(?=\s|$)/gi, 'Mister')
+    .replace(/\bMrs\.?(?=\s|$)/gi, 'Missus')
+    .replace(/\bMs\.?(?=\s|$)/gi, 'Miz')
+    .replace(/\bNo\.\s*(\d)/gi, 'Number $1')
+    .replace(/\b(US|CA|AU|NZ)\$\s*(\d[\d,]*(?:\.\d+)?)/gi, (_match, region: string, amount: string) => {
+      const name = currencyNames[`${region.toUpperCase()}D`];
+      return `${amount} ${name}`;
+    })
+    .replace(/\b([\d][\d,]*(?:\.\d+)?)\s*(USD|CAD|AUD|NZD|GBP|EUR|JPY|CNY|INR|KRW|RUB)\b/gi, (_match, amount: string, code: string) => `${amount} ${currencyNames[code.toUpperCase()]}`)
+    .replace(/\b(USD|CAD|AUD|NZD|GBP|EUR|JPY|CNY|INR|KRW|RUB)\s*(\d[\d,]*(?:\.\d+)?)/gi, (_match, code: string, amount: string) => `${amount} ${currencyNames[code.toUpperCase()]}`)
+    .replace(/\$\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 dollars')
+    .replace(/£\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 pounds')
+    .replace(/€\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 euros')
+    .replace(/¥\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 yen')
+    .replace(/₹\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 rupees')
+    .replace(/₩\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 won')
+    .replace(/₽\s*(\d[\d,]*(?:\.\d+)?)/g, '$1 rubles')
+    .replace(/(\d[\d,]*(?:\.\d+)?)\s*%/g, '$1 percent')
+    .replace(/&/g, ' and ')
+    .replace(/%/g, ' percent')
+    .replace(/×/g, ' by ')
+    .replace(/→/g, ' to ')
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[—–]/g, ', ');
+
+  return out
+    .replace(/\s+/g, ' ')
+    .replace(/,\s*,/g, ',')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/([.!?])(?=["'(A-Z])/g, '$1 ')
+    .trim();
+}
+
+function splitIntoSentences(text: string): string[] {
+  const clean = (text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return [];
+
+  const segments: string[] = [];
+  const boundary = /[.!?…]+["'”’)\]]*(?=\s|$)/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = boundary.exec(clean)) !== null) {
+    const end = match.index + match[0].length;
+    const candidate = clean.slice(cursor, end).trim();
+    // "U.S." and "e.g." end in a full stop that is not the end of a sentence
+    if (/(?:[A-Za-z]\.){2,}$/.test(candidate)) {
+      boundary.lastIndex = end;
+      continue;
+    }
+    segments.push(candidate);
+    cursor = end;
+    while (clean[cursor] === ' ') cursor += 1;
+    boundary.lastIndex = cursor;
+  }
+  if (cursor < clean.length) segments.push(clean.slice(cursor).trim());
+
+  const sentences: string[] = [];
+  for (const segment of segments) {
+    if (!segment) continue;
+    let rest = segment;
+    // A run-on with no full stop is broken at the last clause that still fits
+    while (rest.length > SPEECH_MAX_CHUNK_CHARS) {
+      const head = rest.slice(0, SPEECH_MAX_CHUNK_CHARS);
+      const clause = Math.max(
+        head.lastIndexOf(', '),
+        head.lastIndexOf('; '),
+        head.lastIndexOf(': '),
+        head.lastIndexOf(' ')
+      );
+      const cut = clause > 60 ? clause + 1 : SPEECH_MAX_CHUNK_CHARS;
+      sentences.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    if (rest) sentences.push(rest);
+  }
+
+  return sentences;
+}
+
+// Title and byline, then the summary, then the article paragraph by paragraph. Each chunk
+// keeps the index of the paragraph it came from, which is what the progress bar, the
+// highlight and the tap-to-listen-from-here all follow.
+function buildSpeechQueue(article: DigestItem): SpeechChunk[] {
+  const chunks: SpeechChunk[] = [];
+
+  const push = (text: string, paragraphIndex: number) => {
+    for (const sentence of splitIntoSentences(normaliseForSpeech(text))) {
+      chunks.push({ text: sentence, paragraphIndex });
+    }
+  };
+
+  push(`${article.title}. By ${article.source}.`, -1);
+  if (article.summary) push(article.summary, -1);
+  buildArticleParagraphs(article.fullText).forEach((paragraph, index) => push(paragraph, index));
+
+  return chunks;
+}
+
+function QRCodeBox({ url }: { url: string }) {
+  const [svgStr, setSvgStr] = useState<string>('');
+  useEffect(() => {
+    QRCode.toString(url, { type: 'svg', width: 160, margin: 1, color: { dark: '#020617', light: '#ffffff' } }, (err, string) => {
+      if (!err && string) {
+        setSvgStr(string);
+      }
+    });
+  }, [url]);
+
+  return (
+    <div className="bg-white p-3 rounded-2xl shadow-lg border border-slate-800 shrink-0 flex items-center justify-center w-40 h-40">
+      {svgStr ? (
+        <div dangerouslySetInnerHTML={{ __html: svgStr }} className="w-full h-full flex items-center justify-center [&>svg]:w-full [&>svg]:h-full" />
+      ) : (
+        <div className="text-xs text-slate-400">Loading QR...</div>
+      )}
+    </div>
+  );
+}
 
 export default function App() {
   // Navigation & View state
@@ -63,12 +506,27 @@ export default function App() {
   const [selectedFeedSource, setSelectedFeedSource] = useState<string | null>(null);
   const [feedStreamArticles, setFeedStreamArticles] = useState<DigestItem[]>([]);
   const [loadingFeedStream, setLoadingFeedStream] = useState<boolean>(false);
+  // Server-side request tally, read on demand from the Settings tab
+  const [usageStats, setUsageStats] = useState<{
+    today?: any;
+    week?: any;
+    month?: any;
+    days?: any[];
+    usdPerGbp?: number;
+    peakNow?: boolean;
+    rates?: { inputMiss: number; inputHit: number; output: number };
+    retentionDays?: number;
+  } | null>(null);
+  const [loadingUsage, setLoadingUsage] = useState<boolean>(false);
+  // Bumped on every stream response so the list remounts cleanly when the filter changes;
+  // without it the previous filter's cards were left in place under the new header.
+  const [feedStreamRenderKey, setFeedStreamRenderKey] = useState<number>(0);
   const [readSourceIds, setReadSourceIds] = useState<string[]>(() => {
     const saved = localStorage.getItem('curator_read_sources');
     if (saved) {
       try { return JSON.parse(saved); } catch (e) { /* ignore */ }
     }
-    return ['src_0', 'src_1'];
+    return ['src_mr', 'src_dan'];
   });
   const [readArticleIds, setReadArticleIds] = useState<string[]>(() => {
     const saved = localStorage.getItem('curator_read_articles');
@@ -86,30 +544,65 @@ export default function App() {
     }
   });
   const [refreshingSourceId, setRefreshingSourceId] = useState<string | null>(null);
+  // Which source descriptions are open — in the Sources list, and on the reader's byline
+  const [expandedSourceDescriptionIds, setExpandedSourceDescriptionIds] = useState<string[]>([]);
+  const [showReaderSourceNote, setShowReaderSourceNote] = useState<boolean>(false);
 
   // App data state with localStorage persistence
   const [sources, setSources] = useState<SourceItem[]>(() => {
+    const defaultSources: SourceItem[] = [
+      { id: 'src_row', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech', categories: ['Global Tech'], status: 'active', lastSyncedAt: Date.now() - 75 * 60 * 1000 }
+    ];
+
     const saved = localStorage.getItem('curator_sources');
     if (saved) {
-      try { return JSON.parse(saved); } catch (e) { /* ignore */ }
+      try {
+        const parsed: SourceItem[] = JSON.parse(saved);
+        const hasStaleDummy = parsed.some(s =>
+          s.feedUrl.includes('pmresearcher') ||
+          s.feedUrl.includes('bhaskar.econ') ||
+          s.feedUrl.includes('worldhistory.com')
+        );
+        if (!hasStaleDummy && Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map(source => ({
+            ...source,
+            categories: normalizeCategoryLabels(source.categories, source.folder),
+          }));
+        }
+      } catch (e) { /* ignore */ }
     }
-    const now = Date.now();
-    return [
-      { id: 'src_0', title: 'Nicole Williams', feedUrl: 'https://pmresearcher.substack.com/feed', folder: 'Strategy & Craft', status: 'active', lastSyncedAt: now - 4 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_1', title: 'The Anthropic Stack', feedUrl: 'https://anthropic.com/feed', folder: 'Tech & AI', status: 'active', lastSyncedAt: now - 12 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_2', title: 'World Politics & History', feedUrl: 'https://worldhistory.com/feed', folder: 'History', status: 'active', lastSyncedAt: now - 22 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_3', title: 'Prospect Magazine', feedUrl: 'https://prospectmagazine.co.uk/feed', folder: 'Culture', status: 'active', lastSyncedAt: now - 35 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_4', title: 'Dr. Bhaskar Economics', feedUrl: 'https://bhaskar.econ/feed', folder: 'Economics', status: 'active', lastSyncedAt: now - 48 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_5', title: 'Stratechery by Ben Thompson', feedUrl: 'https://stratechery.com/feed/', folder: 'Tech & Strategy', status: 'active', lastSyncedAt: now - 65 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_6', title: 'Marginal Revolution', feedUrl: 'https://marginalrevolution.com/feed', folder: 'Economics', status: 'active', lastSyncedAt: now - 80 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_7', title: 'Dan Luu', feedUrl: 'https://danluu.com/atom.xml', folder: 'Tech & Engineering', status: 'active', lastSyncedAt: now - 95 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_8', title: 'A List Apart', feedUrl: 'https://alistapart.com/main/feed/', folder: 'Design', status: 'active', lastSyncedAt: now - 110 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_9', title: 'Long Now Foundation', feedUrl: 'https://longnow.org/feed/', folder: 'Philosophy & Long-term', status: 'active', lastSyncedAt: now - 140 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=160&auto=format&fit=crop&q=80' },
-      { id: 'src_10', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/', folder: 'Global Tech', status: 'failing', failingReason: 'Not responding (HTTP 503)', lastSyncedAt: now - 180 * 60 * 1000, avatar: 'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=160&auto=format&fit=crop&q=80' }
-    ];
+    return defaultSources;
   });
 
   const [digest, setDigest] = useState<DigestItem[]>([]);
+  const [semanticSummary, setSemanticSummary] = useState<{
+    feedbackExamples: number;
+    providerVectors: number;
+    deprioritized: number;
+    localEngine?: boolean;
+  } | null>(null);
+  const [feedReport, setFeedReport] = useState<{
+    attempted: number;
+    failed: Array<{ title: string; feedUrl?: string; reason: string }>;
+    failedCount?: number;
+  } | null>(null);
+
+  // First-run calibration flow for the semantic profile
+  const [showSetupWizard, setShowSetupWizard] = useState<boolean>(() => {
+    try {
+      if (localStorage.getItem('curator_setup_complete')) return false;
+      const savedFeedback = JSON.parse(localStorage.getItem('curator_semantic_feedback') || '[]');
+      return !(Array.isArray(savedFeedback) && savedFeedback.length > 0);
+    } catch {
+      return true;
+    }
+  });
+  const [setupStep, setSetupStep] = useState<1 | 2 | 3>(1);
+  const [setupError, setSetupError] = useState<string | null>(null);
+  const [loadingCalibration, setLoadingCalibration] = useState<boolean>(false);
+  const [calibrationCandidates, setCalibrationCandidates] = useState<DigestItem[]>([]);
+  const [calibrationIndex, setCalibrationIndex] = useState<number>(0);
+  const [calibrationVotes, setCalibrationVotes] = useState<number>(0);
   const [savedArticles, setSavedArticles] = useState<DigestItem[]>(() => {
     const saved = localStorage.getItem('curator_saved_articles');
     if (saved) {
@@ -128,6 +621,44 @@ export default function App() {
     return [];
   });
 
+  const [weeklyHistory, setWeeklyHistory] = useState<WeeklyReadingItem[]>(() => {
+    const saved = localStorage.getItem('curator_weekly_history');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          // Older builds seeded demo history; drop only those known placeholder ids
+          const seededIds = new Set(['wh_1', 'wh_2', 'wh_3', 'wh_4', 'wh_5', 'wh_6', 'wh_7']);
+          return parsed.filter((it: WeeklyReadingItem) => !seededIds.has(it.id));
+        }
+      } catch (e) { /* ignore */ }
+    }
+    // Starts empty: history is only what the reader has actually finished
+    return [];
+  });
+  const [showWeeklyReviewModal, setShowWeeklyReviewModal] = useState<boolean>(false);
+
+  useEffect(() => {
+    localStorage.setItem('curator_weekly_history', JSON.stringify(weeklyHistory));
+  }, [weeklyHistory]);
+
+  const weekCutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const weeklyRecent = weeklyHistory.filter(it => it.completedAt >= weekCutoff);
+  const totalWeeklyMinutes = weeklyRecent.reduce((acc, it) => acc + (it.minutesSpent ?? 0), 0);
+  const displayFolder = (folder?: string) =>
+    (!folder || folder.trim().toLowerCase() === 'uncategorized') ? 'General' : folder;
+
+  // The folder that took the most of this week's reading time
+  const topWeeklyTopic = (() => {
+    const counts: Record<string, number> = {};
+    weeklyRecent.forEach(it => {
+      const key = displayFolder(it.folder);
+      counts[key] = (counts[key] || 0) + (it.minutesSpent ?? 0);
+    });
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    return sorted[0]?.[0] || '—';
+  })();
+
   const [signals, setSignals] = useState<{
     moreTopics: string[];
     lessTopics: string[];
@@ -140,48 +671,98 @@ export default function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        const moreTopics = Array.isArray(parsed.moreTopics)
-          ? parsed.moreTopics
-          : Array.isArray(parsed.more)
-            ? parsed.more.filter((m: string) => !sources.some(s => s.title.toLowerCase() === m.toLowerCase()))
-            : [];
-        const lessTopics = Array.isArray(parsed.lessTopics)
-          ? parsed.lessTopics
-          : Array.isArray(parsed.less)
-            ? parsed.less.filter((l: string) => !sources.some(s => s.title.toLowerCase() === l.toLowerCase()))
-            : [];
+        // Older versions turned a vote into a broad folder preference. Keep exact article IDs,
+        // but clear those topic rules so the semantic profile can learn from article content.
         return {
-          moreTopics,
-          lessTopics,
+          moreTopics: [],
+          lessTopics: [],
           moreIds: Array.isArray(parsed.moreIds) ? parsed.moreIds : [],
           lessIds: Array.isArray(parsed.lessIds) ? parsed.lessIds : [],
-          more: moreTopics,
-          less: lessTopics,
+          more: [],
+          less: [],
         };
       } catch (e) { /* ignore */ }
     }
     return { moreTopics: [], lessTopics: [], moreIds: [], lessIds: [], more: [], less: [] };
   });
 
+  // Declared interests are settings the reader edits, not learned feedback, so they live
+  // beside the vote profile and are sent as topic signals on every digest request.
+  const [interests, setInterests] = useState<InterestSet>(() => loadInterests());
+  useEffect(() => {
+    saveInterests(interests);
+  }, [interests]);
+
+  const [semanticFeedback, setSemanticFeedback] = useState<SemanticFeedbackItem[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('curator_semantic_feedback') || '[]');
+      if (!Array.isArray(saved)) return [];
+      return saved
+        .filter((item: any) => item && typeof item.id === 'string' &&
+          (item.vote === 'like' || item.vote === 'dislike') &&
+          typeof item.title === 'string' && typeof item.text === 'string' &&
+          Number.isFinite(item.timestamp))
+        .slice(-40);
+    } catch {
+      return [];
+    }
+  });
+  const [serverGeminiAvailable, setServerGeminiAvailable] = useState<boolean>(false);
+  const [startupApiStatus, setStartupApiStatus] = useState<'checking' | 'healthy' | 'issue'>('checking');
+  const [startupApiMessage, setStartupApiMessage] = useState('Checking Curator server and configured providers…');
+  const [showStartupApiPrompt, setShowStartupApiPrompt] = useState(false);
+  const startupApiCheckRef = React.useRef(0);
+  const startupApiCheckStartedRef = React.useRef(false);
+
   // Settings
+  const DIGEST_ITEM_COUNTS = [3, 5, 8, 12, 15] as const;
+  const READ_THROUGH_DEPTH = 85;
   const [serendipityDial, setSerendipityDial] = useState<number>(() => {
     const saved = localStorage.getItem('curator_serendipity');
     return saved ? Number(saved) : 25;
   });
-  const [deliveryTime, setDeliveryTime] = useState<string>(() => localStorage.getItem('curator_delivery_time') || '07:00');
-  const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(() => {
-    const saved = localStorage.getItem('curator_notifications');
-    return saved !== null ? JSON.parse(saved) : true;
+  // When the digest on screen was actually curated, so the header can say so honestly.
+  const [digestCuratedAt, setDigestCuratedAt] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('curator_digest_curated_at'));
+    return Number.isFinite(saved) && saved > 0 ? saved : 0;
   });
   const [itemCount, setItemCount] = useState<number>(() => {
     const saved = localStorage.getItem('curator_item_count');
-    const parsed = saved ? Number(saved) : DIGEST_SIZE_RANGES[0].count;
-    return DIGEST_SIZE_RANGES.some(range => range.count === parsed)
-      ? parsed
-      : DIGEST_SIZE_RANGES[0].count;
+    if (!saved) return 8;
+    const savedCount = Number(saved);
+    if (DIGEST_ITEM_COUNTS.some(count => count === savedCount)) return savedCount;
+    if (!Number.isFinite(savedCount)) return 8;
+    return DIGEST_ITEM_COUNTS.reduce((closest, count) =>
+      Math.abs(count - savedCount) < Math.abs(closest - savedCount) ? count : closest,
+      8
+    );
   });
+  const [compactCards, setCompactCards] = useState<boolean>(() => localStorage.getItem('curator_compact_cards') === '1');
+  const [aiProvider, setAiProvider] = useState<string>(() => {
+    const saved = localStorage.getItem('curator_ai_provider');
+    if (saved === 'openai') return 'openai-compatible';
+    if (saved === 'gemini') return 'deterministic';
+    return saved || 'deterministic';
+  });
+  const [customApiKey, setCustomApiKey] = useState<string>(() => localStorage.getItem('curator_custom_api_key') || '');
+  const [aiBaseUrl, setAiBaseUrl] = useState<string>(() => localStorage.getItem('curator_ai_base_url') || '');
+  const [aiModel, setAiModel] = useState<string>(() => localStorage.getItem('curator_ai_model') || '');
+  const [embeddingProvider, setEmbeddingProvider] = useState<string>(() => localStorage.getItem('curator_embedding_provider') || 'openai-compatible');
+  const [embeddingApiKey, setEmbeddingApiKey] = useState<string>(() => localStorage.getItem('curator_embedding_api_key') || '');
+  const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState<string>(() => localStorage.getItem('curator_embedding_base_url') || '');
+  const [embeddingModel, setEmbeddingModel] = useState<string>(() => localStorage.getItem('curator_embedding_model') || '');
+  const embeddingKeyMatchesChatProvider =
+    (embeddingProvider === 'gemini' && aiProvider === 'gemini') ||
+    (embeddingProvider === 'openai-compatible' && aiProvider === 'openai-compatible');
+  const semanticServiceReady = embeddingProvider === 'openai-compatible'
+    ? Boolean((embeddingApiKey || (embeddingKeyMatchesChatProvider && customApiKey)) && (embeddingBaseUrl || (embeddingKeyMatchesChatProvider && aiBaseUrl)))
+    : embeddingProvider === 'gemini'
+      ? Boolean(embeddingApiKey || (embeddingKeyMatchesChatProvider && customApiKey) || serverGeminiAvailable)
+      : false;
 
-  const [loadingDigest, setLoadingDigest] = useState<boolean>(false);
+  // Starts true: the first digest request is queued by an effect right after mount, so the
+  // view opens on the "synthesizing" state instead of flashing "no new items today".
+  const [loadingDigest, setLoadingDigest] = useState<boolean>(true);
   const [activeToast, setActiveToast] = useState<{
     id: string;
     message: string;
@@ -189,6 +770,24 @@ export default function App() {
     onAction?: () => void;
   } | null>(null);
   const toastTimeoutRef = React.useRef<any>(null);
+  // Screen Wake Lock held while read-aloud is playing so the phone does not sleep mid-article
+  const wakeLockRef = React.useRef<any>(null);
+  const wakeLockWantedRef = React.useRef(false);
+  // Monotonic ids so a slow, superseded response can never overwrite newer state
+  const digestRequestRef = React.useRef(0);
+  const feedStreamRequestRef = React.useRef(0);
+  // Read Aloud queue: the sentences still to speak, which one is playing, and the session
+  // they belong to, so a superseded callback can never speak over a newer one
+  const speechQueueRef = React.useRef<SpeechChunk[]>([]);
+  const speechIndexRef = React.useRef(0);
+  const speechArticleIdRef = React.useRef<string | null>(null);
+  const speechSessionRef = React.useRef(0);
+  const speechStateRef = React.useRef<'idle' | 'playing' | 'paused'>('idle');
+  const speechGapTimerRef = React.useRef<any>(null);
+  // The utterance in flight, so resume knows whether to continue one or speak the next
+  const speechUtteranceRef = React.useRef<SpeechSynthesisUtterance | null>(null);
+  // Whether the engine actually started the current session (iOS refuses silently sometimes)
+  const speechStartedRef = React.useRef(false);
 
   // Muted cards state for immediate inline Undo / Redo when user clicks "Fewer"
   const [mutedCards, setMutedCards] = useState<Record<string, DigestItem>>({});
@@ -197,7 +796,10 @@ export default function App() {
   const [showAddSourceModal, setShowAddSourceModal] = useState<boolean>(false);
   const [newSourceTitle, setNewSourceTitle] = useState<string>('');
   const [newSourceUrl, setNewSourceUrl] = useState<string>('');
+  const [newSourceTitleError, setNewSourceTitleError] = useState<string | null>(null);
+  const [newSourceUrlError, setNewSourceUrlError] = useState<string | null>(null);
   const [newSourceFolder, setNewSourceFolder] = useState<string>('General');
+  const [newSourceFolderCustom, setNewSourceFolderCustom] = useState(false);
 
   // OPML Import state
   const [importText, setImportText] = useState<string>('');
@@ -216,6 +818,9 @@ export default function App() {
 
   // Google Search & RSS investigation state
   const [discoverQuery, setDiscoverQuery] = useState<string>('');
+  const [sourceSearch, setSourceSearch] = useState<string>('');
+  const [categoryEditorSourceId, setCategoryEditorSourceId] = useState<string | null>(null);
+  const [categoryDraft, setCategoryDraft] = useState('');
   const [isDiscovering, setIsDiscovering] = useState<boolean>(false);
   const [discoverError, setDiscoverError] = useState<string | null>(null);
   const [discoverResults, setDiscoverResults] = useState<DiscoveredSource[]>([]);
@@ -224,31 +829,82 @@ export default function App() {
 
   // Reading view timer & depth tracking
 
-  // Read Aloud (iOS onboard speech synthesis)
+  // Read Aloud (onboard speech synthesis). Voice and rate are chosen explicitly now: the
+  // device default is often a compact, robotic voice at an odd speed, and the attachment
+  // the reader wants is a calm Enhanced voice at just under normal pace.
   const [speechPlaying, setSpeechPlaying] = useState<boolean>(false);
   const [speechPaused, setSpeechPaused] = useState<boolean>(false);
-  const [speechRate, setSpeechRate] = useState<number>(1.0);
-  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  // The article the running session belongs to; null when nothing is being read
+  const [speechArticleId, setSpeechArticleId] = useState<string | null>(null);
+  const [speechProgress, setSpeechProgress] = useState<{ index: number; total: number; paragraph: number }>({
+    index: 0,
+    total: 0,
+    paragraph: -1
+  });
+  const [speechVoices, setSpeechVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [speechVoiceUri, setSpeechVoiceUri] = useState<string>(() => {
+    const saved = localStorage.getItem(SPEECH_VOICE_STORAGE_KEY);
+    if (saved) return saved;
+    const previous = localStorage.getItem('curator_speech_voice_v3');
+    return previous && previous !== SPEECH_VOICE_AUTO ? previous : SPEECH_VOICE_JAMIE_DEFAULT;
+  });
+  const [speechRate, setSpeechRate] = useState<number>(() => {
+    const saved = Number(localStorage.getItem(SPEECH_RATE_STORAGE_KEY));
+    return Number.isFinite(saved) && saved >= SPEECH_RATE_MIN && saved <= SPEECH_RATE_MAX
+      ? saved
+      : SPEECH_RATE_DEFAULT;
+  });
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      const updateVoices = () => {
-        try {
-          const v = window.speechSynthesis.getVoices();
-          if (v && v.length > 0) {
-            setAvailableVoices(v);
-          }
-        } catch (e) {
-          // ignore
-        }
-      };
-      updateVoices();
-      window.speechSynthesis.onvoiceschanged = updateVoices;
-      return () => {
-        window.speechSynthesis.onvoiceschanged = null;
-      };
-    }
+    localStorage.setItem(SPEECH_VOICE_STORAGE_KEY, speechVoiceUri);
+  }, [speechVoiceUri]);
+
+  useEffect(() => {
+    localStorage.setItem(SPEECH_RATE_STORAGE_KEY, String(speechRate));
+  }, [speechRate]);
+
+  // Safari fills the voice list lazily and does not always fire voiceschanged
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+    const loadVoices = () => {
+      const next = window.speechSynthesis.getVoices();
+      if (next && next.length > 0) setSpeechVoices(next);
+    };
+
+    loadVoices();
+    window.speechSynthesis.addEventListener('voiceschanged', loadVoices);
+    const late = setTimeout(loadVoices, 600);
+
+    return () => {
+      window.speechSynthesis.removeEventListener('voiceschanged', loadVoices);
+      clearTimeout(late);
+    };
   }, []);
+
+  const automaticSpeechVoice = React.useMemo(
+    () => resolveSpeechVoice(speechVoices, SPEECH_VOICE_AUTO),
+    [speechVoices]
+  );
+
+  const activeSpeechVoice = React.useMemo(
+    () => (speechVoiceUri === SPEECH_VOICE_AUTO
+      ? automaticSpeechVoice
+      : resolveSpeechVoice(speechVoices, speechVoiceUri)),
+    [speechVoices, speechVoiceUri, automaticSpeechVoice]
+  );
+
+  const speechVoiceLabel = activeSpeechVoice ? activeSpeechVoice.name : 'your device voice';
+
+  // One entry per voice, English first, by name
+  const speechVoiceOptions = React.useMemo(
+    () => speechVoiceChoices(speechVoices),
+    [speechVoices]
+  );
+  const jamiePremiumSpeechVoice = React.useMemo(
+    () => resolveSpeechVoice(speechVoices, SPEECH_VOICE_JAMIE_DEFAULT),
+    [speechVoices]
+  );
 
   useEffect(() => {
     localStorage.setItem('curator_saved_articles', JSON.stringify(savedArticles));
@@ -267,20 +923,203 @@ export default function App() {
   }, [signals]);
 
   useEffect(() => {
+    localStorage.setItem('curator_semantic_feedback', JSON.stringify(semanticFeedback));
+  }, [semanticFeedback]);
+
+  const checkStartupServices = async () => {
+    const checkId = ++startupApiCheckRef.current;
+    const isCurrentCheck = () => checkId === startupApiCheckRef.current;
+    setStartupApiStatus('checking');
+    setStartupApiMessage('Checking Curator server and configured providers…');
+    setShowStartupApiPrompt(false);
+
+    const fetchJson = async (url: string, init: RequestInit = {}, timeoutMs = 12000) => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(url, { ...init, signal: controller.signal });
+        const data = await response.json().catch(() => ({}));
+        return { response, data };
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    };
+
+    const flagIssue = (message: string) => {
+      if (!isCurrentCheck()) return;
+      setStartupApiStatus('issue');
+      setStartupApiMessage(message);
+      setShowStartupApiPrompt(true);
+      setActiveTab('settings');
+      setShowSetupWizard(false);
+      window.setTimeout(() => {
+        if (isCurrentCheck()) {
+          document.getElementById('provider-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 150);
+    };
+
+    const testProvider = async (
+      label: string,
+      kind: 'chat' | 'embedding',
+      provider: string,
+      apiKey: string,
+      baseUrl: string,
+      model: string,
+    ): Promise<string | null> => {
+      try {
+        const { response, data } = await fetchJson('/api/test-provider', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind, provider, apiKey, baseUrl, model }),
+        }, 20000);
+        if (!response.ok || !data?.ok) {
+          return `${label}: ${String(data?.error || `Test failed (HTTP ${response.status}).`).slice(0, 240)}`;
+        }
+        return null;
+      } catch (error: any) {
+        return `${label}: ${error?.name === 'AbortError' ? 'request timed out' : 'could not reach the provider'}.`;
+      }
+    };
+
+    try {
+      const health = await fetchJson('/api/health', { cache: 'no-store' });
+      if (!health.response.ok || health.data?.ok !== true) {
+        throw new Error(`Curator server returned HTTP ${health.response.status}.`);
+      }
+
+      const usage = await fetchJson('/api/usage', { cache: 'no-store' });
+      if (!usage.response.ok || !Number.isFinite(Number(usage.data?.today?.apiCalls))) {
+        throw new Error('Curator server activity tracking did not return a valid status.');
+      }
+
+      const semanticStatus = await fetchJson('/api/semantic-status', { cache: 'no-store' });
+      if (!semanticStatus.response.ok) {
+        throw new Error(`Service status returned HTTP ${semanticStatus.response.status}.`);
+      }
+      const serverGeminiConfigured = Boolean(semanticStatus.data?.geminiConfigured);
+      if (!isCurrentCheck()) return;
+      setServerGeminiAvailable(serverGeminiConfigured);
+
+      const checks: Array<Promise<string | null>> = [];
+      const chatKey = customApiKey.trim();
+      const chatConfigured = aiProvider === 'openai-compatible'
+        ? Boolean(chatKey && aiBaseUrl.trim() && aiModel.trim())
+        : aiProvider === 'anthropic'
+          ? Boolean(chatKey)
+          : aiProvider === 'gemini'
+            ? Boolean(chatKey || serverGeminiConfigured)
+            : false;
+      if (chatConfigured) {
+        checks.push(testProvider('Digest writing', 'chat', aiProvider, chatKey, aiBaseUrl.trim(), aiModel.trim()));
+      }
+
+      const effectiveEmbeddingKey = embeddingApiKey.trim() || (embeddingKeyMatchesChatProvider ? chatKey : '');
+      const effectiveEmbeddingBaseUrl = embeddingBaseUrl.trim() ||
+        (embeddingKeyMatchesChatProvider ? aiBaseUrl.trim() : '');
+      const embeddingConfigured = embeddingProvider === 'openai-compatible'
+        ? Boolean(effectiveEmbeddingKey && effectiveEmbeddingBaseUrl)
+        : embeddingProvider === 'gemini'
+          ? Boolean(effectiveEmbeddingKey || serverGeminiConfigured)
+          : false;
+      if (embeddingConfigured) {
+        checks.push(testProvider(
+          'Topic matching',
+          'embedding',
+          embeddingProvider,
+          effectiveEmbeddingKey,
+          effectiveEmbeddingBaseUrl,
+          embeddingModel.trim(),
+        ));
+      }
+
+      const failures = (await Promise.all(checks)).filter((message): message is string => Boolean(message));
+      if (!isCurrentCheck()) return;
+      if (failures.length > 0) {
+        flagIssue(`A configured provider did not respond successfully: ${failures.join(' ')}`);
+        return;
+      }
+
+      setStartupApiStatus('healthy');
+      setStartupApiMessage(checks.length > 0
+        ? 'Curator API, server activity tracking, and configured providers are responding.'
+        : 'Curator API and server activity tracking are responding. Built-in services are ready; no external provider needs checking.');
+    } catch (error: any) {
+      if (!isCurrentCheck()) return;
+      setServerGeminiAvailable(false);
+      flagIssue(error?.name === 'AbortError'
+        ? 'Curator’s server check timed out. Check your connection, or update provider settings if the server is reachable again.'
+        : `Curator’s server or API status check failed: ${String(error?.message || 'No response from the server')}`);
+    }
+  };
+
+  useEffect(() => {
+    if (startupApiCheckStartedRef.current) return;
+    startupApiCheckStartedRef.current = true;
+    void checkStartupServices();
+  }, []);
+
+  useEffect(() => {
     localStorage.setItem('curator_serendipity', serendipityDial.toString());
   }, [serendipityDial]);
 
   useEffect(() => {
-    localStorage.setItem('curator_delivery_time', deliveryTime);
-  }, [deliveryTime]);
+    if (digestCuratedAt > 0) {
+      localStorage.setItem('curator_digest_curated_at', String(digestCuratedAt));
+    }
+  }, [digestCuratedAt]);
 
+  // Hold the page still while a full-screen dialog is open, so the content behind it
+  // cannot scroll out from under the reader's finger. Both elements are locked: which one
+  // actually scrolls depends on the browser and on the page's overflow rules.
   useEffect(() => {
-    localStorage.setItem('curator_notifications', JSON.stringify(notificationsEnabled));
-  }, [notificationsEnabled]);
+    if (!showSetupWizard && !showImportModal && !showAddSourceModal) return;
+    const root = document.documentElement;
+    const previousBody = document.body.style.overflow;
+    const previousRoot = root.style.overflow;
+    document.body.style.overflow = 'hidden';
+    root.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousBody;
+      root.style.overflow = previousRoot;
+    };
+  }, [showSetupWizard, showImportModal, showAddSourceModal]);
 
   useEffect(() => {
     localStorage.setItem('curator_item_count', itemCount.toString());
   }, [itemCount]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_compact_cards', compactCards ? '1' : '0');
+  }, [compactCards]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_custom_api_key', customApiKey);
+  }, [customApiKey]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_ai_base_url', aiBaseUrl);
+  }, [aiBaseUrl]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_ai_model', aiModel);
+  }, [aiModel]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_embedding_provider', embeddingProvider);
+  }, [embeddingProvider]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_embedding_api_key', embeddingApiKey);
+  }, [embeddingApiKey]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_embedding_base_url', embeddingBaseUrl);
+  }, [embeddingBaseUrl]);
+
+  useEffect(() => {
+    localStorage.setItem('curator_embedding_model', embeddingModel);
+  }, [embeddingModel]);
 
   useEffect(() => {
     localStorage.setItem('curator_read_sources', JSON.stringify(readSourceIds));
@@ -291,38 +1130,65 @@ export default function App() {
   }, [readArticleIds]);
 
   useEffect(() => {
-    generateDigest();
-  }, [itemCount, serendipityDial]);
+    localStorage.setItem('curator_reading_stats', JSON.stringify(readingStats));
+  }, [readingStats]);
 
+  useEffect(() => {
+    // While setup is open, calibration votes accumulate first and one digest is built at the end.
+    if (showSetupWizard) return;
+    // Debounced so dragging the serendipity slider or tapping counts issues one request, not dozens
+    const timer = setTimeout(() => { generateDigest(); }, 450);
+    return () => clearTimeout(timer);
+  }, [itemCount, serendipityDial, signals, semanticFeedback, interests, showSetupWizard]);
   useEffect(() => {
     if (activeTab === 'feeds') {
       fetchFeedStream(selectedFeedSource || 'all');
     }
   }, [activeTab, selectedFeedSource]);
 
+  useEffect(() => {
+    if (activeTab === 'settings') loadUsageStats();
+  }, [activeTab]);
+
+  const loadUsageStats = async () => {
+    setLoadingUsage(true);
+    try {
+      const res = await fetch('/api/usage');
+      if (res.ok) setUsageStats(await res.json());
+    } catch {
+      // The tally is a convenience; a failure just leaves the last reading in place
+    } finally {
+      setLoadingUsage(false);
+    }
+  };
+
   const fetchFeedStream = async (sourceTitle?: string) => {
+    const requestId = ++feedStreamRequestRef.current;
     setLoadingFeedStream(true);
     try {
       const res = await fetch('/api/feed-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceTitle: sourceTitle || 'all' })
+        body: JSON.stringify({ sourceTitle: sourceTitle || 'all', sources })
       });
       const data = await res.json();
-      if (data.articles) {
+      if (requestId !== feedStreamRequestRef.current) return;
+      if (Array.isArray(data.articles)) {
         setFeedStreamArticles(data.articles);
+        setFeedStreamRenderKey(prev => prev + 1);
+        applySourceMetadata(data.articles);
       }
     } catch (e) {
       // fallback
     } finally {
-      setLoadingFeedStream(false);
+      if (requestId === feedStreamRequestRef.current) setLoadingFeedStream(false);
     }
   };
 
   const handleOpenFeedStream = (sourceTitle: string, sourceId?: string) => {
+    // The tab/source effect performs the fetch; calling it here too caused a duplicate request
     setSelectedFeedSource(sourceTitle);
     setActiveTab('feeds');
-    fetchFeedStream(sourceTitle);
 
     if (sourceId) {
       if (!readSourceIds.includes(sourceId)) {
@@ -353,7 +1219,66 @@ export default function App() {
     showToast('Unread indicators reset');
   };
 
-  const generateDigest = async () => {
+  // Every article carries its feed's own blurb and proves the feed was just read, so cache
+  // both on the matching source: the description stays available offline, and the row's
+  // sync status is honest without any extra request.
+  const applySourceMetadata = (items: Array<{ source?: string; sourceDescription?: string }>) => {
+    if (!items || items.length === 0) return;
+    const seen = new Set<string>();
+    const descriptions = new Map<string, string>();
+    items.forEach(item => {
+      const name = (item?.source || '').trim().toLowerCase();
+      if (!name) return;
+      seen.add(name);
+      const description = (item?.sourceDescription || '').trim();
+      if (description && !descriptions.has(name)) descriptions.set(name, description);
+    });
+    if (seen.size === 0) return;
+
+    const syncedAt = Date.now();
+    setSources(prev => {
+      let changed = false;
+      const next = prev.map(src => {
+        const key = src.title.trim().toLowerCase();
+        if (!seen.has(key)) return src;
+        const description = descriptions.get(key) || src.description;
+        // A run of overlapping fetches within a minute must not churn state or storage
+        const alreadyFresh = src.status === 'active' && !src.failingReason &&
+          src.description === description &&
+          typeof src.lastSyncedAt === 'number' && syncedAt - src.lastSyncedAt < 60 * 1000;
+        if (alreadyFresh) return src;
+        changed = true;
+        return { ...src, description, lastSyncedAt: syncedAt, status: 'active' as const, failingReason: undefined };
+      });
+      return changed ? next : prev;
+    });
+  };
+
+  // The digest run also reports which feeds failed. Mark those sources as needing attention,
+  // so "Tap to review sources" lands on the rows that actually broke instead of a wall of
+  // "Active" with no sign of the problem.
+  const applyFeedReport = (report: { failed?: Array<{ title?: string; feedUrl?: string; reason?: string }> } | null) => {
+    const failed = Array.isArray(report?.failed) ? report!.failed! : [];
+    if (failed.length === 0) return;
+    setSources(prev => {
+      let changed = false;
+      const next = prev.map(src => {
+        const match = failed.find(entry =>
+          (entry.feedUrl && src.feedUrl && entry.feedUrl.trim().toLowerCase() === src.feedUrl.trim().toLowerCase()) ||
+          (entry.title && entry.title.trim().toLowerCase() === src.title.trim().toLowerCase())
+        );
+        if (!match) return src;
+        const reason = (match.reason || 'This feed returned nothing.').trim();
+        if (src.status === 'failing' && src.failingReason === reason) return src;
+        changed = true;
+        return { ...src, status: 'failing' as const, failingReason: reason };
+      });
+      return changed ? next : prev;
+    });
+  };
+
+  const generateDigest = async (options?: { fresh?: boolean }) => {
+    const requestId = ++digestRequestRef.current;
     setLoadingDigest(true);
     try {
       let readingStats = {};
@@ -361,37 +1286,88 @@ export default function App() {
         readingStats = JSON.parse(localStorage.getItem('curator_reading_stats') || '{}');
       } catch (e) { /* ignore */ }
 
+      // Freshness history lives in this browser. The digest currently on screen is not
+      // "already shown" — the server only down-weights pieces you have moved past.
+      let shownHistory: Array<{ id: string; shownAt: number }> = [];
+      try {
+        const savedHistory = JSON.parse(localStorage.getItem('curator_digest_history') || '[]');
+        if (Array.isArray(savedHistory)) {
+          shownHistory = savedHistory
+            .filter((entry: any) => entry && typeof entry.id === 'string' && Number.isFinite(entry.shownAt))
+            .slice(-150);
+        }
+      } catch {
+        shownHistory = [];
+      }
+
+      const currentDigestIds = new Set(digest.map(item => item.id));
+      const recentlyShown = shownHistory.filter(entry => !currentDigestIds.has(entry.id));
+
       const res = await fetch('/api/curate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sources, signals, readingStats, serendipityDial, itemCount })
+        body: JSON.stringify({
+          sources,
+          signals: { ...signals, moreTopics: interests.more, lessTopics: interests.less },
+          feedback: semanticFeedback,
+          readingStats,
+          serendipityDial,
+          itemCount,
+          provider: aiProvider,
+          apiKey: customApiKey,
+          baseUrl: aiBaseUrl,
+          model: aiModel,
+          embeddingProvider,
+          embeddingApiKey,
+          embeddingBaseUrl,
+          embeddingModel,
+          recentlyShown,
+          previousDigestIds: [...currentDigestIds],
+          fresh: Boolean(options?.fresh),
+          seed: options?.fresh ? `${Date.now()}-${Math.random()}` : 'stable',
+        })
       });
-      const data = await res.json();
-      if (data.digest) {
-        // Attach realistic imagery matching the design aesthetic
-        const enhanced = data.digest.map((item: DigestItem, idx: number) => {
-          const banners = [
-            'https://images.unsplash.com/photo-1508873696983-2df5293cb32f?auto=format&fit=crop&w=1200&q=80',
-            'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80',
-            'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80',
-            'https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=1200&q=80',
-            'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1200&q=80',
-            'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=1200&q=80',
-            'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=1200&q=80'
-          ];
-          return {
-            ...item,
-            bannerImage: item.bannerImage || banners[idx % banners.length]
-          };
-        });
-        setDigest(enhanced);
+      const data = await res.json().catch(() => ({}));
+      if (requestId !== digestRequestRef.current) return;
+      if (!res.ok) {
+        showToast(data?.error ? `Could not refresh the digest: ${data.error}` : 'Could not refresh the digest');
+        return;
+      }
+      setDigestCuratedAt(Date.now());
+      if (Array.isArray(data.digest) && data.digest.length > 0) {
+        setDigest(data.digest);
+        applySourceMetadata(data.digest);
+        if (data.semanticSummary) setSemanticSummary(data.semanticSummary);
+        if (data.feedReport) {
+          setFeedReport(data.feedReport);
+          applyFeedReport(data.feedReport);
+        }
+
+        const shownAt = Date.now();
+        const freshIds = new Set<string>(data.digest.map((item: DigestItem) => item.id));
+        const mergedHistory = [
+          ...shownHistory.filter(entry => !freshIds.has(entry.id)),
+          ...data.digest.map((item: DigestItem) => ({ id: item.id, shownAt })),
+        ].slice(-150);
+        localStorage.setItem('curator_digest_history', JSON.stringify(mergedHistory));
+      } else if (options?.fresh) {
+        showToast('No other stories are ready right now. Restore muted stories or review your sources.');
       }
     } catch (e) {
-      // fallback
+      showToast('Could not refresh the digest');
     } finally {
-      setLoadingDigest(false);
+      if (requestId === digestRequestRef.current) setLoadingDigest(false);
     }
   };
+
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [pendingReset, setPendingReset] = useState(false);
+
+  useEffect(() => {
+    if (!pendingDeleteId && !pendingReset) return;
+    const t = setTimeout(() => { setPendingDeleteId(null); setPendingReset(false); }, 5000);
+    return () => clearTimeout(t);
+  }, [pendingDeleteId, pendingReset]);
 
   const showToast = (msg: string, actionLabel?: string, onAction?: () => void) => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
@@ -407,74 +1383,162 @@ export default function App() {
     }, onAction ? 7000 : 3500);
   };
 
-  const handleMore = (item: DigestItem) => {
-    const topic = item.folder || 'this topic';
-    const alreadyMore = (signals.moreIds || []).includes(item.id);
-    if (alreadyMore) {
-      setSignals(prev => {
-        const nextIds = (prev.moreIds || []).filter(id => id !== item.id);
-        const hasOtherWithSameTopic = digest.some(d => d.id !== item.id && d.folder === item.folder && nextIds.includes(d.id));
-        const nextTopics = hasOtherWithSameTopic ? (prev.moreTopics || []) : (prev.moreTopics || []).filter(t => t !== item.folder);
-        return {
-          ...prev,
-          moreIds: nextIds,
-          moreTopics: nextTopics,
-          more: nextTopics,
-        };
+  const recordSemanticFeedback = (item: DigestItem, vote: 'like' | 'dislike') => {
+    const text = `${item.title}\n${item.summary}\n${item.fullText}`
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 3000);
+    setSemanticFeedback(prev => [
+      ...prev.filter(entry => entry.id !== item.id),
+      { id: item.id, vote, title: item.title, text, timestamp: Date.now(), source: item.source, folder: item.folder },
+    ].slice(-40));
+  };
+
+  const removeSemanticFeedback = (itemId: string) => {
+    setSemanticFeedback(prev => prev.filter(entry => entry.id !== itemId));
+  };
+
+  const markSetupComplete = () => {
+    try {
+      localStorage.setItem('curator_setup_complete', '1');
+    } catch { /* ignore */ }
+  };
+
+  const openSetupWizard = () => {
+    setSetupStep(1);
+    setSetupError(null);
+    setCalibrationIndex(0);
+    setCalibrationVotes(0);
+    setShowSetupWizard(true);
+  };
+
+  const dismissSetupWizard = () => {
+    markSetupComplete();
+    setShowSetupWizard(false);
+  };
+
+  const finishSetup = () => {
+    markSetupComplete();
+    setShowSetupWizard(false);
+    showToast(calibrationVotes > 0
+      ? `Calibrated with ${calibrationVotes} verdict${calibrationVotes === 1 ? '' : 's'} — building your digest`
+      : 'Setup saved — building your digest');
+  };
+
+  const loadCalibration = async () => {
+    setLoadingCalibration(true);
+    setSetupError(null);
+    try {
+      const res = await fetch('/api/calibrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sources,
+          excludeIds: semanticFeedback.map(entry => entry.id),
+        })
       });
-      showToast(`Removed preference for "${topic}"`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(data.candidates) || data.candidates.length === 0) {
+        setSetupError(data?.error || 'No live articles came back. Check your feed URLs, then try again.');
+        return;
+      }
+      setCalibrationCandidates(data.candidates);
+      applySourceMetadata(data.candidates);
+      setCalibrationIndex(0);
+      setCalibrationVotes(0);
+      setSetupStep(2);
+    } catch {
+      setSetupError('Could not reach your feeds. Check your connection and try again.');
+    } finally {
+      setLoadingCalibration(false);
+    }
+  };
+
+  const answerCalibration = (item: DigestItem, vote: 'like' | 'dislike') => {
+    recordSemanticFeedback(item, vote);
+    setCalibrationVotes(prev => prev + 1);
+    const nextIndex = calibrationIndex + 1;
+    setCalibrationIndex(nextIndex);
+    if (nextIndex >= calibrationCandidates.length) {
+      setSetupStep(3);
+    }
+  };
+
+  const handleMore = (item: DigestItem) => {
+    const alreadyMore = (signals.moreIds || []).includes(item.id);
+    const existingFeedback = semanticFeedback.find(entry => entry.id === item.id);
+    if (alreadyMore && existingFeedback?.vote === 'like') {
+      setSignals(prev => ({
+        ...prev,
+        moreIds: (prev.moreIds || []).filter(id => id !== item.id),
+        moreTopics: [],
+        lessTopics: [],
+        more: [],
+        less: [],
+      }));
+      removeSemanticFeedback(item.id);
+      showToast('Removed this article from your semantic profile');
+      return;
+    }
+    if (alreadyMore) {
+      setSignals(prev => ({
+        ...prev,
+        lessIds: (prev.lessIds || []).filter(id => id !== item.id),
+        moreTopics: [],
+        lessTopics: [],
+        more: [],
+        less: [],
+      }));
+      recordSemanticFeedback(item, 'like');
+      showToast('Added this like to your semantic profile');
       return;
     }
 
-    setSignals(prev => {
-      const nextMoreIds = Array.from(new Set([...(prev.moreIds || []), item.id]));
-      const nextLessIds = (prev.lessIds || []).filter(id => id !== item.id);
-      const nextMoreTopics = item.folder ? Array.from(new Set([...(prev.moreTopics || []), item.folder])) : (prev.moreTopics || []);
-      const nextLessTopics = (prev.lessTopics || []).filter(t => t !== item.folder);
-      return {
-        ...prev,
-        moreIds: nextMoreIds,
-        lessIds: nextLessIds,
-        moreTopics: nextMoreTopics,
-        lessTopics: nextLessTopics,
-        more: nextMoreTopics,
-        less: nextLessTopics,
-      };
-    });
-    showToast(`Learned reading preference: More on ${topic}`);
+    setSignals(prev => ({
+      ...prev,
+      moreIds: Array.from(new Set([...(prev.moreIds || []), item.id])),
+      lessIds: (prev.lessIds || []).filter(id => id !== item.id),
+      moreTopics: [],
+      lessTopics: [],
+      more: [],
+      less: [],
+    }));
+    recordSemanticFeedback(item, 'like');
+    showToast('Semantic profile learned from this article');
   };
 
   const handleLess = (item: DigestItem) => {
-    const topic = item.folder || 'this topic';
     const isAlreadyLess = (signals.lessIds || []).includes(item.id);
+    const existingFeedback = semanticFeedback.find(entry => entry.id === item.id);
     if (isAlreadyLess && !mutedCards[item.id]) {
-      undoHandleLess(item.id);
+      if (existingFeedback?.vote === 'dislike') {
+        undoHandleLess(item.id);
+      } else {
+        recordSemanticFeedback(item, 'dislike');
+        showToast('Added this dislike to your semantic profile');
+      }
       return;
     }
 
-    setSignals(prev => {
-      const nextLessIds = Array.from(new Set([...(prev.lessIds || []), item.id]));
-      const nextMoreIds = (prev.moreIds || []).filter(id => id !== item.id);
-      const nextLessTopics = item.folder ? Array.from(new Set([...(prev.lessTopics || []), item.folder])) : (prev.lessTopics || []);
-      const nextMoreTopics = (prev.moreTopics || []).filter(t => t !== item.folder);
-      return {
-        ...prev,
-        lessIds: nextLessIds,
-        moreIds: nextMoreIds,
-        lessTopics: nextLessTopics,
-        moreTopics: nextMoreTopics,
-        less: nextLessTopics,
-        more: nextMoreTopics,
-      };
-    });
+    setSignals(prev => ({
+      ...prev,
+      lessIds: Array.from(new Set([...(prev.lessIds || []), item.id])),
+      moreIds: (prev.moreIds || []).filter(id => id !== item.id),
+      moreTopics: [],
+      lessTopics: [],
+      more: [],
+      less: [],
+    }));
+    recordSemanticFeedback(item, 'dislike');
 
-    // Retain in mutedCards so the card slot shows an inline "Undo / Redo" fallback
+    // Retain in mutedCards so the card slot shows an inline Undo fallback
     setMutedCards(prev => ({
       ...prev,
       [item.id]: item
     }));
 
-    showToast(`Learned reading preference: Fewer on ${topic}`, 'Undo', () => undoHandleLess(item.id));
+    showToast(`Fewer like this · "${item.title}" quietened`, 'Undo', () => undoHandleLess(item.id));
   };
 
   const undoHandleLess = (itemId: string) => {
@@ -486,20 +1550,18 @@ export default function App() {
       delete next[itemId];
       return next;
     });
+    removeSemanticFeedback(itemId);
 
-    setSignals(prev => {
-      const nextLessIds = (prev.lessIds || []).filter(id => id !== itemId);
-      const hasOtherWithSameTopic = digest.some(d => d.id !== itemId && d.folder === topic && nextLessIds.includes(d.id));
-      const nextLessTopics = hasOtherWithSameTopic ? (prev.lessTopics || []) : (prev.lessTopics || []).filter(t => t !== topic);
-      return {
-        ...prev,
-        lessIds: nextLessIds,
-        lessTopics: nextLessTopics,
-        less: nextLessTopics,
-      };
-    });
+    setSignals(prev => ({
+      ...prev,
+      lessIds: (prev.lessIds || []).filter(id => id !== itemId),
+      moreTopics: [],
+      lessTopics: [],
+      more: [],
+      less: [],
+    }));
 
-    showToast(topic ? `Restored reading topic "${topic}"` : 'Restored article to feed');
+    showToast(topic ? `Restored article from ${topic}` : 'Restored article to feed');
   };
 
   const permanentlyDismissMuted = (itemId: string) => {
@@ -516,7 +1578,10 @@ export default function App() {
     if (isSaved) {
       setSavedIds(prev => prev.filter(id => id !== item.id));
       setSavedArticles(prev => prev.filter(a => a.id !== item.id));
-      showToast('Removed from saved items');
+      showToast('Removed from saved items', 'Undo', () => {
+        setSavedIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
+        setSavedArticles(prev => [item, ...prev.filter(a => a.id !== item.id)]);
+      });
     } else {
       setSavedIds(prev => [...prev, item.id]);
       setSavedArticles(prev => [item, ...prev.filter(a => a.id !== item.id)]);
@@ -526,24 +1591,88 @@ export default function App() {
 
   const handleAddSource = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newSourceTitle || !newSourceUrl) return;
+    const trimmedTitle = newSourceTitle.trim();
+    const trimmedUrl = newSourceUrl.trim();
+    // Novalidate on the form means iOS Safari, which shows no native message for a bad
+    // type="url" value, still reaches this handler and gets the inline error below.
+    if (!trimmedTitle) {
+      setNewSourceTitleError('Give the source a name, e.g. "Marginal Revolution".');
+      return;
+    }
+    setNewSourceTitleError(null);
+    if (!trimmedUrl) {
+      setNewSourceUrlError('A feed URL is required — it is where Curator fetches new stories.');
+      return;
+    }
+    if (!/^https?:\/\/(localhost(:\d+)?|127\.0\.0\.1(:\d+)?|\S+\.\S+)/i.test(trimmedUrl)) {
+      setNewSourceUrlError(`"${trimmedUrl}" does not look like a valid feed URL. Start with http:// or https:// and include a domain, e.g. https://example.com/feed.xml.`);
+      return;
+    }
+    setNewSourceUrlError(null);
+    const requestedFolder = newSourceFolder.trim();
+    const chosenFolder = sources
+      .map(src => displayFolder(src.folder))
+      .find(folder => folder.toLowerCase() === requestedFolder.toLowerCase()) || requestedFolder || 'General';
     const newSrc: SourceItem = {
       id: 'src_' + Date.now(),
-      title: newSourceTitle,
-      feedUrl: newSourceUrl,
-      folder: newSourceFolder || 'General',
+      title: trimmedTitle,
+      feedUrl: trimmedUrl,
+      folder: chosenFolder,
+      categories: [chosenFolder],
       status: 'active'
     };
     setSources(prev => [newSrc, ...prev]);
+    setNewSourceFolder(newSrc.folder);
+    setNewSourceFolderCustom(false);
     setNewSourceTitle('');
     setNewSourceUrl('');
     setShowAddSourceModal(false);
     showToast('Source added successfully');
   };
 
+  const toggleSourceCategory = (sourceId: string, category: string) => {
+    setSources(prev => prev.map(source => {
+      if (source.id !== sourceId) return source;
+      const categories = normalizeCategoryLabels(source.categories, source.folder);
+      const isSelected = categories.some(value => value.toLowerCase() === category.toLowerCase());
+      return {
+        ...source,
+        categories: isSelected
+          ? categories.filter(value => value.toLowerCase() !== category.toLowerCase())
+          : [...categories, category],
+      };
+    }));
+  };
+
+  const addSourceCategory = (source: SourceItem) => {
+    const typed = categoryDraft.replace(/\s+/g, ' ').trim().slice(0, 40);
+    if (!typed) return;
+    const category = sourceCategories.find(value => value.toLowerCase() === typed.toLowerCase()) || typed;
+    setSources(prev => prev.map(item => {
+      if (item.id !== source.id) return item;
+      const categories = normalizeCategoryLabels(item.categories, item.folder);
+      if (categories.some(value => value.toLowerCase() === category.toLowerCase())) return item;
+      return { ...item, categories: [...categories, category] };
+    }));
+    setCategoryDraft('');
+  };
+
   const handleDeleteSource = (id: string) => {
+    if (pendingDeleteId !== id) {
+      setPendingDeleteId(id);
+      showToast('Tap the trash again to confirm removal');
+      return;
+    }
+    setPendingDeleteId(null);
+    const removed = sources.find(s => s.id === id);
     setSources(prev => prev.filter(s => s.id !== id));
-    showToast('Source removed');
+    showToast(
+      `Removed "${removed?.title ?? 'source'}"`,
+      'Undo',
+      () => {
+        if (removed) setSources(prev => (prev.some(s => s.id === removed.id) ? prev : [removed, ...prev]));
+      }
+    );
   };
 
   const processOpmlText = async (rawText: string) => {
@@ -557,13 +1686,28 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ opmlText: rawText })
       });
-      const data = await res.json();
+      const responseText = await res.text();
+      let data: any = null;
+      try {
+        data = responseText ? JSON.parse(responseText) : null;
+      } catch {
+        // The server may return a non-JSON error page, such as for an oversized request.
+      }
       if (!res.ok) {
-        setImportError(data.error || 'Could not parse subscription file.');
+        setImportError(res.status === 413
+          ? 'This OPML file is too large to import. Try a smaller export.'
+          : data?.error || `Could not parse subscription file (HTTP ${res.status}).`);
+        return;
+      }
+      if (!data || typeof data !== 'object') {
+        setImportError('The OPML import service returned an invalid response. Please try again.');
         return;
       }
       if (data.success && data.sources) {
-        setSources(data.sources);
+        setSources(data.sources.map((source: SourceItem) => ({
+          ...source,
+          categories: normalizeCategoryLabels(source.categories, source.folder),
+        })));
         setImportResult({
           totalImported: data.totalImported,
           successCount: data.successCount,
@@ -573,7 +1717,7 @@ export default function App() {
         showToast(`Imported ${data.totalImported} sources with folders intact`);
       }
     } catch (e) {
-      setImportError('Error uploading or parsing subscription file.');
+      setImportError('Unable to reach the OPML import service. Please try again.');
     } finally {
       setIsImportingOpml(false);
     }
@@ -614,7 +1758,7 @@ export default function App() {
       const res = await fetch('/api/discover-sources', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q })
+        body: JSON.stringify({ query: q, apiKey: customApiKey })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -647,6 +1791,7 @@ export default function App() {
       title: item.title,
       feedUrl: item.feedUrl,
       folder: item.folder || 'Discovered',
+      categories: [item.folder || 'Discovered'],
       status: 'active'
     };
     setSources(prev => [newSrc, ...prev]);
@@ -658,13 +1803,18 @@ export default function App() {
   };
 
   const handleExportOPML = () => {
+    const escapeXmlAttribute = (value: string) => value
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
     const opmlContent = `<?xml version="1.0" encoding="UTF-8"?>
 <opml version="1.0">
   <head>
     <title>Curator Subscriptions Export</title>
   </head>
   <body>
-    ${sources.map(s => `<outline text="${s.title}" title="${s.title}" type="rss" xmlUrl="${s.feedUrl}" category="${s.folder}"/>`).join('\n    ')}
+    ${sources.map(s => `<outline text="${escapeXmlAttribute(s.title)}" title="${escapeXmlAttribute(s.title)}" type="rss" xmlUrl="${escapeXmlAttribute(s.feedUrl)}" category="${escapeXmlAttribute(s.folder)}" curatorCategories="${escapeXmlAttribute(JSON.stringify(normalizeCategoryLabels(s.categories, s.folder)))}"/>`).join('\n    ')}
   </body>
 </opml>`;
     const blob = new Blob([opmlContent], { type: 'text/xml' });
@@ -676,48 +1826,18 @@ export default function App() {
     showToast('Subscription list exported successfully');
   };
 
-  const DEFAULT_SOURCE_AVATARS: Record<string, string> = {
-    'nicole williams': 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=160&auto=format&fit=crop&q=80',
-    'the anthropic stack': 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=160&auto=format&fit=crop&q=80',
-    'world politics & history': 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=160&auto=format&fit=crop&q=80',
-    'prospect magazine': 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=160&auto=format&fit=crop&q=80',
-    'dr. bhaskar economics': 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=160&auto=format&fit=crop&q=80',
-    'stratechery by ben thompson': 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=160&auto=format&fit=crop&q=80',
-    'marginal revolution': 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=160&auto=format&fit=crop&q=80',
-    'dan luu': 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=160&auto=format&fit=crop&q=80',
-    'a list apart': 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=160&auto=format&fit=crop&q=80',
-    'long now foundation': 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=160&auto=format&fit=crop&q=80',
-    'rest of world': 'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=160&auto=format&fit=crop&q=80',
-  };
-
-  const getSourceAvatar = (title: string, feedUrl?: string): string | undefined => {
-    const normalized = (title || '').trim().toLowerCase();
-    for (const [key, avatar] of Object.entries(DEFAULT_SOURCE_AVATARS)) {
-      if (normalized.includes(key) || key.includes(normalized)) {
-        return avatar;
-      }
+  const getSourceAvatar = (feedUrl?: string): string | undefined => {
+    if (!feedUrl) return undefined;
+    try {
+      const url = new URL(feedUrl);
+      return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(url.hostname)}&sz=128`;
+    } catch (e) {
+      return undefined;
     }
-    const matchSource = sources.find(s => s.title.toLowerCase() === normalized);
-    if (matchSource?.avatar) return matchSource.avatar;
-
-    const foundArticle = digest.find(d => d.source.toLowerCase() === normalized) ||
-                         feedStreamArticles.find(a => a.source.toLowerCase() === normalized);
-    if (foundArticle?.avatar) return foundArticle.avatar;
-    if (foundArticle?.bannerImage) return foundArticle.bannerImage;
-
-    if (feedUrl) {
-      try {
-        const url = new URL(feedUrl);
-        return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(url.hostname)}&sz=128`;
-      } catch (e) {
-        // ignore
-      }
-    }
-    return undefined;
   };
 
   const formatSyncTime = (timestamp?: number): string => {
-    if (!timestamp) return 'Just now';
+    if (!timestamp) return 'Not synced yet';
     const diff = Math.max(0, Date.now() - timestamp);
     if (diff < 60 * 1000) return 'Just now';
     const mins = Math.floor(diff / (60 * 1000));
@@ -726,6 +1846,32 @@ export default function App() {
     if (hours < 24) return `${hours}h ago`;
     const days = Math.floor(hours / 24);
     return `${days}d ago`;
+  };
+
+  // Always show the digest date with its local curation time; retain the year for older digests.
+  const formatCuratedAt = (value: number): string => {
+    if (!Number.isFinite(value) || value <= 0) return '';
+    const d = new Date(value);
+    const now = new Date();
+    const dateOptions: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
+    if (d.getFullYear() !== now.getFullYear()) dateOptions.year = 'numeric';
+    const date = d.toLocaleDateString([], dateOptions);
+    const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    return `${date} at ${time}`;
+  };
+
+  // Pounds, with enough precision that a few tenths of a penny still show
+  const formatGbp = (value: number): string => {
+    const safe = Number.isFinite(value) ? value : 0;
+    if (safe === 0) return '0.00';
+    return safe < 0.01 ? safe.toFixed(4) : safe.toFixed(2);
+  };
+
+  const formatTokens = (value: number): string => {
+    const safe = Number.isFinite(value) ? value : 0;
+    if (safe >= 1_000_000) return `${(safe / 1_000_000).toFixed(2)}M`;
+    if (safe >= 1000) return `${(safe / 1000).toFixed(1)}k`;
+    return String(Math.round(safe));
   };
 
   const getShortSourceTitle = (title: string): string => {
@@ -758,30 +1904,274 @@ export default function App() {
   const handleRefreshSource = async (source: SourceItem) => {
     setRefreshingSourceId(source.id);
     try {
-      await fetch('/api/feed-stream', {
+      // The endpoint matches on sourceTitle, not feedUrl — sending only feedUrl refreshed the wrong feeds
+      const res = await fetch('/api/feed-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feedUrl: source.feedUrl })
-      }).catch(() => null);
+        body: JSON.stringify({ sourceTitle: source.title, sources })
+      });
+      const data = await res.json().catch(() => ({}));
+      const articles: DigestItem[] = Array.isArray(data.articles) ? data.articles : [];
+      const fetched = res.ok && articles.length > 0;
+      if (fetched) applySourceMetadata(articles);
 
-      const now = Date.now();
       setSources(prev => prev.map(s => {
-        if (s.id === source.id) {
-          return {
-            ...s,
-            lastSyncedAt: now,
-            status: 'active' as const,
-            failingReason: undefined
-          };
-        }
-        return s;
+        if (s.id !== source.id) return s;
+        return fetched
+          ? { ...s, lastSyncedAt: Date.now(), status: 'active' as const, failingReason: undefined }
+          : {
+              ...s,
+              status: 'failing' as const,
+              failingReason: res.ok ? 'This feed returned no articles.' : (data.error || `Feed returned HTTP ${res.status}.`)
+            };
       }));
-      showToast(`Refreshed "${source.title}" · 100% up to date`);
+
+      if (fetched) {
+        if (selectedFeedSource === source.title) {
+          setFeedStreamArticles(articles);
+          setFeedStreamRenderKey(prev => prev + 1);
+        }
+        showToast(`Fetched ${articles.length} ${articles.length === 1 ? 'article' : 'articles'} from "${source.title}"`);
+      } else {
+        showToast(`Could not refresh "${source.title}"`);
+      }
     } catch (e) {
-      showToast(`Refreshed "${source.title}"`);
+      setSources(prev => prev.map(s => s.id === source.id
+        ? { ...s, status: 'failing' as const, failingReason: 'Network error while refreshing this feed.' }
+        : s));
+      showToast(`Could not refresh "${source.title}"`);
     } finally {
       setRefreshingSourceId(null);
     }
+  };
+
+  const releaseWakeLock = () => {
+    wakeLockWantedRef.current = false;
+    const lock = wakeLockRef.current;
+    wakeLockRef.current = null;
+    if (lock && typeof lock.release === 'function') {
+      try {
+        lock.release();
+      } catch {
+        // already released by the browser
+      }
+    }
+  };
+
+  const requestWakeLock = async () => {
+    if (typeof navigator === 'undefined' || !('wakeLock' in navigator) || wakeLockRef.current) return;
+    wakeLockWantedRef.current = true;
+    try {
+      const lock = await (navigator as any).wakeLock.request('screen');
+      if (!wakeLockWantedRef.current) {
+        // Playback stopped while the request was in flight
+        try { lock.release(); } catch { /* ignore */ }
+        return;
+      }
+      wakeLockRef.current = lock;
+      // The browser releases the lock automatically when the page is hidden
+      lock.addEventListener?.('release', () => {
+        if (wakeLockRef.current === lock) wakeLockRef.current = null;
+      });
+    } catch {
+      // Denied (e.g. Low Power Mode) or unsupported — playback continues normally
+    }
+  };
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      // Locks are dropped on tab switch; re-acquire only if audio is still running unattended
+      if (document.visibilityState === 'visible' && speechPlaying && !speechPaused) {
+        requestWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [speechPlaying, speechPaused]);
+
+  // Release the wake lock only when the app itself goes away
+  useEffect(() => () => releaseWakeLock(), []);
+
+  // ---- Read Aloud -------------------------------------------------------------
+  // One utterance per sentence, queued: short utterances never hit the engine's
+  // long-string truncation (Chrome stops at roughly fifteen seconds, iOS stalls on very
+  // long strings), paragraph breaks get a longer beat than sentence breaks, and the queue
+  // position is the progress indicator.
+
+  const configureSpeechUtterance = (utterance: SpeechSynthesisUtterance) => {
+    // getVoices() can still be empty on the first read after mount, so ask it again here:
+    // the very first sentence should already use the chosen voice, not the system default.
+    const voice = activeSpeechVoice || (
+      typeof window !== 'undefined' && 'speechSynthesis' in window
+        ? resolveSpeechVoice(window.speechSynthesis.getVoices() || [], speechVoiceUri)
+        : null
+    );
+    // With no better voice identified, neither the voice nor the language is touched, so the
+    // device speaks with the voice chosen in Spoken Content — Jamie (Premium), here.
+    if (voice) {
+      utterance.voice = voice;
+      utterance.lang = voice.lang || SPEECH_FALLBACK_LANG;
+    }
+    utterance.rate = speechRate;
+  };
+
+  const stopSpeech = () => {
+    speechSessionRef.current += 1;
+    speechStateRef.current = 'idle';
+    if (speechGapTimerRef.current) {
+      clearTimeout(speechGapTimerRef.current);
+      speechGapTimerRef.current = null;
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    speechQueueRef.current = [];
+    speechIndexRef.current = 0;
+    speechArticleIdRef.current = null;
+    speechUtteranceRef.current = null;
+    releaseWakeLock();
+    setSpeechPlaying(false);
+    setSpeechPaused(false);
+    setSpeechArticleId(null);
+    setSpeechProgress({ index: 0, total: 0, paragraph: -1 });
+  };
+
+  // Only a queue that ran to its end counts as listening; stopSpeech() is the other exit
+  const finishSpeech = () => {
+    const finishedId = speechArticleIdRef.current;
+    stopSpeech();
+    if (!finishedId) return;
+    setReadingStats(prev => ({
+      ...prev,
+      [finishedId]: { maxDepth: 100, finished: true, lastRead: Date.now() }
+    }));
+    setReadArticleIds(prev => (prev.includes(finishedId) ? prev : [...prev, finishedId]));
+    showToast('Finished listening · Read through recorded');
+  };
+
+  const speakSpeechChunk = () => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+    const queue = speechQueueRef.current;
+    const index = speechIndexRef.current;
+    const session = speechSessionRef.current;
+
+    if (index >= queue.length) {
+      finishSpeech();
+      return;
+    }
+
+    const chunk = queue[index];
+    const utterance = new SpeechSynthesisUtterance(chunk.text);
+    configureSpeechUtterance(utterance);
+
+    speechStateRef.current = 'playing';
+    setSpeechPlaying(true);
+    setSpeechPaused(false);
+    setSpeechProgress({ index, total: queue.length, paragraph: chunk.paragraphIndex });
+
+    utterance.onstart = () => {
+      speechStartedRef.current = true;
+      setSpeechPlaying(true);
+      setSpeechPaused(false);
+    };
+
+    utterance.onend = () => {
+      if (session !== speechSessionRef.current) return;
+      if (speechStateRef.current === 'idle') return;
+
+      speechUtteranceRef.current = null;
+      speechIndexRef.current = index + 1;
+      const next = queue[index + 1];
+      const endsParagraph = Boolean(next) && chunk.paragraphIndex >= 0 && next.paragraphIndex !== chunk.paragraphIndex;
+
+      speechGapTimerRef.current = setTimeout(() => {
+        speechGapTimerRef.current = null;
+        if (session !== speechSessionRef.current) return;
+        // Paused inside the gap: resume() picks the queue back up
+        if (speechStateRef.current !== 'playing') return;
+        speakSpeechChunk();
+      }, endsParagraph ? SPEECH_PARAGRAPH_PAUSE_MS : SPEECH_SENTENCE_PAUSE_MS);
+    };
+
+    utterance.onerror = (event) => {
+      if (session !== speechSessionRef.current) return;
+      const reason = String(event?.error || '');
+      // A cancelled or superseded utterance is not a failure worth reporting
+      if (reason === 'interrupted' || reason === 'canceled' || reason === 'cancelled') return;
+      console.warn('SpeechSynthesis error:', event);
+      stopSpeech();
+      showToast('Read aloud stopped — this voice could not speak that passage.');
+    };
+
+    speechUtteranceRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const startSpeech = (article: DigestItem, startIndex = 0) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      showToast('Speech audio is not supported in this browser.');
+      return;
+    }
+
+    const queue = buildSpeechQueue(article);
+    if (queue.length === 0) {
+      showToast('This article has no readable text to speak.');
+      return;
+    }
+
+    stopSpeech();
+    const first = Math.max(0, Math.min(startIndex, queue.length - 1));
+    speechQueueRef.current = queue;
+    speechIndexRef.current = first;
+    speechArticleIdRef.current = article.id;
+    speechStartedRef.current = false;
+    setSpeechArticleId(article.id);
+    setSpeechProgress({ index: first, total: queue.length, paragraph: queue[first].paragraphIndex });
+    requestWakeLock();
+    // Still inside the tap: iOS only starts speaking from a user gesture
+    speakSpeechChunk();
+
+    // If the engine never started, say so instead of leaving a bar that never moves
+    const session = speechSessionRef.current;
+    setTimeout(() => {
+      if (speechSessionRef.current !== session) return;
+      if (speechStartedRef.current) return;
+      stopSpeech();
+      showToast('The device did not start speaking — try Read aloud again.');
+    }, 1600);
+  };
+
+  const pauseSpeech = () => {
+    if (speechStateRef.current !== 'playing') return;
+    if (speechGapTimerRef.current) {
+      clearTimeout(speechGapTimerRef.current);
+      speechGapTimerRef.current = null;
+    }
+    speechStateRef.current = 'paused';
+    setSpeechPaused(true);
+    releaseWakeLock();
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.pause();
+    }
+    showToast('Paused reading aloud');
+  };
+
+  const resumeSpeech = () => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    if (speechStateRef.current !== 'paused') return;
+
+    speechStateRef.current = 'playing';
+    setSpeechPaused(false);
+    requestWakeLock();
+    showToast('Resumed reading aloud');
+
+    // pause() marks the engine paused even with nothing queued, so always clear it first
+    if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+    // Paused in the breath between two sentences: nothing is loaded with the engine
+    if (!speechUtteranceRef.current) speakSpeechChunk();
   };
 
   const handleToggleReadAloud = (article: DigestItem) => {
@@ -790,102 +2180,77 @@ export default function App() {
       return;
     }
 
-    if (speechPlaying) {
-      if (speechPaused) {
-        window.speechSynthesis.resume();
-        setSpeechPaused(false);
-        showToast('Resumed reading aloud');
-      } else {
-        window.speechSynthesis.pause();
-        setSpeechPaused(true);
-        showToast('Paused reading aloud');
-      }
+    const isThisArticle = speechArticleIdRef.current === article.id;
+    if (isThisArticle && speechStateRef.current === 'paused') {
+      resumeSpeech();
       return;
     }
+    if (isThisArticle && speechStateRef.current === 'playing') {
+      pauseSpeech();
+      return;
+    }
+    startSpeech(article);
+  };
 
+  const handleStopReadAloud = () => stopSpeech();
+
+  // Tapping a paragraph while listening restarts the queue at that paragraph
+  const jumpSpeechToParagraph = (paragraphIndex: number) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    const at = speechQueueRef.current.findIndex(chunk => chunk.paragraphIndex === paragraphIndex);
+    if (at === -1) return;
+
+    speechSessionRef.current += 1;
+    speechStateRef.current = 'idle';
+    if (speechGapTimerRef.current) {
+      clearTimeout(speechGapTimerRef.current);
+      speechGapTimerRef.current = null;
+    }
     window.speechSynthesis.cancel();
+    speechIndexRef.current = at;
+    requestWakeLock();
+    speakSpeechChunk();
+  };
 
-    const cleanBody = article.fullText
-      .replace(/<[^>]*>/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"');
-
-    const textToRead = `${article.title}. By ${article.source}. ${article.summary}. ${cleanBody}`;
-    const utterance = new SpeechSynthesisUtterance(textToRead);
-
-    const voices = availableVoices.length > 0 ? availableVoices : window.speechSynthesis.getVoices();
-    const iosVoice = voices.find(v => 
-      v.lang.startsWith('en') && (
-        v.name.includes('Samantha') || 
-        v.name.includes('Siri') || 
-        v.name.includes('Daniel') || 
-        v.name.includes('Karen') ||
-        v.name.includes('Apple')
-      )
-    ) || voices.find(v => v.lang.startsWith('en')) || voices[0];
-
-    if (iosVoice) {
-      utterance.voice = iosVoice;
+  // Settings › Read aloud › Hear this voice
+  const handlePreviewSpeech = () => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      showToast('Speech audio is not supported in this browser.');
+      return;
     }
-
-    utterance.rate = speechRate;
-    utterance.pitch = 1.0;
-
-    utterance.onstart = () => {
-      setSpeechPlaying(true);
-      setSpeechPaused(false);
-      showToast('Reading aloud with iOS voice...');
-    };
-
-    utterance.onend = () => {
-      setSpeechPlaying(false);
-      setSpeechPaused(false);
-      const updated = {
-        ...readingStats,
-        [article.id]: { maxDepth: 100, finished: true, lastRead: Date.now() }
-      };
-      setReadingStats(updated);
-      localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
-      setReadArticleIds(prev => (prev.includes(article.id) ? prev : [...prev, article.id]));
-      showToast('Finished listening · Read through recorded');
-    };
-
-    utterance.onerror = (e) => {
-      console.warn('SpeechSynthesis error:', e);
-      setSpeechPlaying(false);
-      setSpeechPaused(false);
-    };
-
+    stopSpeech();
+    const utterance = new SpeechSynthesisUtterance('Curator. Your morning reading, read aloud.');
+    configureSpeechUtterance(utterance);
     window.speechSynthesis.speak(utterance);
+    showToast(`Trying ${speechVoiceLabel} at ${speechRate.toFixed(2)}×`);
   };
 
-  const handleStopReadAloud = () => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-    setSpeechPlaying(false);
-    setSpeechPaused(false);
-  };
+  // Leaving the article ends the session, so speech never reads a page the reader closed
+  useEffect(() => {
+    const sessionArticleId = speechArticleIdRef.current;
+    if (!sessionArticleId) return;
+    if (selectedArticle && selectedArticle.id === sessionArticleId) return;
+    stopSpeech();
+  }, [selectedArticle]);
 
-  const handleCycleSpeechRate = (article: DigestItem) => {
-    const nextRate = speechRate === 1.0 ? 1.25 : speechRate === 1.25 ? 1.5 : 1.0;
-    setSpeechRate(nextRate);
-    if (speechPlaying) {
-      handleStopReadAloud();
-      setTimeout(() => {
-        handleToggleReadAloud(article);
-      }, 50);
-    }
-    showToast(`Speed set to ${nextRate}x`);
-  };
+  // Follow the voice down the page, but only once the spoken paragraph has scrolled away
+  useEffect(() => {
+    if (!speechPlaying || speechProgress.paragraph < 0) return;
+    const element = document.getElementById(`reader-paragraph-${speechProgress.paragraph}`);
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    if (rect.top >= 88 && rect.bottom <= window.innerHeight - 48) return;
+    element.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [speechPlaying, speechProgress.paragraph]);
 
   const getCardActions = (itemId: string) => {
     const stats = readingStats[itemId] || {};
 
-    const isReadThrough = Boolean(stats?.finished || (stats?.maxDepth && stats.maxDepth >= 85));
-    const isClicked = readArticleIds.includes(itemId) || Boolean(stats?.maxDepth && stats.maxDepth > 0);
+    const isReadThrough = Boolean(stats?.maxDepth && stats.maxDepth >= READ_THROUGH_DEPTH);
+    // Older builds also marked articles read when their original link was merely tapped.
+    // Only show Opened when there is a matching in-reader timestamp or reading progress.
+    const hasReaderOpenRecord = readArticleIds.includes(itemId) && Boolean(stats?.lastRead);
+    const isClicked = hasReaderOpenRecord || Boolean(stats?.maxDepth && stats.maxDepth > 0);
     const isVotedMore = Boolean(signals.moreIds?.includes(itemId));
     const isVotedLess = Boolean(signals.lessIds?.includes(itemId));
     const isSaved = savedIds.includes(itemId);
@@ -897,7 +2262,7 @@ export default function App() {
     if (isReadThrough) {
       actionTags.push({ label: 'Read through', color: 'emerald' });
     } else if (isClicked) {
-      const depth = stats?.maxDepth ? `${stats.maxDepth}% read` : 'Clicked through';
+      const depth = stats?.maxDepth ? `${stats.maxDepth}% read` : 'Opened in Curator';
       actionTags.push({ label: depth, color: 'sky' });
     }
 
@@ -923,8 +2288,16 @@ export default function App() {
     };
   };
 
+  // The reader owns browser history entries (one per open), so the phone's back gesture
+  // closes the article instead of leaving the site.
+  const readerHistoryDepthRef = React.useRef(0);
+  const readerCloseButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const readerReturnFocusRef = React.useRef<HTMLElement | null>(null);
+
   const openArticle = (item: DigestItem) => {
     setSelectedArticle(item);
+    // The byline's source description starts collapsed on every article
+    setShowReaderSourceNote(false);
 
     // Mark article as read / clicked
     setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
@@ -932,15 +2305,13 @@ export default function App() {
     // Update reading stats
     setReadingStats(prev => {
       const current = prev[item.id] || { maxDepth: 0, finished: false };
-      const updated = {
+      return {
         ...prev,
         [item.id]: {
           ...current,
           lastRead: Date.now()
         }
       };
-      localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
-      return updated;
     });
 
     // Mark corresponding source as read to dismiss its orange dot immediately
@@ -951,12 +2322,52 @@ export default function App() {
     if (match && !readSourceIds.includes(match.id)) {
       setReadSourceIds(prev => [...prev, match.id]);
     }
+
+    window.history.pushState({ curatorReader: true }, '');
+    readerHistoryDepthRef.current += 1;
   };
 
   const closeArticle = () => {
+    if (readerHistoryDepthRef.current > 0 && window.history.state?.curatorReader) {
+      // Consuming the pushed entry fires popstate, which does the actual close below —
+      // one back press equals one close, even when articles were opened on top of each other.
+      window.history.back();
+      return;
+    }
     handleStopReadAloud();
     setSelectedArticle(null);
   };
+
+  // Browser back while the reader is open closes the article; Escape closes it too, and
+  // focus moves into the dialog on open and back to the trigger on close.
+  React.useEffect(() => {
+    const onPopState = () => {
+      if (readerHistoryDepthRef.current > 0) {
+        readerHistoryDepthRef.current -= 1;
+        // Clearing the article also stops read-aloud via the session effect above.
+        setSelectedArticle(null);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeArticle();
+    };
+    window.addEventListener('popstate', onPopState);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  });
+
+  React.useEffect(() => {
+    if (selectedArticle) {
+      readerReturnFocusRef.current = (document.activeElement as HTMLElement) || null;
+      readerCloseButtonRef.current?.focus();
+    } else if (readerReturnFocusRef.current) {
+      readerReturnFocusRef.current.focus?.();
+      readerReturnFocusRef.current = null;
+    }
+  }, [selectedArticle]);
 
   useEffect(() => {
     if (savedIds.length > 0) {
@@ -975,11 +2386,36 @@ export default function App() {
   }, [digest, feedStreamArticles, savedIds]);
 
   const sourcesByFolder = sources.reduce((acc, src) => {
-    const folder = src.folder || 'Uncategorized';
+    const folder = displayFolder(src.folder);
     if (!acc[folder]) acc[folder] = [];
     acc[folder].push(src);
     return acc;
   }, {} as Record<string, SourceItem[]>);
+  const sourceFolders = Array.from(new Set(['General', ...sources.map(src => displayFolder(src.folder))])).sort((a, b) => a.localeCompare(b));
+  const sourceCategories = Array.from(new Set([
+    'General',
+    ...sourceFolders,
+    ...sources.flatMap(src => normalizeCategoryLabels(src.categories, src.folder)),
+  ])).sort((a, b) => a.localeCompare(b));
+  const filteredSourcesByFolder = Object.entries(sourcesByFolder).reduce((acc, [folder, folderSources]) => {
+    const matching = folderSources
+      .filter(src => `${src.title} ${src.feedUrl} ${folder} ${normalizeCategoryLabels(src.categories, src.folder).join(' ')}`.toLowerCase().includes(sourceSearch.trim().toLowerCase()))
+      .sort((a, b) => a.title.localeCompare(b.title));
+    if (matching.length > 0) acc[folder] = matching;
+    return acc;
+  }, {} as Record<string, SourceItem[]>);
+
+  // The source an open article came from, plus its cached description (the article's own
+  // copy of the blurb wins when the feed supplied one).
+  const readerSource = selectedArticle
+    ? sources.find(src => src.title.trim().toLowerCase() === selectedArticle.source.trim().toLowerCase())
+    : undefined;
+  const readerSourceDescription = (selectedArticle?.sourceDescription || readerSource?.description || '').trim();
+
+  // Editable feed categories, rather than organizational folders, seed interest suggestions.
+  const interestSuggestions = suggestionsFromFolders(sources.flatMap(src =>
+    normalizeCategoryLabels(src.categories, src.folder)
+  ));
 
   const savedDigestItems = [
     ...savedArticles,
@@ -988,14 +2424,61 @@ export default function App() {
   ];
   const normalDigest = digest.filter(d => !d.isOutOfBubble);
   const outOfBubbleDigest = digest.filter(d => d.isOutOfBubble);
+  const mutedDigestItems = digest.filter(item => Boolean(mutedCards[item.id]));
+  const allDigestItemsMuted = digest.length > 0 && mutedDigestItems.length === digest.length;
+  // Say how much is actually readable, so a fully muted digest never claims items are waiting.
+  const digestSummaryLabel = digest.length === 0
+    ? 'No stories yet'
+    : mutedDigestItems.length > 0
+      ? `${digest.length} ${digest.length === 1 ? 'story' : 'stories'} · ${mutedDigestItems.length} muted`
+      : `${digest.length} ${digest.length === 1 ? 'story' : 'stories'} worth your time`;
+
+  const restoreAllMutedCards = () => {
+    const restoredIds = mutedDigestItems.map(item => item.id);
+    if (restoredIds.length === 0) return;
+
+    // Muting starts a background refresh. Cancel it so a response built from the dislike
+    // cannot land after the restore and replace the stories the reader just brought back.
+    digestRequestRef.current += 1;
+    setLoadingDigest(false);
+
+    setMutedCards((current) => {
+      const next = { ...current };
+      restoredIds.forEach((id) => { delete next[id]; });
+      return next;
+    });
+    setSemanticFeedback((current) => current.filter(entry => !restoredIds.includes(entry.id)));
+    setSignals((current) => ({
+      ...current,
+      lessIds: (current.lessIds || []).filter(id => !restoredIds.includes(id)),
+      moreTopics: [],
+      lessTopics: [],
+      more: [],
+      less: [],
+    }));
+
+    showToast(restoredIds.length === 1
+      ? 'Restored 1 muted story to your digest'
+      : `Restored ${restoredIds.length} muted stories to your digest`);
+  };
+  const currentCalibrationItem = calibrationCandidates[calibrationIndex];
+  const articleParagraphs = selectedArticle ? buildArticleParagraphs(selectedArticle.fullText) : [];
+  const readAloudActive = Boolean(selectedArticle && speechArticleId === selectedArticle.id);
+  const speechPercent = speechProgress.total > 0
+    ? Math.min(100, Math.round((speechProgress.index / speechProgress.total) * 100))
+    : 0;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-slate-800 selection:text-white w-full max-w-full overflow-x-hidden">
-      {/* Toast Notification with Undo / Action fallback */}
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-slate-800 selection:text-white w-full max-w-full overflow-x-clip">
+      {/* Toast status and Undo action, kept clear of the reading header and text */}
       {activeToast && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] max-w-[calc(100vw-2rem)] bg-slate-900/95 border border-slate-700/80 text-slate-200 text-xs px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-3 animate-fade-in backdrop-blur-md">
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed safe-toast left-1/2 -translate-x-1/2 z-[60] w-fit max-w-[calc(100vw-2rem)] bg-slate-900/95 border border-slate-700/80 text-slate-200 text-sm px-4 py-3 rounded-2xl shadow-2xl flex flex-wrap items-center gap-3 animate-fade-in backdrop-blur-md"
+        >
           <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span>{activeToast.message}</span>
+          <span className="min-w-0 flex-[1_1_12rem] leading-snug">{activeToast.message}</span>
           {activeToast.actionLabel && activeToast.onAction && (
             <button
               type="button"
@@ -1003,7 +2486,7 @@ export default function App() {
                 activeToast.onAction?.();
                 setActiveToast(null);
               }}
-              className="ml-1 px-2.5 py-0.5 rounded-full bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-semibold text-[11px] border border-amber-500/40 transition flex items-center gap-1 cursor-pointer"
+              className="ml-auto shrink-0 px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-semibold text-xs border border-amber-500/40 transition flex items-center gap-1 cursor-pointer"
             >
               <RotateCcw className="w-3 h-3" />
               <span>{activeToast.actionLabel}</span>
@@ -1014,32 +2497,67 @@ export default function App() {
 
       {/* Reading View Modal */}
       {selectedArticle && (
-        <div 
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={selectedArticle.title}
           className="fixed inset-0 z-50 bg-slate-950 overflow-y-auto flex flex-col animate-fade-in"
           onScroll={(e) => {
             const target = e.currentTarget;
             const scrollHeight = target.scrollHeight - target.clientHeight;
             if (scrollHeight > 0 && selectedArticle) {
               const progress = Math.min(100, Math.round((target.scrollTop / scrollHeight) * 100));
-              const current = readingStats[selectedArticle.id] || { maxDepth: 0, finished: false };
-              const newMax = Math.max(current.maxDepth || 0, progress);
-              const finished = newMax >= 80 || Boolean(current.finished);
-              const updated = {
-                ...readingStats,
-                [selectedArticle.id]: { maxDepth: newMax, finished, lastRead: Date.now() }
-              };
-              setReadingStats(updated);
-              localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
-              if (finished) {
+              const previousDepth = readingStats[selectedArticle.id]?.maxDepth || 0;
+              const wasFinished = previousDepth >= READ_THROUGH_DEPTH;
+              setReadingStats(prev => {
+                const current = prev[selectedArticle.id] || { maxDepth: 0, finished: false };
+                const newMax = Math.max(current.maxDepth || 0, progress);
+                const finished = newMax >= READ_THROUGH_DEPTH;
+                if (newMax === (current.maxDepth || 0) && finished === Boolean(current.finished)) return prev;
+                return {
+                  ...prev,
+                  [selectedArticle.id]: { maxDepth: newMax, finished, lastRead: Date.now() }
+                };
+              });
+              if (progress >= READ_THROUGH_DEPTH || wasFinished) {
                 setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
+                const minutes = parseInt(selectedArticle.readTime) || 0;
+                setWeeklyHistory(prev => {
+                  if (prev.some(it => it.id === selectedArticle.id)) return prev;
+                  return [{
+                    id: selectedArticle.id,
+                    title: selectedArticle.title,
+                    source: selectedArticle.source,
+                    folder: selectedArticle.folder,
+                    readTime: selectedArticle.readTime,
+                    minutesSpent: minutes,
+                    completedAt: Date.now(),
+                    url: selectedArticle.url
+                  }, ...prev];
+                });
               }
             }
           }}
         >
-          <header className="sticky top-0 z-10 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/80 px-6 py-4 flex items-center justify-between">
-            <button 
+          <header className="sticky top-0 z-20 safe-reader-header bg-slate-950/95 backdrop-blur-md border-b border-slate-800/80 px-6 pb-4 flex items-center justify-between">
+            {/* Visual reading progress bar */}
+            <div className="absolute top-0 left-0 right-0 h-1 bg-slate-900 overflow-hidden">
+              <div 
+                className="h-full bg-amber-400 transition-all duration-150 ease-out"
+                style={{ width: `${readingStats[selectedArticle.id]?.maxDepth || 0}%` }}
+                role="progressbar"
+                aria-valuenow={readingStats[selectedArticle.id]?.maxDepth || 0}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label="Article reading progress"
+              />
+            </div>
+
+            <button
+              type="button"
+              ref={readerCloseButtonRef}
               onClick={closeArticle}
-              className="flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors"
+              className="flex items-center gap-2 min-h-10 px-1 text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>Back to Digest</span>
@@ -1048,12 +2566,14 @@ export default function App() {
               <button 
                 type="button"
                 onClick={() => handleToggleReadAloud(selectedArticle)}
-                className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${
+                className={`px-3 py-2 min-h-10 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${
                   speechPlaying
                     ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 ring-2 ring-amber-500/30'
                     : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-amber-400 hover:border-slate-700'
                 }`}
-                title="Read aloud using iOS onboard voice"
+                title={readAloudActive
+                  ? (speechPaused ? 'Resume reading aloud' : 'Pause reading aloud')
+                  : `Read aloud with ${speechVoiceLabel}`}
               >
                 {speechPlaying ? (
                   speechPaused ? <Play className="w-3.5 h-3.5 fill-current" /> : <Pause className="w-3.5 h-3.5 fill-current" />
@@ -1064,8 +2584,9 @@ export default function App() {
               </button>
               <button 
                 onClick={() => handleSave(selectedArticle)}
-                className={`p-2 rounded-xl border transition-colors ${savedIds.includes(selectedArticle.id) ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'border-slate-800 text-slate-400 hover:text-slate-100'}`}
-                title="Save for later"
+                className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition-colors ${savedIds.includes(selectedArticle.id) ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'border-slate-800 text-slate-400 hover:text-slate-100'}`}
+                title={savedIds.includes(selectedArticle.id) ? 'Remove from saved' : 'Save for later'}
+                aria-label={savedIds.includes(selectedArticle.id) ? `Remove "${selectedArticle.title}" from saved` : `Save "${selectedArticle.title}" for later`}
               >
                 <Bookmark className="w-4 h-4" />
               </button>
@@ -1073,66 +2594,123 @@ export default function App() {
           </header>
 
           <main className="max-w-2xl mx-auto w-full px-6 py-10 flex-1">
-            <div className="text-xs text-slate-400 mb-3 flex items-center gap-2">
-              <span className="font-medium text-slate-300">{selectedArticle.source}</span>
+            <div className="text-xs text-slate-400 mb-3 flex items-center gap-2 flex-wrap">
+              {readerSourceDescription ? (
+                <button
+                  type="button"
+                  onClick={() => setShowReaderSourceNote(prev => !prev)}
+                  className="inline-flex items-center gap-1 font-medium text-slate-300 hover:text-amber-300 transition cursor-pointer"
+                  aria-expanded={showReaderSourceNote}
+                  title={showReaderSourceNote ? 'Hide the source description' : `About ${selectedArticle.source}`}
+                >
+                  <span>{selectedArticle.source}</span>
+                  <ChevronDown className={`w-3 h-3 text-slate-500 transition-transform ${showReaderSourceNote ? 'rotate-180' : ''}`} />
+                </button>
+              ) : (
+                <span className="font-medium text-slate-300">{selectedArticle.source}</span>
+              )}
               <span aria-hidden="true">·</span>
               <span>{selectedArticle.folder}</span>
               <span aria-hidden="true">·</span>
-              <span>{selectedArticle.readTime}</span>
+              <span>{decodeArticleEntities(selectedArticle.readTime || '')}</span>
             </div>
+
+            {showReaderSourceNote && readerSourceDescription && (
+              <p className="text-xs text-slate-400 leading-relaxed mb-4 border-l border-slate-800 pl-3">
+                {readerSourceDescription}
+              </p>
+            )}
 
             <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-slate-100 mb-6 leading-snug">
               {selectedArticle.title}
             </h1>
 
-            {/* Minimalist Editorial Context Note */}
-            <div className="mb-8 pb-5 border-b border-slate-900 flex items-baseline gap-2 text-xs text-slate-400">
-              <span className="text-amber-400/90 font-medium not-italic">Curator's Note:</span>
-              <span className="italic text-slate-300">{selectedArticle.why}</span>
+            {/* Clear editorial context note */}
+            <div className="mb-8 pb-5 border-b border-slate-900 text-xs text-slate-400">
+              <div className="text-amber-400/90 font-medium mb-1">Curator's Note</div>
+              <p className="text-slate-300 italic leading-relaxed">{selectedArticle.why}</p>
             </div>
 
-            {/* Sleek Read Aloud bar (visible only when active) */}
-            {speechPlaying && (
-              <div className="mb-8 p-3 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-3 text-xs animate-fade-in shadow-md">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <button
-                    type="button"
-                    onClick={() => handleToggleReadAloud(selectedArticle)}
-                    className="w-7 h-7 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center shrink-0 hover:bg-amber-400 transition"
-                    title={speechPaused ? 'Resume' : 'Pause'}
-                  >
-                    {speechPaused ? <Play className="w-3.5 h-3.5 fill-current ml-0.5" /> : <Pause className="w-3.5 h-3.5 fill-current" />}
-                  </button>
-                  <span className="text-slate-200 truncate">
-                    {speechPaused ? 'Audio paused' : 'Reading aloud with iOS voice...'}
-                  </span>
+            {/* Read Aloud: what is being spoken, and how far through it is */}
+            {readAloudActive && (
+              <div className="mb-8 p-3 rounded-xl bg-slate-900/90 border border-slate-800 animate-fade-in shadow-md">
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleReadAloud(selectedArticle)}
+                      className="w-7 h-7 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center shrink-0 hover:bg-amber-400 transition"
+                      title={speechPaused ? 'Resume' : 'Pause'}
+                    >
+                      {speechPaused ? <Play className="w-3.5 h-3.5 fill-current ml-0.5" /> : <Pause className="w-3.5 h-3.5 fill-current" />}
+                    </button>
+                    <span
+                      className="text-slate-200 truncate"
+                      title={`${speechVoiceLabel} at ${speechRate.toFixed(2)}×`}
+                    >
+                      {speechPaused ? 'Audio paused' : `Reading aloud · ${speechVoiceLabel}`}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs text-slate-500 tabular-nums">{speechPercent}%</span>
+                    <button
+                      type="button"
+                      onClick={handleStopReadAloud}
+                      className="w-8 h-8 -mr-1 flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800/70 transition"
+                      title="Stop reading aloud"
+                      aria-label="Stop reading aloud"
+                    >
+                      <Square className="w-3.5 h-3.5 fill-current" />
+                    </button>
+                  </div>
                 </div>
 
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => handleCycleSpeechRate(selectedArticle)}
-                    className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:text-white font-mono text-[11px]"
-                    title="Playback speed"
-                  >
-                    {speechRate}x
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleStopReadAloud}
-                    className="p-1 text-slate-400 hover:text-rose-400 transition"
-                    title="Stop"
-                  >
-                    <Square className="w-3.5 h-3.5 fill-current" />
-                  </button>
+                <div
+                  className="mt-2 h-1 rounded-full bg-slate-800 overflow-hidden"
+                  role="progressbar"
+                  aria-valuenow={speechPercent}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label="Read aloud progress"
+                >
+                  <div
+                    className="h-full bg-amber-400 transition-all duration-300"
+                    style={{ width: `${speechPercent}%` }}
+                  />
                 </div>
+
+                <p className="mt-2 text-xs text-slate-500">
+                  {speechProgress.paragraph >= 0 && articleParagraphs.length > 0
+                    ? `Paragraph ${Math.min(speechProgress.paragraph + 1, articleParagraphs.length)} of ${articleParagraphs.length} · `
+                    : ''}
+                  sentence {Math.min(speechProgress.index + 1, speechProgress.total || 1)} of {speechProgress.total || 1}
+                  {' · '}tap a paragraph to listen from there
+                </p>
               </div>
             )}
 
-            <div className="prose prose-invert prose-slate max-w-none text-slate-300 leading-relaxed space-y-6 text-base font-reading">
-              {selectedArticle.fullText.split('\n\n').map((paragraph, idx) => (
-                <p key={idx}>{paragraph}</p>
-              ))}
+            <div className="max-w-[68ch] mx-auto text-slate-300 font-reading space-y-5 text-[1.0625rem] leading-[1.75]">
+              {articleParagraphs.length > 0 ? articleParagraphs.map((paragraph, idx) => {
+                const isSpeakingHere = readAloudActive && speechProgress.paragraph === idx;
+                return (
+                  <p
+                    key={idx}
+                    id={`reader-paragraph-${idx}`}
+                    onClick={readAloudActive ? () => jumpSpeechToParagraph(idx) : undefined}
+                    title={readAloudActive ? 'Listen from this paragraph' : undefined}
+                    className={`text-pretty transition-colors ${
+                      isSpeakingHere
+                        ? 'text-amber-50 border-l-2 border-amber-400 pl-4 -ml-4'
+                        : readAloudActive
+                          ? 'cursor-pointer hover:text-slate-100'
+                          : ''
+                    }`}
+                  >{paragraph}</p>
+                );
+              }) : (
+                <p className="text-slate-400 text-base">This feed supplied no readable body text. Use “Read original” below to open the article.</p>
+              )}
             </div>
 
             {/* Typographic End-mark */}
@@ -1149,81 +2727,42 @@ export default function App() {
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={() => {
-                    const currentStats = readingStats[selectedArticle.id] || { maxDepth: 100, finished: true };
-                    const updated = {
-                      ...readingStats,
+                    setReadingStats(prev => ({
+                      ...prev,
                       [selectedArticle.id]: {
-                        maxDepth: Math.max(currentStats.maxDepth || 0, 100),
+                        maxDepth: Math.max(prev[selectedArticle.id]?.maxDepth || 0, 100),
                         finished: true,
                         lastRead: Date.now()
                       }
-                    };
-                    setReadingStats(updated);
-                    localStorage.setItem('curator_reading_stats', JSON.stringify(updated));
+                    }));
                     setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
                     showToast(`Opening original on ${selectedArticle.source}`);
                   }}
-                  className="inline-flex items-center gap-1.5 text-sm font-medium text-amber-400 hover:text-amber-300 underline underline-offset-4 decoration-amber-500/40 hover:decoration-amber-300 transition-colors group cursor-pointer"
+                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-amber-400 hover:text-amber-300 transition-colors cursor-pointer"
+                  title={`Read original on ${selectedArticle.source} (opens external browser or app)`}
+                  aria-label={`Read original on ${selectedArticle.source}`}
                 >
-                  <span>Read original</span>
-                  <ExternalLink className="w-4 h-4 text-amber-400/80 group-hover:text-amber-300 group-hover:translate-x-0.5 transition-transform shrink-0" />
+                  <ExternalLink className="w-4 h-4 text-amber-400/80 hover:text-amber-300 transition-colors" />
                 </a>
 
                 {/* Feedback Icons Aligned to Right */}
-                <div className="flex items-center gap-1.5 ml-auto">
-                  <button
-                    type="button"
-                    onClick={() => handleMore(selectedArticle)}
-                    className={`p-2 rounded-xl transition cursor-pointer ${
-                      signals.moreIds?.includes(selectedArticle.id)
-                        ? 'text-amber-400 bg-amber-500/15 border border-amber-500/40 shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-transparent'
-                    }`}
-                    title={
-                      signals.moreIds?.includes(selectedArticle.id)
-                        ? 'More on this topic (active)'
-                        : 'More on this topic'
-                    }
-                    aria-label="More on this topic"
-                  >
-                    <ThumbsUp className={`w-4 h-4 ${
-                      signals.moreIds?.includes(selectedArticle.id)
-                        ? 'fill-amber-400/30'
-                        : ''
-                    }`} />
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleLess(selectedArticle)}
-                    className={`p-2 rounded-xl transition cursor-pointer ${
-                      signals.lessIds?.includes(selectedArticle.id)
-                        ? 'text-rose-400 bg-rose-500/15 border border-rose-500/40 shadow-sm'
-                        : 'text-slate-400 hover:text-rose-400 hover:bg-slate-900 border border-transparent'
-                    }`}
-                    title={
-                      signals.lessIds?.includes(selectedArticle.id)
-                        ? 'Fewer on this topic (active)'
-                        : 'Fewer on this topic'
-                    }
-                    aria-label="Fewer on this topic"
-                  >
-                    <ThumbsDown className={`w-4 h-4 ${
-                      signals.lessIds?.includes(selectedArticle.id)
-                        ? 'fill-rose-400/30'
-                        : ''
-                    }`} />
-                  </button>
-
+                <div className="flex flex-wrap items-center gap-2 ml-auto">
+                  <FeedbackActions
+                    isMore={signals.moreIds?.includes(selectedArticle.id) || false}
+                    isLess={signals.lessIds?.includes(selectedArticle.id) || false}
+                    onMore={() => handleMore(selectedArticle)}
+                    onLess={() => handleLess(selectedArticle)}
+                  />
                   {signals.lessIds?.includes(selectedArticle.id) && (
                     <button
                       type="button"
                       onClick={() => undoHandleLess(selectedArticle.id)}
-                      className="p-1.5 text-xs text-amber-400 hover:text-amber-300 transition-colors"
+                      className="inline-flex min-h-11 items-center gap-1.5 rounded-xl px-3 text-xs font-medium text-amber-400 hover:bg-amber-500/10 hover:text-amber-300 transition-colors"
                       title="Undo fewer on this topic"
-                      aria-label="Undo"
+                      aria-label="Undo fewer on this topic"
                     >
-                      <RotateCcw className="w-3.5 h-3.5" />
+                      <RotateCcw className="w-4 h-4" />
+                      <span>Undo</span>
                     </button>
                   )}
                 </div>
@@ -1234,44 +2773,59 @@ export default function App() {
       )}
 
       {/* Main Top Header Bar */}
-      <header className="sticky top-0 z-40 w-full bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-4 sm:px-6 py-3 shrink-0 shadow-sm">
+      <header className="sticky top-0 z-40 w-full safe-header bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-3 sm:px-6 pb-3 shrink-0 shadow-sm">
         <div className="max-w-3xl w-full mx-auto flex items-center justify-between gap-3">
-          {/* Logo & Subtitle */}
+          {/* Official Brand Logo & Subtitle */}
           <button 
             type="button" 
             onClick={() => setActiveTab('today')}
             className="flex items-center gap-3 text-left focus:outline-none group cursor-pointer"
-            title="Curator — Home"
+            title="The Curator — Home"
           >
-            <div className="w-10 h-10 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-orange-500 shadow-sm group-hover:border-amber-500/40 transition shrink-0">
-              <Bookmark className="w-5 h-5 fill-orange-500 text-orange-500" />
-            </div>
+            <CuratorMark className="w-9 h-9 sm:w-10 sm:h-10 drop-shadow-md group-hover:scale-105 transition-transform" />
             <div className="min-w-0">
-              <h1 className="text-base font-semibold tracking-tight text-slate-100 leading-none">Curator</h1>
-              <p className="text-xs text-slate-400 mt-1 truncate">Your morning reading editor</p>
+              <div className="flex items-baseline gap-1.5 leading-none">
+                <span className="font-serif text-xs font-semibold tracking-[0.24em] text-amber-500/90">THE</span>
+                <span className="font-serif text-base font-bold tracking-[0.16em] text-slate-100">CURATOR</span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1 truncate hidden sm:block">Your morning reading editor</p>
             </div>
           </button>
 
-          {/* Right Action Icons: Refresh and Settings */}
+          {/* Right Action Icons: Weekly Review, Refresh and Settings */}
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowWeeklyReviewModal(true)}
+              className="flex items-center justify-center gap-1.5 px-3 min-w-11 min-h-11 rounded-full bg-slate-900 border border-slate-800 hover:border-amber-500/40 text-slate-300 hover:text-amber-300 transition text-xs font-medium cursor-pointer shadow-sm group"
+              title="Open Weekly Reading Review"
+              aria-label="Open Weekly Reading Review"
+              aria-haspopup="dialog"
+            >
+              <BarChart3 className="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform" />
+              <span className="hidden sm:inline font-mono text-xs text-amber-300 font-semibold">{totalWeeklyMinutes}m week</span>
+            </button>
             <button 
               type="button"
-              onClick={generateDigest}
+              onClick={() => generateDigest({ fresh: true })}
               disabled={loadingDigest}
-              className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-50 cursor-pointer"
+              className="w-11 h-11 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-50 cursor-pointer"
               title="Refresh today's digest"
+              aria-label="Refresh today's digest"
             >
               <RefreshCw className={`w-4 h-4 ${loadingDigest ? 'animate-spin' : ''}`} />
             </button>
             <button
               type="button"
               onClick={() => setActiveTab(prev => prev === 'settings' ? 'today' : 'settings')}
-              className={`w-9 h-9 rounded-full border flex items-center justify-center transition cursor-pointer shadow-sm ${
+              className={`w-11 h-11 rounded-full border flex items-center justify-center transition cursor-pointer shadow-sm ${
                 activeTab === 'settings'
                   ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
                   : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-slate-100 hover:border-slate-700'
               }`}
               title="Settings & Preferences"
+              aria-label="Settings & Preferences"
+              aria-pressed={activeTab === 'settings'}
             >
               <Sliders className="w-4 h-4" />
             </button>
@@ -1280,45 +2834,107 @@ export default function App() {
       </header>
 
       {/* Content Area */}
-      <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-32 overflow-x-hidden">
+      <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-32 safe-main overflow-x-clip">
         {/* TAB 1: TODAY */}
         {activeTab === 'today' && (
           <div className="space-y-6 animate-fade-in w-full max-w-full">
-            <div className="flex items-center justify-between border-b border-slate-900 pb-4">
+            <div className="flex flex-col items-start gap-3 border-b border-slate-900 pb-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-100">Today's Digest</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Curated at 7:00 AM · {digest.length} items worth your time</p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {loadingDigest && digest.length === 0
+                    ? "Synthesizing today's list…"
+                    : `${digestCuratedAt > 0
+                        ? `Curated on ${formatCuratedAt(digestCuratedAt)}`
+                        : `Today's digest · ${new Date().toLocaleDateString([], { month: 'short', day: 'numeric' })}`
+                      } · ${digestSummaryLabel}${
+                        semanticSummary && semanticSummary.feedbackExamples > 0
+                          ? ` · ranked from ${semanticSummary.feedbackExamples} vote example${semanticSummary.feedbackExamples === 1 ? '' : 's'}`
+                          : ''
+                      }`}
+                </p>
               </div>
-              <div className="flex items-center gap-2 text-xs text-slate-400">
-                <label htmlFor="digest-size-range">Show:</label>
-                <select
-                  id="digest-size-range"
-                  value={itemCount}
-                  onChange={(e) => setItemCount(Number(e.target.value))}
-                  className="bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-200 text-xs font-medium rounded-lg pl-2.5 pr-6 py-1.5 transition focus:outline-none focus:border-amber-500/60 cursor-pointer"
-                  style={{ colorScheme: 'dark' }}
-                  title="Choose how many items today's digest shows"
-                  aria-label="How many items today's digest shows"
-                >
-                  {DIGEST_SIZE_RANGES.map(range => (
-                    <option key={range.label} value={range.count}>
-                      {range.label}
-                    </option>
+              <div className="flex w-full flex-wrap items-center gap-2 text-xs text-slate-400 sm:w-auto">
+                <div role="group" aria-label="Articles per digest" className="flex items-center gap-1.5">
+                  <span>Articles:</span>
+                  {DIGEST_ITEM_COUNTS.map(num => (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() => setItemCount(num)}
+                      aria-label={`Show ${num} articles per digest`}
+                      aria-pressed={itemCount === num}
+                      className={`min-w-11 min-h-11 rounded-lg px-3 font-medium transition ${itemCount === num ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'}`}
+                    >
+                      {num}
+                    </button>
                   ))}
-                </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCompactCards(value => !value)}
+                  aria-label="Compact article cards"
+                  aria-pressed={compactCards}
+                  className={`min-h-11 rounded-xl border px-3 font-medium transition ${compactCards ? 'bg-amber-500/15 border-amber-500/40 text-amber-300' : 'border-slate-800 text-slate-400 hover:text-slate-200'}`}
+                >
+                  Compact cards
+                </button>
+                <label className="flex min-h-11 flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-slate-800 px-3 py-2" title="Choose how much of the digest should be outside your usual interests.">
+                  <span className="font-medium text-slate-300">Serendipity</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={serendipityDial}
+                    onChange={e => setSerendipityDial(Number(e.target.value))}
+                    aria-label="Serendipity"
+                    aria-valuetext={`${serendipityDial}% outside your usual interests`}
+                    className="w-20 accent-amber-500 cursor-pointer"
+                  />
+                  <span className="min-w-8 text-right text-amber-300">{serendipityDial}%</span>
+                  <span className="basis-full text-xs leading-tight text-slate-500">of the digest beyond your usual interests</span>
+                </label>
               </div>
             </div>
+
+            {feedReport && feedReport.failed.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('sources')}
+                className="w-full flex items-center gap-2 text-left text-xs text-amber-300/80 bg-amber-500/5 border border-amber-500/20 rounded-xl px-3 py-2 hover:bg-amber-500/10 transition"
+              >
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  {feedReport.failedCount ?? feedReport.failed.length} of {feedReport.attempted} feeds returned nothing today
+                  {' '}({feedReport.failed.slice(0, 3).map(f => f.title).join(', ')}
+                  {feedReport.failed.length > 3 ? ', …' : ''}). Tap to review sources.
+                </span>
+              </button>
+            )}
 
             {loadingDigest && digest.length === 0 ? (
               <div className="py-20 text-center text-slate-500 space-y-3">
                 <RefreshCw className="w-6 h-6 animate-spin mx-auto text-amber-500" />
                 <p className="text-sm">Synthesizing your morning reading list...</p>
               </div>
+            ) : allDigestItemsMuted ? (
+              <DigestEmptyState
+                mode="muted"
+                mutedCount={mutedDigestItems.length}
+                loading={loadingDigest}
+                onRefresh={() => generateDigest({ fresh: true })}
+                onRestoreMuted={restoreAllMutedCards}
+                onManageSources={() => setActiveTab('sources')}
+              />
             ) : digest.length === 0 ? (
-              <div className="py-20 text-center text-slate-500 space-y-2">
-                <p className="text-sm">No new items today. Your sources are quiet.</p>
-                <button onClick={generateDigest} className="text-xs text-amber-400 underline">Generate sample digest</button>
-              </div>
+              <DigestEmptyState
+                mode="quiet"
+                mutedCount={0}
+                loading={loadingDigest}
+                onRefresh={() => generateDigest({ fresh: true })}
+                onRestoreMuted={restoreAllMutedCards}
+                onManageSources={() => setActiveTab('sources')}
+              />
             ) : (
               <div className="space-y-8">
                 {/* Normal Curated Cards */}
@@ -1327,31 +2943,33 @@ export default function App() {
 
                   if (mutedCards[item.id]) {
                     return (
-                      <div 
-                        key={item.id} 
-                        className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800/80 flex items-center justify-between text-xs animate-fade-in backdrop-blur-sm shadow-sm"
+                      <div
+                        key={item.id}
+                        className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800/80 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-xs animate-fade-in backdrop-blur-sm shadow-sm"
                       >
-                        <div className="flex items-center gap-2.5 text-slate-300">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1 text-slate-300">
                           <EyeOff className="w-4 h-4 text-slate-500 shrink-0" />
-                          <span>
-                            Quietened <span className="font-semibold text-slate-200">"{item.source}"</span> · Fewer stories like this will appear.
+                          <span className="min-w-0">
+                            Fewer like this · <span className="font-semibold text-slate-200">"{item.title}"</span> quietened
                           </span>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 shrink-0">
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); undoHandleLess(item.id); }}
                             className="px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 font-semibold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
-                            title="Undo: Restore this card immediately"
+                            title="Undo: restore this story to your digest"
+                            aria-label="Undo: restore this story to your digest"
                           >
                             <RotateCcw className="w-3.5 h-3.5" />
-                            <span>Undo / Redo</span>
+                            <span>Undo</span>
                           </button>
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); permanentlyDismissMuted(item.id); }}
-                            className="text-slate-500 hover:text-slate-300 p-1.5 rounded-md transition"
-                            title="Dismiss placeholder"
+                            className="text-slate-400 hover:text-slate-100 p-1.5 rounded-md transition"
+                            title="Dismiss placeholder and remove this story from today"
+                            aria-label="Dismiss placeholder and remove this story from today"
                           >
                             <X className="w-3.5 h-3.5" />
                           </button>
@@ -1364,17 +2982,17 @@ export default function App() {
                     <article 
                       key={item.id}
                       onClick={() => openArticle(item)}
-                      className={`group rounded-3xl transition-all duration-300 cursor-pointer overflow-hidden relative ${
+                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative ${
                         actions.hasAnyAction
                           ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
                           : 'bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.12)] hover:border-amber-500/60 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(245,158,11,0.35)]'
                       }`}
                     >
                       {/* Author sub-header with Substack branding and Actioned status */}
-                      <div className="p-5 pb-3 flex items-center justify-between">
-                        <div className="flex items-center gap-3">
+                      <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex items-center justify-between`}>
+                        <div className="flex items-center gap-3 min-w-0">
                           {(() => {
-                            const itemAvatar = item.avatar || getSourceAvatar(item.source, item.url);
+                            const itemAvatar = getSourceAvatar(item.url);
                             return (
                               <div className="w-9 h-9 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center overflow-hidden shrink-0 relative">
                                 {itemAvatar ? (
@@ -1395,41 +3013,43 @@ export default function App() {
                               </div>
                             );
                           })()}
-                          <div>
+                          <div className="min-w-0">
                             <div className="text-xs font-bold text-slate-100 flex items-center gap-1.5">
-                              <span>{item.source}</span>
+                              <span className="truncate">{item.source}</span>
                             </div>
-                            <div className="text-[11px] text-slate-400">
-                              {item.publishedAt || '30m'} · {item.folder} · {item.readTime}
+                            <div className="text-xs text-slate-400 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
+                              <span className="min-w-0">{decodeArticleEntities(item.publishedAt || '30m')}</span>
+                              <span aria-hidden="true">·</span>
+                              <span className="min-w-0">{displayFolder(item.folder)}</span>
+                              <span aria-hidden="true">·</span>
+                              <span className="shrink-0 font-medium text-slate-300">{decodeArticleEntities(item.readTime || '')}</span>
                             </div>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 shrink-0">
                           {actions.isReadThrough ? (
                             <div 
-                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-[10px] font-bold text-emerald-300 shadow-sm"
+                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-xs font-bold text-emerald-300 shadow-sm"
                               title="Read through completed"
                             >
                               <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
-                              <span>Read through</span>
+                              <span>Read</span>
                             </div>
                           ) : actions.isVotedMore ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-950/90 border border-amber-500/50 text-[10px] font-bold text-amber-300">
-                              <ThumbsUp className="w-3 h-3 text-amber-400" />
-                              <span>More like this</span>
+                            <div className="flex items-center px-2 py-1 rounded-full bg-amber-950/90 border border-amber-500/50" title="More like this">
+                              <ThumbsUp className="w-3.5 h-3.5 text-amber-400" />
                             </div>
                           ) : actions.isVotedLess ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-950/90 border border-rose-500/50 text-[10px] font-bold text-rose-300">
-                              <ThumbsDown className="w-3 h-3 text-rose-400" />
-                              <span>Less like this</span>
+                            <div className="flex items-center px-2 py-1 rounded-full bg-rose-950/90 border border-rose-500/50" title="Less like this">
+                              <ThumbsDown className="w-3.5 h-3.5 text-rose-400" />
                             </div>
                           ) : actions.isClicked ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-[10px] font-medium text-sky-300">
+                            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300">
                               <span>Opened</span>
                             </div>
                           ) : (
-                            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-[10px] font-medium text-slate-400">
+                            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-medium text-slate-400">
                               <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
                               <span>New</span>
                             </div>
@@ -1437,58 +3057,58 @@ export default function App() {
                         </div>
                       </div>
 
+                      {/* Intentional placeholder keeps the card's rhythm when a story has no hero image */}
+                      {!item.bannerImage && (
+                        <div className={`mx-3.5 rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 flex items-center justify-center ${compactCards ? 'h-24' : 'h-32'}`}>
+                          <div className="text-center px-4">
+                            <CuratorMark className="w-7 h-7 mx-auto mb-1.5 opacity-80" />
+                            <div className="text-xs uppercase font-bold tracking-wider text-amber-400/90">{displayFolder(item.folder)}</div>
+                          </div>
+                        </div>
+                      )}
                       {/* Billboard Hero Image Card with Bookmark Save Button right on image */}
                       {item.bannerImage && (
-                        <div className="relative mx-3.5 rounded-2xl overflow-hidden h-60 md:h-72 shadow-lg border border-slate-700/60">
+                        <div className={`relative mx-3.5 rounded-2xl overflow-hidden ${compactCards ? 'h-40 md:h-48' : 'h-60 md:h-72'} shadow-lg border border-slate-700/60`}>
                           <img 
                             src={item.bannerImage} 
                             alt={item.title}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                           />
-                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/45 to-transparent" />
+                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
                           
                           {/* Bookmark button in bottom right corner of image */}
                           <div className="absolute bottom-4 right-4 z-10">
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                              className={`p-2.5 rounded-xl backdrop-blur-md border transition shadow-lg ${
+                              className={`p-2.5 min-w-11 min-h-11 flex items-center justify-center rounded-xl backdrop-blur-md border transition shadow-lg ${
                                 savedIds.includes(item.id)
                                   ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
                                   : 'bg-slate-950/70 border-slate-700/60 text-slate-200 hover:text-amber-400 hover:bg-slate-900/90'
                               }`}
-                              title="Save for later"
+                              title={savedIds.includes(item.id) ? 'Remove from saved' : 'Save for later'}
+                              aria-label={savedIds.includes(item.id) ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
                             >
                               <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
                             </button>
                           </div>
-
-                          {/* Title and summary overlay on bottom of image */}
-                          <div className="absolute bottom-4 left-4 right-16">
-                            <div className="text-[10px] uppercase font-bold tracking-wider text-amber-400/90 mb-1">
-                              {item.folder}
-                            </div>
-                            <h3 className="text-lg md:text-xl font-bold tracking-tight text-white leading-snug drop-shadow-sm group-hover:text-amber-300 transition-colors">
-                              {item.title}
-                            </h3>
-                            <p className="text-xs text-slate-300 mt-1 line-clamp-1">
-                              {item.summary}
-                            </p>
-                          </div>
                         </div>
                       )}
 
-                      <div className="p-5 space-y-4 pt-4">
-                        {!item.bannerImage && (
-                          <div>
-                            <h3 className="text-xl font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors">
-                              {item.title}
-                            </h3>
-                            <p className="text-sm text-slate-400 mt-1 line-clamp-2">
-                              {item.summary}
-                            </p>
-                          </div>
-                        )}
+                      <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
+                        <div>
+                          {item.bannerImage && (
+                            <div className="text-xs uppercase font-bold tracking-wider text-amber-400/90 mb-1">
+                              {displayFolder(item.folder)}
+                            </div>
+                          )}
+                          <h3 className={`${compactCards ? 'text-lg' : 'text-xl'} font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors`}>
+                            {item.title}
+                          </h3>
+                          <p className={`${compactCards ? 'text-xs line-clamp-1' : 'text-sm line-clamp-2'} text-slate-400 mt-1`}>
+                            {item.summary}
+                          </p>
+                        </div>
 
                         {/* Quiet editorial why note */}
                         <p className="text-xs text-slate-400 italic">
@@ -1497,56 +3117,36 @@ export default function App() {
 
                         {/* Card Curation & Reading Actions */}
                         <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
-                          {/* Read More Link directly to original source */}
-                          <a
-                            href={item.url || '#'}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                              showToast(`Opening source on ${item.source}`);
-                            }}
-                            className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-amber-300 transition-colors"
-                            title={`Read more on ${item.source} (opens external browser or app)`}
-                          >
-                            <span>Read original on {item.source}</span>
-                            <ExternalLink className="w-3 h-3 text-slate-500" />
-                          </a>
-
-                          {/* Curation actions: More, Less (icon-only, reading preferences) */}
-                          <div className="flex items-center gap-1.5">
-                            <button 
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
                               type="button"
-                              onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                              className={`p-2 rounded-xl border transition ${
-                                actions.isVotedMore
-                                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
-                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
-                              }`}
-                              title={actions.isVotedMore ? `More on ${item.folder || 'this topic'} (voted)` : `More on ${item.folder || 'this topic'}`}
-                              aria-label={`More on ${item.folder || 'this topic'}`}
+                              onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                              className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-amber-300 hover:text-amber-200 transition"
                             >
-                              <ThumbsUp className={`w-3.5 h-3.5 ${
-                                actions.isVotedMore ? 'fill-amber-400/30' : ''
-                              }`} />
+                              Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                             </button>
-                            <button 
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                              className={`p-2 rounded-xl border transition ${
-                                actions.isVotedLess
-                                  ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
-                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
-                              }`}
-                              title={actions.isVotedLess ? `Fewer on ${item.folder || 'this topic'} (voted)` : `Fewer on ${item.folder || 'this topic'}`}
-                              aria-label={`Fewer on ${item.folder || 'this topic'}`}
+                            <a
+                              href={item.url || '#'}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
+                                showToast(`Opening source on ${item.source}`);
+                              }}
+                              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
+                              title={`Read original on ${item.source} (opens external browser or app)`}
+                              aria-label={`Read original on ${item.source}`}
                             >
-                              <ThumbsDown className={`w-3.5 h-3.5 ${
-                                actions.isVotedLess ? 'fill-rose-400/30' : ''
-                              }`} />
-                            </button>
+                              <ExternalLink className="w-4 h-4" />
+                            </a>
                           </div>
+                          <FeedbackActions
+                            isMore={actions.isVotedMore}
+                            isLess={actions.isVotedLess}
+                            onMore={() => handleMore(item)}
+                            onLess={() => handleLess(item)}
+                          />
                         </div>
                       </div>
                     </article>
@@ -1568,31 +3168,33 @@ export default function App() {
 
                       if (mutedCards[item.id]) {
                         return (
-                          <div 
-                            key={item.id} 
-                            className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800/80 flex items-center justify-between text-xs animate-fade-in backdrop-blur-sm shadow-sm"
+                          <div
+                            key={item.id}
+                            className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800/80 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-xs animate-fade-in backdrop-blur-sm shadow-sm"
                           >
-                            <div className="flex items-center gap-2.5 text-slate-300">
+                            <div className="flex items-center gap-2.5 min-w-0 flex-1 text-slate-300">
                               <EyeOff className="w-4 h-4 text-slate-500 shrink-0" />
-                              <span>
-                                Quietened stretch item <span className="font-semibold text-slate-200">"{item.source}"</span>
+                              <span className="min-w-0">
+                                Fewer like this · <span className="font-semibold text-slate-200">"{item.title}"</span> quietened
                               </span>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 shrink-0">
                               <button
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); undoHandleLess(item.id); }}
                                 className="px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 font-semibold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
-                                title="Undo: Restore this stretch item"
+                                title="Undo: restore this story to your digest"
+                                aria-label="Undo: restore this story to your digest"
                               >
                                 <RotateCcw className="w-3.5 h-3.5" />
-                                <span>Undo / Redo</span>
+                                <span>Undo</span>
                               </button>
                               <button
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); permanentlyDismissMuted(item.id); }}
-                                className="text-slate-500 hover:text-slate-300 p-1.5 rounded-md transition"
-                                title="Dismiss placeholder"
+                                className="text-slate-400 hover:text-slate-100 p-1.5 rounded-md transition"
+                                title="Dismiss placeholder and remove this story from today"
+                                aria-label="Dismiss placeholder and remove this story from today"
                               >
                                 <X className="w-3.5 h-3.5" />
                               </button>
@@ -1605,16 +3207,16 @@ export default function App() {
                         <article 
                           key={item.id}
                           onClick={() => openArticle(item)}
-                          className={`group rounded-3xl transition-all duration-300 cursor-pointer overflow-hidden relative ${
+                          className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative ${
                             actions.hasAnyAction
                               ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
                               : 'bg-slate-900/95 border-2 border-rose-600/70 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(244,63,94,0.3)] hover:border-rose-500 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(244,63,94,0.45)]'
                           }`}
                         >
-                          <div className="p-5 pb-3 flex items-center justify-between">
-                            <div className="flex items-center gap-3">
+                          <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex flex-wrap items-center justify-between gap-x-3 gap-y-2`}>
+                            <div className="flex items-center gap-3 min-w-0 max-w-full">
                             {(() => {
-                            const itemAvatar = item.avatar || getSourceAvatar(item.source, item.url);
+                            const itemAvatar = getSourceAvatar(item.url);
                             return (
                               <div className="w-9 h-9 rounded-full bg-slate-900 border border-rose-800 flex items-center justify-center overflow-hidden shrink-0 relative">
                                 {itemAvatar ? (
@@ -1635,95 +3237,97 @@ export default function App() {
                               </div>
                             );
                           })()}
-                              <div>
-                                <div className="text-xs font-bold text-rose-200">{item.source}</div>
-                                <div className="text-[11px] text-rose-400/80">{item.folder} · {item.readTime}</div>
+                              <div className="min-w-0">
+                                <div className="text-xs font-bold text-rose-200 truncate">{item.source}</div>
+                                <div className="text-xs text-rose-400/80 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
+                                  <span className="min-w-0">{displayFolder(item.folder)}</span>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="shrink-0 font-medium text-rose-300">{decodeArticleEntities(item.readTime || '')}</span>
+                                </div>
                               </div>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 shrink-0 min-w-0 flex-wrap justify-end">
                               {actions.isReadThrough ? (
                                 <div 
-                                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-[10px] font-bold text-emerald-300 shadow-sm"
+                                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-xs font-bold text-emerald-300 shadow-sm"
                                   title="Read through completed"
                                 >
                                   <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
-                                  <span>Read through</span>
+                                  <span>Read</span>
                                 </div>
                               ) : actions.isVotedMore ? (
-                                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-950/90 border border-amber-500/50 text-[10px] font-bold text-amber-300">
-                                  <ThumbsUp className="w-3 h-3 text-amber-400" />
-                                  <span>More like this</span>
+                                <div className="flex items-center px-2 py-1 rounded-full bg-amber-950/90 border border-amber-500/50" title="More like this">
+                                  <ThumbsUp className="w-3.5 h-3.5 text-amber-400" />
                                 </div>
                               ) : actions.isVotedLess ? (
-                                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-950/90 border border-rose-500/50 text-[10px] font-bold text-rose-300">
-                                  <ThumbsDown className="w-3 h-3 text-rose-400" />
-                                  <span>Less like this</span>
+                                <div className="flex items-center px-2 py-1 rounded-full bg-rose-950/90 border border-rose-500/50" title="Less like this">
+                                  <ThumbsDown className="w-3.5 h-3.5 text-rose-400" />
                                 </div>
                               ) : actions.isClicked ? (
-                                <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-[10px] font-medium text-sky-300">
+                                <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300">
                                   <span>Opened</span>
                                 </div>
                               ) : (
-                                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-rose-950/70 border border-rose-800/60 text-[10px] font-medium text-rose-300">
+                                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-rose-950/70 border border-rose-800/60 text-xs font-medium text-rose-300">
                                   <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
                                   <span>Stretch</span>
                                 </div>
                               )}
-                              <span className="text-[10px] uppercase font-semibold tracking-wider bg-rose-950/80 text-rose-300 px-2.5 py-0.5 rounded-full border border-rose-800/60">
+                              <span className="text-xs uppercase font-semibold tracking-wider bg-rose-950/80 text-rose-300 px-2.5 py-0.5 rounded-full border border-rose-800/60">
                                 Outside Bubble
                               </span>
                             </div>
                           </div>
 
+                          {!item.bannerImage && (
+                            <div className={`mx-3.5 rounded-2xl border border-rose-900/60 bg-gradient-to-br from-rose-950/40 via-slate-950 to-slate-900 flex items-center justify-center ${compactCards ? 'h-24' : 'h-32'}`}>
+                              <div className="text-center px-4">
+                                <CuratorMark className="w-7 h-7 mx-auto mb-1.5 opacity-80" />
+                                <div className="text-xs uppercase font-bold tracking-wider text-rose-400/90">Deliberate Stretch</div>
+                              </div>
+                            </div>
+                          )}
                           {item.bannerImage && (
-                            <div className="relative mx-3.5 rounded-2xl overflow-hidden h-60 md:h-64 shadow-lg border border-rose-800/40">
+                            <div className={`relative mx-3.5 rounded-2xl overflow-hidden ${compactCards ? 'h-40 md:h-48' : 'h-60 md:h-64'} shadow-lg border border-rose-800/40`}>
                               <img 
                                 src={item.bannerImage} 
                                 alt={item.title} 
                                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                               />
-                              <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent" />
+                              <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
                               
                               <div className="absolute bottom-4 right-4 z-10">
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                                  className={`p-2.5 rounded-xl backdrop-blur-md border transition shadow-lg ${
+                                  className={`p-2.5 min-w-11 min-h-11 flex items-center justify-center rounded-xl backdrop-blur-md border transition shadow-lg ${
                                     savedIds.includes(item.id)
                                       ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
                                       : 'bg-slate-950/70 border-rose-800/60 text-slate-200 hover:text-amber-400'
                                   }`}
-                                  title="Save for later"
+                                  title={savedIds.includes(item.id) ? 'Remove from saved' : 'Save for later'}
+                                  aria-label={savedIds.includes(item.id) ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
                                 >
                                   <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
                                 </button>
                               </div>
-
-                              <div className="absolute bottom-4 left-4 right-16">
-                                <div className="text-[10px] uppercase font-bold tracking-wider text-rose-400/90 mb-1">
-                                  Deliberate Stretch · {item.folder}
-                                </div>
-                                <h3 className="text-lg md:text-xl font-bold tracking-tight text-white leading-snug group-hover:text-rose-300 transition-colors">
-                                  {item.title}
-                                </h3>
-                                <p className="text-xs text-rose-200/80 mt-1 line-clamp-1">
-                                  {item.summary}
-                                </p>
-                              </div>
                             </div>
                           )}
 
-                          <div className="p-5 space-y-4 pt-4">
-                            {!item.bannerImage && (
-                              <div>
-                                <h3 className="text-xl font-bold tracking-tight text-slate-100 group-hover:text-rose-300 transition-colors">
-                                  {item.title}
-                                </h3>
-                                <p className="text-sm text-slate-400 mt-1 line-clamp-2">
-                                  {item.summary}
-                                </p>
-                              </div>
-                            )}
+                          <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
+                            <div>
+                              {item.bannerImage && (
+                                <div className="text-xs uppercase font-bold tracking-wider text-rose-400/90 mb-1">
+                                  Deliberate Stretch
+                                </div>
+                              )}
+                              <h3 className={`${compactCards ? 'text-lg' : 'text-xl'} font-bold tracking-tight text-slate-100 group-hover:text-rose-300 transition-colors`}>
+                                {item.title}
+                              </h3>
+                              <p className={`${compactCards ? 'text-xs line-clamp-1' : 'text-sm line-clamp-2'} text-slate-400 mt-1`}>
+                                {item.summary}
+                              </p>
+                            </div>
 
                             {/* Quiet editorial why note */}
                             <p className="text-xs text-rose-300/80 italic">
@@ -1732,56 +3336,36 @@ export default function App() {
 
                             {/* Stretch Card Actions: Read more, More, Less */}
                             <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
-                              {/* Read More Link directly to original source */}
-                              <a
-                                href={item.url || '#'}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                                  showToast(`Opening source on ${item.source}`);
-                                }}
-                                className="inline-flex items-center gap-1.5 text-xs text-rose-400 hover:text-rose-300 transition-colors"
-                                title={`Read more on ${item.source} (opens external browser or app)`}
-                              >
-                                <span>Read original on {item.source}</span>
-                                <ExternalLink className="w-3 h-3 text-rose-500/70" />
-                              </a>
-
-                              {/* Curation actions: More, Less (icon-only) */}
-                              <div className="flex items-center gap-1.5">
-                                <button 
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button
                                   type="button"
-                                  onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                                  className={`p-2 rounded-xl border transition ${
-                                    signals.moreIds?.includes(item.id)
-                                      ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
-                                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
-                                  }`}
-                                  title={signals.moreIds?.includes(item.id) ? `More on ${item.folder || 'this topic'} (voted)` : `More on ${item.folder || 'this topic'}`}
-                                  aria-label={`More on ${item.folder || 'this topic'}`}
+                                  onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                                  className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-rose-300 hover:text-rose-200 transition"
                                 >
-                                  <ThumbsUp className={`w-3.5 h-3.5 ${
-                                    signals.moreIds?.includes(item.id) ? 'fill-amber-400/30' : ''
-                                  }`} />
+                                  Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                                 </button>
-                                <button 
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                                  className={`p-2 rounded-xl border transition ${
-                                    signals.lessIds?.includes(item.id)
-                                      ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
-                                      : 'bg-slate-900 border border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
-                                  }`}
-                                  title={signals.lessIds?.includes(item.id) ? `Fewer on ${item.folder || 'this topic'} (voted)` : `Fewer on ${item.folder || 'this topic'}`}
-                                  aria-label={`Fewer on ${item.folder || 'this topic'}`}
+                                <a
+                                  href={item.url || '#'}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
+                                    showToast(`Opening source on ${item.source}`);
+                                  }}
+                                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-rose-400 hover:text-rose-300 transition-colors"
+                                  title={`Read original on ${item.source} (opens external browser or app)`}
+                                  aria-label={`Read original on ${item.source}`}
                                 >
-                                  <ThumbsDown className={`w-3.5 h-3.5 ${
-                                    signals.lessIds?.includes(item.id) ? 'fill-rose-400/30' : ''
-                                  }`} />
-                                </button>
+                                  <ExternalLink className="w-4 h-4" />
+                                </a>
                               </div>
+                              <FeedbackActions
+                                isMore={actions.isVotedMore}
+                                isLess={actions.isVotedLess}
+                                onMore={() => handleMore(item)}
+                                onLess={() => handleLess(item)}
+                              />
                             </div>
                           </div>
                         </article>
@@ -1806,7 +3390,7 @@ export default function App() {
               <div className="py-20 text-center text-slate-500 space-y-2">
                 <Bookmark className="w-8 h-8 mx-auto text-slate-700 mb-2" />
                 <p className="text-sm">No saved items yet.</p>
-                <p className="text-xs text-slate-600">Tap the bookmark icon on any digest item to save it here.</p>
+                <p className="text-xs text-slate-400">Tap the bookmark icon on any digest item to save it here.</p>
               </div>
             ) : (
               <div className="space-y-4">
@@ -1822,25 +3406,33 @@ export default function App() {
                           : 'bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_16px_40px_-6px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.1)] hover:border-amber-500/50'
                       }`}
                     >
-                      <div className="flex items-center justify-between text-xs text-slate-400">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-slate-200">{item.source}</span>
-                          <span aria-hidden="true">·</span>
-                          <span>{item.readTime}</span>
-                          <span aria-hidden="true">·</span>
-                          <span className="text-amber-400 font-semibold flex items-center gap-1">
-                            <Bookmark className="w-3 h-3 fill-amber-400" /> Saved
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+                        <span title={item.source} className="font-semibold text-slate-200 min-w-0 truncate">{item.source}</span>
+                        <span>{item.readTime}</span>
+                        <span className="text-amber-400 font-semibold inline-flex items-center gap-1">
+                          <Bookmark className="w-3 h-3 fill-amber-400" /> Saved
+                        </span>
+                        {actions.isReadThrough && (
+                          <span className="text-emerald-400 font-semibold inline-flex items-center gap-1">
+                            <Check className="w-3 h-3 stroke-[3]" /> Read through
                           </span>
-                          {actions.isReadThrough && (
-                            <>
-                              <span aria-hidden="true">·</span>
-                              <span className="text-emerald-400 font-semibold flex items-center gap-1">
-                                <Check className="w-3 h-3 stroke-[3]" /> Read through
-                              </span>
-                            </>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2.5">
+                        )}
+                      </div>
+
+                      <h3 className="text-base font-semibold text-slate-100 hover:text-amber-300 transition">
+                        {item.title}
+                      </h3>
+                      <p className="text-xs text-slate-400 line-clamp-2">{item.summary}</p>
+
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80 pt-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                            className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-amber-300 hover:text-amber-200 transition"
+                          >
+                            Read in Curator <ArrowRight className="w-3.5 h-3.5" />
+                          </button>
                           <a
                             href={item.url || '#'}
                             target="_blank"
@@ -1850,27 +3442,23 @@ export default function App() {
                               setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
                               showToast(`Opening source on ${item.source}`);
                             }}
-                            className="text-xs text-amber-400 hover:text-amber-300 font-medium flex items-center gap-1 transition"
-                            title={`Read more on ${item.source} (opens external browser or app)`}
+                            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
+                            title={`Read original on ${item.source} (opens external browser or app)`}
+                            aria-label={`Read original on ${item.source}`}
                           >
-                            <span>Read more</span>
-                            <ExternalLink className="w-3 h-3" />
+                            <ExternalLink className="w-4 h-4" />
                           </a>
-
-                          <button 
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                            className="text-xs text-rose-400 hover:text-rose-300 font-medium transition"
-                          >
-                            Unsave
-                          </button>
                         </div>
-                      </div>
 
-                      <h3 className="text-base font-semibold text-slate-100 hover:text-amber-300 transition">
-                        {item.title}
-                      </h3>
-                      <p className="text-xs text-slate-400 line-clamp-1">{item.summary}</p>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleSave(item); }}
+                          className="inline-flex min-h-11 items-center rounded-xl px-3 text-xs text-rose-300 hover:bg-rose-500/10 hover:text-rose-200 font-medium transition"
+                          aria-label={`Unsave ${item.title}`}
+                        >
+                          Unsave
+                        </button>
+                      </div>
                     </article>
                   );
                 })}
@@ -1880,36 +3468,33 @@ export default function App() {
         )}
 
         {/* TAB 3: SOURCES */}
-        {activeTab === 'sources' && (
+        {/* The first-run wizard and the Add Source / OPML overlays live in this branch, so it
+            also mounts when one of them is open — otherwise a button that opens them from
+            Settings would appear to do nothing. */}
+        {(activeTab === 'sources' || showSetupWizard || showImportModal || showAddSourceModal) && (
           <div className="space-y-8 animate-fade-in">
             <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-900 pb-4">
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-100">Watched Sources</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  {sources.length} sources across {Object.keys(sourcesByFolder).length} folders · {sources.filter(s => s.status === 'failing').length} failing
+                  {sources.length} {sources.length === 1 ? 'source' : 'sources'} across {Object.keys(sourcesByFolder).length} {Object.keys(sourcesByFolder).length === 1 ? 'folder' : 'folders'} · {sources.some(s => s.status === 'failing') ? `${sources.filter(s => s.status === 'failing').length} need attention` : 'all feeds healthy'}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <button 
-                  onClick={openImportModal}
-                  className="px-3 py-1.5 text-xs font-medium rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-slate-100 transition flex items-center gap-1.5"
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>Import OPML</span>
-                </button>
-                <button 
-                  onClick={handleExportOPML}
-                  className="px-3 py-1.5 text-xs font-medium rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-slate-100 transition flex items-center gap-1.5"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Export</span>
-                </button>
-                <button 
+                <button
                   onClick={() => setShowAddSourceModal(true)}
                   className="px-3 py-1.5 text-xs font-medium rounded-xl bg-amber-500 text-slate-950 font-semibold hover:bg-amber-400 transition flex items-center gap-1.5"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Add Source</span>
+                </button>
+                <button
+                  onClick={openImportModal}
+                  title="Add many sources at once from an OPML export file"
+                  className="px-3 py-1.5 text-xs font-medium rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200 transition flex items-center gap-1.5"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Import OPML</span>
                 </button>
               </div>
             </div>
@@ -1920,10 +3505,10 @@ export default function App() {
                 <div>
                   <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
                     <Search className="w-4 h-4 text-amber-400" />
-                    <span>Find Sources &amp; Check RSS Availability</span>
+                    <span>Discover new sources</span>
                   </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Search the web for writers or publications. Each result is checked for native RSS/Atom feeds or whether an RSS feed can be generated.
+Search for writers, publications, or topics. Curator checks whether each result has a feed you can follow.
                   </p>
                 </div>
                 {hasSearchedSources && (
@@ -1949,7 +3534,7 @@ export default function App() {
                     type="text"
                     value={discoverQuery}
                     onChange={e => setDiscoverQuery(e.target.value)}
-                    placeholder="Search topics or publications (e.g. Byzantine history, urban water)"
+                    placeholder="Search writers, publications, or topics"
                     className="w-full rounded-xl bg-slate-950 border border-slate-800 pl-10 pr-3 py-2.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
                   />
                 </div>
@@ -1966,7 +3551,7 @@ export default function App() {
                   ) : (
                     <>
                       <Globe className="w-3.5 h-3.5" />
-                      <span>Search &amp; Check RSS</span>
+                      <span>Find sources</span>
                     </>
                   )}
                 </button>
@@ -2001,7 +3586,7 @@ export default function App() {
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="text-sm font-medium text-slate-100">{item.title}</span>
-                              <span className="text-[11px] text-slate-400">· {item.folder}</span>
+                              <span className="text-xs text-slate-400">· {item.folder}</span>
                             </div>
                             <a
                               href={item.siteUrl}
@@ -2045,7 +3630,7 @@ export default function App() {
                               )}
                             </button>
                           ) : (
-                            <span className="text-[11px] text-rose-400 font-medium shrink-0">
+                            <span className="text-xs text-rose-400 font-medium shrink-0">
                               RSS unavailable
                             </span>
                           )}
@@ -2068,18 +3653,18 @@ export default function App() {
                             >
                               {item.feedFormat ? item.feedFormat : 'No feed'}
                             </span>
-                            <span aria-hidden="true" className="text-slate-600">·</span>
+                            <span aria-hidden="true" className="text-slate-400">·</span>
                             <span className="text-slate-400">{item.investigationNote}</span>
                           </div>
 
                           {item.feedUrl && (
-                            <div className="text-[11px] text-slate-500 font-mono truncate">
+                            <div className="text-xs text-slate-500 font-mono truncate">
                               Feed: {item.feedUrl}
                             </div>
                           )}
 
                           {item.sampleTitles && item.sampleTitles.length > 0 && (
-                            <div className="text-[11px] text-slate-400 pt-1">
+                            <div className="text-xs text-slate-400 pt-1">
                               Recent items: {item.sampleTitles.join(' · ')}
                             </div>
                           )}
@@ -2089,7 +3674,7 @@ export default function App() {
                   })}
 
                   {discoverGroundingLinks.length > 0 && (
-                    <div className="pt-2 border-t border-slate-900 text-[11px] text-slate-400 space-y-1">
+                    <div className="pt-2 border-t border-slate-900 text-xs text-slate-400 space-y-1">
                       <span className="block font-medium text-slate-300">Google Search sources</span>
                       <div className="flex flex-wrap gap-x-3 gap-y-1">
                         {discoverGroundingLinks.map((link, idx) => (
@@ -2120,19 +3705,33 @@ export default function App() {
               </div>
             )}
 
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="search"
+                value={sourceSearch}
+                onChange={e => setSourceSearch(e.target.value)}
+                placeholder="Search your sources"
+                aria-label="Search sources by name, feed URL, folder, or category"
+                className="w-full rounded-xl bg-slate-950 border border-slate-800 pl-10 pr-3 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+              />
+            </div>
+
             <div className="space-y-6 w-full max-w-full">
-              {Object.entries(sourcesByFolder).map(([folder, folderSources]: [string, SourceItem[]]) => (
+              {Object.entries(filteredSourcesByFolder).sort(([a], [b]) => a.localeCompare(b)).map(([folder, folderSources]: [string, SourceItem[]]) => (
                 <div key={folder} className="space-y-3 w-full max-w-full">
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-900 pb-2">
                     {folder} ({folderSources.length})
                   </h3>
                   <div className="grid gap-2 w-full max-w-full">
                     {folderSources.map((src) => {
-                      const avatarUrl = src.avatar || getSourceAvatar(src.title, src.feedUrl);
+                      const avatarUrl = getSourceAvatar(src.feedUrl);
                       const isRefreshing = refreshingSourceId === src.id;
+                      const descriptionOpen = expandedSourceDescriptionIds.includes(src.id);
                       return (
-                        <div key={src.id} className="p-3.5 sm:p-4 rounded-2xl bg-slate-900/40 border border-slate-900 flex items-center justify-between gap-3 sm:gap-4 w-full max-w-full overflow-hidden">
-                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <div key={src.id} className="rounded-2xl bg-slate-900/40 border border-slate-900 w-full max-w-full overflow-hidden">
+                          <div className="p-3.5 sm:p-4 flex items-start justify-between gap-3 sm:gap-4">
+                            <div className="flex items-start gap-3 min-w-0 flex-1">
                             <div className="w-10 h-10 rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden shrink-0 relative">
                               {avatarUrl ? (
                                 <img 
@@ -2152,19 +3751,68 @@ export default function App() {
                             </div>
 
                             <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span className="text-sm font-medium text-slate-200 truncate">{src.title}</span>
+                              <span className="block text-sm font-medium text-slate-200 truncate">{src.title}</span>
+                              <span title={src.feedUrl} className="text-xs text-slate-400 break-words block mt-0.5">{formatFeedUrlForDisplay(src.feedUrl)}</span>
+                              <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                                {normalizeCategoryLabels(src.categories, src.folder).map(category => (
+                                  <span key={category} className="rounded-full bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-xs text-amber-200">
+                                    {category}
+                                  </span>
+                                ))}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setCategoryDraft('');
+                                    setCategoryEditorSourceId(categoryEditorSourceId === src.id ? null : src.id);
+                                  }}
+                                  aria-expanded={categoryEditorSourceId === src.id}
+                                  className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                                    categoryEditorSourceId === src.id
+                                      ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                                      : 'border-slate-800 text-slate-400 hover:text-amber-300 hover:border-amber-500/30'
+                                  }`}
+                                >
+                                  <Sliders className="w-3 h-3 shrink-0" />
+                                  <span>{categoryEditorSourceId === src.id ? 'Done' : 'Edit categories'}</span>
+                                </button>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs text-slate-400 mt-1.5">
                                 {src.status === 'failing' ? (
-                                  <span className="text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded shrink-0">Failing</span>
+                                  <span className="text-xs bg-rose-500/10 text-rose-400 border border-rose-500/20 px-1.5 py-0.5 rounded">Failing</span>
                                 ) : (
-                                  <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded shrink-0">Active</span>
+                                  <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded">Active</span>
+                                )}
+                                {src.lastSyncedAt ? (
+                                  <>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                                    <span>Synced · {formatSyncTime(src.lastSyncedAt)}</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-600 shrink-0" />
+                                    <span>Not synced yet</span>
+                                  </>
                                 )}
                               </div>
-                              <span className="text-xs text-slate-400 truncate block mt-0.5">{src.feedUrl}</span>
-                              <div className="flex items-center gap-1.5 text-[11px] text-slate-400 mt-1">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                                <span>Synced {formatSyncTime(src.lastSyncedAt)}</span>
-                              </div>
+                              {src.description && (
+                                <div className="mt-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedSourceDescriptionIds(prev =>
+                                      prev.includes(src.id) ? prev.filter(id => id !== src.id) : [...prev, src.id]
+                                    )}
+                                    className="inline-flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-amber-300 transition cursor-pointer"
+                                    aria-expanded={descriptionOpen}
+                                    title={descriptionOpen ? 'Hide this feed’s description' : `About ${src.title}`}
+                                  >
+                                    <ChevronDown className={`w-3 h-3 transition-transform ${descriptionOpen ? 'rotate-180' : ''}`} />
+                                    <span>{descriptionOpen ? 'Hide description' : 'About this feed'}</span>
+                                  </button>
+                                  {descriptionOpen && (
+                                    <p className="text-xs text-slate-400 leading-relaxed mt-1 line-clamp-3">{src.description}</p>
+                                  )}
+                                </div>
+                              )}
                               {src.failingReason && (
                                 <span className="text-xs text-rose-400 block mt-1 break-words">{src.failingReason}</span>
                               )}
@@ -2176,70 +3824,181 @@ export default function App() {
                               type="button"
                               onClick={() => handleRefreshSource(src)}
                               disabled={isRefreshing}
-                              className="p-2 text-slate-400 hover:text-amber-400 transition"
+                              className="p-2 min-w-10 min-h-10 flex items-center justify-center text-slate-400 hover:text-amber-400 transition"
                               title="Force refresh this feed"
+                              aria-label="Force refresh this feed"
                             >
                               <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-amber-400' : ''}`} />
                             </button>
                             <button 
                               type="button"
                               onClick={() => handleDeleteSource(src.id)}
-                              className="p-2 text-slate-500 hover:text-rose-400 transition"
-                              title="Remove source"
+                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
+                                pendingDeleteId === src.id
+                                  ? 'bg-rose-500/15 border-rose-500/50 text-rose-300'
+                                  : 'border-transparent text-slate-500 hover:text-rose-400'
+                              }`}
+                              title={pendingDeleteId === src.id ? 'Tap again to confirm removal' : 'Remove source'}
+                              aria-label={pendingDeleteId === src.id ? 'Tap again to confirm removal' : 'Remove source'}
                             >
-                              <Trash2 className="w-4 h-4" />
+                              {pendingDeleteId === src.id ? <AlertCircle className="w-4 h-4" /> : <Trash2 className="w-4 h-4" />}
                             </button>
                           </div>
+                          </div>
+                          {categoryEditorSourceId === src.id && (
+                            <div className="px-3.5 sm:px-4 pb-3.5 sm:pb-4">
+                              <div className="rounded-xl bg-slate-950/70 border border-slate-800 p-3 sm:p-3.5 space-y-3">
+                                <div className="space-y-0.5">
+                                  <p className="text-xs font-medium text-slate-200">Categories</p>
+                                  <p className="text-xs text-slate-500 leading-relaxed">
+                                    Pick any that describe this feed. Its folder stays unchanged.
+                                  </p>
+                                </div>
+                                <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto overscroll-contain py-0.5">
+                                  {sourceCategories.map(category => {
+                                    const isSelected = normalizeCategoryLabels(src.categories, src.folder)
+                                      .some(value => value.toLowerCase() === category.toLowerCase());
+                                    return (
+                                      <button
+                                        key={category}
+                                        type="button"
+                                        onClick={() => toggleSourceCategory(src.id, category)}
+                                        aria-pressed={isSelected}
+                                        className={`inline-flex max-w-full items-center gap-1.5 rounded-full border px-3 py-2 text-xs leading-tight text-left transition ${
+                                          isSelected
+                                            ? 'border-amber-500/50 bg-amber-500/15 text-amber-100'
+                                            : 'border-slate-800 bg-slate-900/70 text-slate-300 hover:border-slate-700'
+                                        }`}
+                                      >
+                                        {isSelected && <Check className="w-3 h-3 shrink-0" />}
+                                        <span className="min-w-0 break-words">{category}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                                <form
+                                  className="flex gap-2"
+                                  onSubmit={e => {
+                                    e.preventDefault();
+                                    addSourceCategory(src);
+                                  }}
+                                >
+                                  <input
+                                    type="text"
+                                    maxLength={40}
+                                    value={categoryDraft}
+                                    onChange={e => setCategoryDraft(e.target.value)}
+                                    placeholder="New category"
+                                    aria-label={`Create a category for ${src.title}`}
+                                    className="min-w-0 flex-1 rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+                                  />
+                                  <button
+                                    type="submit"
+                                    disabled={!categoryDraft.trim()}
+                                    className="shrink-0 rounded-xl bg-amber-500/15 border border-amber-500/30 px-3 py-2 text-xs font-medium text-amber-200 disabled:opacity-40"
+                                  >
+                                    Add
+                                  </button>
+                                </form>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
                   </div>
                 </div>
               ))}
+              {sourceSearch.trim() && Object.keys(filteredSourcesByFolder).length === 0 && (
+                <p className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-5 text-center text-sm text-slate-400">
+                  No sources match “{sourceSearch.trim()}”. Try another name, folder, category, or feed URL.
+                </p>
+              )}
             </div>
 
-            {/* Add Source Modal */}
-            {showAddSourceModal && (
-              <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
-                <div className="w-full max-w-md rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4">
+            {/* Secondary: taking the subscription list somewhere else, not a primary action */}
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={handleExportOPML}
+                title="Download every watched source as an OPML file, to import into another reader"
+                className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export subscriptions (OPML)</span>
+              </button>
+            </div>
+
+            {/* Add Source Modal — portalled as well, so it paints above the setup wizard */}
+            {showAddSourceModal && createPortal(
+              <div className="fixed inset-0 z-[85] bg-slate-950/85 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
+                <div className="w-full max-w-md my-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold text-slate-100">Add New Source</h3>
-                    <button onClick={() => setShowAddSourceModal(false)} className="text-slate-400 hover:text-slate-100">
+                    <button type="button" onClick={() => setShowAddSourceModal(false)} title="Close" aria-label="Close the Add Source form" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-slate-100 transition">
                       <X className="w-5 h-5" />
                     </button>
                   </div>
-                  <form onSubmit={handleAddSource} className="space-y-4">
+                  <form onSubmit={handleAddSource} noValidate className="space-y-4">
                     <div>
                       <label className="block text-xs font-medium text-slate-400 mb-1">Source Title</label>
-                      <input 
-                        type="text" 
+                      <input
+                        type="text"
                         required
                         placeholder="e.g. Marginal Revolution"
                         value={newSourceTitle}
-                        onChange={e => setNewSourceTitle(e.target.value)}
-                        className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
+                        onChange={e => { setNewSourceTitle(e.target.value); setNewSourceTitleError(null); }}
+                        aria-invalid={newSourceTitleError ? true : undefined}
+                        className={`w-full rounded-xl bg-slate-950 border px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500 ${newSourceTitleError ? 'border-rose-500' : 'border-slate-800'}`}
                       />
+                      {newSourceTitleError && (
+                        <p role="alert" className="text-xs text-rose-400 mt-1">{newSourceTitleError}</p>
+                      )}
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-400 mb-1">RSS / Atom Feed URL</label>
-                      <input 
-                        type="url" 
+                      <input
+                        type="url"
                         required
                         placeholder="https://example.com/feed.xml"
                         value={newSourceUrl}
-                        onChange={e => setNewSourceUrl(e.target.value)}
-                        className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
+                        onChange={e => { setNewSourceUrl(e.target.value); setNewSourceUrlError(null); }}
+                        aria-invalid={newSourceUrlError ? true : undefined}
+                        className={`w-full rounded-xl bg-slate-950 border px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500 ${newSourceUrlError ? 'border-rose-500' : 'border-slate-800'}`}
                       />
+                      {newSourceUrlError && (
+                        <p role="alert" className="text-xs text-rose-400 mt-1">{newSourceUrlError}</p>
+                      )}
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-slate-400 mb-1">Folder Grouping</label>
-                      <input 
-                        type="text" 
-                        placeholder="e.g. Economics"
-                        value={newSourceFolder}
-                        onChange={e => setNewSourceFolder(e.target.value)}
+                      <label className="block text-xs font-medium text-slate-400 mb-1">Folder</label>
+                      <select
+                        value={newSourceFolderCustom ? '__new__' : newSourceFolder}
+                        onChange={e => {
+                          if (e.target.value === '__new__') {
+                            setNewSourceFolderCustom(true);
+                            setNewSourceFolder('');
+                          } else {
+                            setNewSourceFolderCustom(false);
+                            setNewSourceFolder(e.target.value);
+                          }
+                        }}
                         className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
-                      />
+                      >
+                        {sourceFolders.map(folder => <option key={folder} value={folder}>{folder}</option>)}
+                        <option value="__new__">Create a new folder…</option>
+                      </select>
+                      {newSourceFolderCustom && (
+                        <input
+                          type="text"
+                          required
+                          autoFocus
+                          placeholder="New folder name"
+                          value={newSourceFolder}
+                          onChange={e => setNewSourceFolder(e.target.value)}
+                          className="mt-2 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
+                        />
+                      )}
                     </div>
                     <div className="flex justify-end gap-2 pt-2">
                       <button 
@@ -2258,16 +4017,231 @@ export default function App() {
                     </div>
                   </form>
                 </div>
-              </div>
+              </div>,
+              document.body
+            )}
+
+            {/* First-run semantic setup — portalled to <body> so the overlay always covers
+                the whole screen (header and dock included), whichever tab opened it */}
+            {showSetupWizard && createPortal(
+              <div className="fixed inset-0 z-[80] bg-slate-950/90 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
+                <div className="w-full max-w-lg my-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-5 animate-fade-in">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-wider text-amber-400/90 font-semibold">
+                        Setup · step {setupStep} of 3
+                      </p>
+                      <h3 className="text-lg font-semibold text-slate-100 mt-1">
+                        {setupStep === 1
+                          ? 'Set up your semantic curator'
+                          : setupStep === 2
+                            ? 'Teach it in ten taps'
+                            : 'Your engine is ready'}
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={dismissSetupWizard}
+                      className="p-1 text-slate-500 hover:text-slate-200 transition"
+                      title="Skip setup"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    {[1, 2, 3].map(step => (
+                      <span
+                        key={step}
+                        className={`h-1 flex-1 rounded-full transition-colors ${step <= setupStep ? 'bg-amber-500' : 'bg-slate-800'}`}
+                      />
+                    ))}
+                  </div>
+
+                  {setupStep === 1 && (
+                    <div className="space-y-4">
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        Curator ranks your feeds by similarity to what you vote on. That profile comes from a few quick
+                        verdicts below and stays in this browser — no account, no key, no third-party calls.
+                      </p>
+
+                      <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-400">Feeds in your library</span>
+                          <span className="font-semibold text-slate-100">{sources.length}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-400">Votes already in your profile</span>
+                          <span className="font-semibold text-slate-100">{semanticFeedback.length}</span>
+                        </div>
+                      </div>
+
+                      {setupError && (
+                        <p className="text-xs text-rose-400 leading-relaxed">{setupError}</p>
+                      )}
+
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={loadCalibration}
+                          disabled={loadingCalibration}
+                          className="w-full px-4 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-semibold flex items-center justify-center gap-2 hover:bg-amber-400 transition disabled:opacity-60"
+                        >
+                          {loadingCalibration ? (
+                            <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Scanning your feeds…</>
+                          ) : (
+                            <><Sparkles className="w-3.5 h-3.5" /> Scan my feeds and calibrate</>
+                          )}
+                        </button>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowAddSourceModal(true)}
+                            className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-300 hover:text-slate-100 transition"
+                          >
+                            Import OPML
+                          </button>
+                          <button
+                            type="button"
+                            onClick={finishSetup}
+                            className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-400 hover:text-slate-200 transition"
+                          >
+                            Skip for now
+                          </button>
+                        </div>
+                      </div>
+
+                      <p className="text-xs text-slate-500 leading-relaxed">
+                        No provider keys needed. OpenAI-compatible or Gemini embeddings are an optional upgrade in Settings.
+                      </p>
+                    </div>
+                  )}
+
+                  {setupStep === 2 && (
+                    <div className="space-y-4">
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        Say what you would read and what you would not. Titles and excerpts only — the built-in engine
+                        scores them on this app's server.
+                      </p>
+
+                      {currentCalibrationItem ? (
+                        <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-2">
+                          <div className="text-xs text-slate-500">
+                            {currentCalibrationItem.source} · {currentCalibrationItem.folder}
+                          </div>
+                          <h4 className="text-sm font-semibold text-slate-100 leading-snug">
+                            {currentCalibrationItem.title}
+                          </h4>
+                          <p className="text-xs text-slate-400 leading-relaxed line-clamp-3">
+                            {currentCalibrationItem.summary}
+                          </p>
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => answerCalibration(currentCalibrationItem, 'like')}
+                              className="flex-1 min-h-11 px-3 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 flex items-center justify-center hover:bg-emerald-500/25 transition"
+                              title="More like this"
+                              aria-label="More like this"
+                            >
+                              <ThumbsUp className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => answerCalibration(currentCalibrationItem, 'dislike')}
+                              className="flex-1 min-h-11 px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 flex items-center justify-center hover:bg-rose-500/20 transition"
+                              title="Not for me"
+                              aria-label="Not for me"
+                            >
+                              <ThumbsDown className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <div className="flex items-center justify-center gap-4 text-xs font-medium text-slate-400">
+                            <span className="flex items-center gap-1">
+                              <ThumbsUp className="w-3 h-3 text-emerald-400/70" /> read it
+                            </span>
+                            <span className="flex items-center gap-1">
+                              <ThumbsDown className="w-3 h-3 text-rose-400/70" /> skip it
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 text-center text-xs text-slate-300">
+                          <Check className="w-5 h-5 text-emerald-400 mx-auto mb-2" />
+                          {calibrationVotes} verdict{calibrationVotes === 1 ? '' : 's'} recorded. That is enough to
+                          rank today's digest.
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between text-xs text-slate-500">
+                        <span>
+                          {Math.min(calibrationIndex, calibrationCandidates.length)} of {calibrationCandidates.length} reviewed
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setSetupStep(3)}
+                          className="text-amber-400 font-medium hover:text-amber-300 transition"
+                        >
+                          Continue
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {setupStep === 3 && (
+                    <div className="space-y-4">
+                      <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 space-y-1.5">
+                        <div className="flex items-center gap-2 font-medium">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                          Built-in semantic engine: on
+                        </div>
+                        <p className="text-xs text-slate-400 leading-relaxed">
+                          {calibrationVotes > 0
+                            ? `Ranking from ${calibrationVotes} calibration verdict${calibrationVotes === 1 ? '' : 's'} plus any earlier votes.`
+                            : 'Ranking from the votes you cast on digest cards.'}
+                          {' '}No key and no third-party calls. Refreshing the digest rotates in pieces you have not seen.
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col gap-2">
+                        <button
+                          type="button"
+                          onClick={finishSetup}
+                          className="w-full px-4 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-semibold hover:bg-amber-400 transition"
+                        >
+                          Build my digest
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            finishSetup();
+                            setActiveTab('settings');
+                          }}
+                          className="w-full px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-300 hover:text-slate-100 transition"
+                        >
+                          Add an embeddings provider (optional)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSetupStep(2)}
+                          className="text-xs text-slate-400 hover:text-slate-200 transition"
+                        >
+                          Back to calibration
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>,
+              document.body
             )}
 
             {/* OPML Import Modal */}
-            {showImportModal && (
-              <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
-                <div className="w-full max-w-lg rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            {showImportModal && createPortal(
+              <div className="fixed inset-0 z-[85] bg-slate-950/85 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
+                <div className="w-full max-w-lg my-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold text-slate-100">Import Subscription List (OPML)</h3>
-                    <button onClick={() => setShowImportModal(false)} className="text-slate-400 hover:text-slate-100">
+                    <button type="button" onClick={() => setShowImportModal(false)} title="Close" aria-label="Close the OPML import form" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-slate-100 transition">
                       <X className="w-5 h-5" />
                     </button>
                   </div>
@@ -2322,13 +4296,13 @@ export default function App() {
                     <div className="text-xs font-medium text-slate-200">
                       {importFileName ? `Selected: ${importFileName}` : 'Choose an OPML / XML file or drop it here'}
                     </div>
-                    <div className="text-[11px] text-slate-400 mt-1">
+                    <div className="text-xs text-slate-400 mt-1">
                       Supports standard exports from Feedly, NetNewsWire, Reeder, Substack, and Inoreader
                     </div>
                   </div>
 
                   <div className="space-y-1.5">
-                    <label className="block text-[11px] font-medium text-slate-400">
+                    <label className="block text-xs font-medium text-slate-400">
                       Or paste OPML XML directly
                     </label>
                     <textarea 
@@ -2353,7 +4327,7 @@ export default function App() {
                         Imported {importResult.totalImported} sources ({importResult.successCount} active, {importResult.failCount} failing).
                       </div>
                       {importResult.failures && importResult.failures.length > 0 && (
-                        <ul className="space-y-1 text-[11px] text-amber-300 border-t border-emerald-500/20 pt-2">
+                        <ul className="space-y-1 text-xs text-amber-300 border-t border-emerald-500/20 pt-2">
                           {importResult.failures.map((f, idx) => (
                             <li key={idx}>
                               {f.title}: {f.reason}
@@ -2382,7 +4356,8 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-              </div>
+              </div>,
+              document.body
             )}
           </div>
         )}
@@ -2392,151 +4367,556 @@ export default function App() {
           <div className="space-y-8 animate-fade-in">
             <div className="border-b border-slate-900 pb-4">
               <h2 className="text-xl font-semibold tracking-tight text-slate-100">Settings</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Preferences & delivery configuration</p>
+              <p className="text-xs text-slate-400 mt-0.5">Tune your digest and manage your reading preferences.</p>
             </div>
 
-            {/* Serendipity Dial */}
+            {/* Weekly Reading Activity Summary in Settings */}
             <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-200">The Serendipity Dial</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">How far outside your bubble should your daily stretch be?</p>
-                </div>
-                <span className="text-sm font-mono font-bold text-amber-400">{serendipityDial}%</span>
-              </div>
-              <input 
-                type="range" 
-                min="0" 
-                max="100" 
-                value={serendipityDial}
-                onChange={e => setSerendipityDial(Number(e.target.value))}
-                className="w-full accent-amber-500 cursor-pointer"
-              />
-              <div className="flex justify-between text-[11px] text-slate-400">
-                <span>Stay close</span>
-                <span>Balanced</span>
-                <span>Push me</span>
-              </div>
-            </div>
-
-            {/* Delivery Time & Notifications */}
-            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-200">Morning Delivery Time</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">When your single daily digest notification arrives</p>
-                </div>
-                <input 
-                  type="time" 
-                  value={deliveryTime}
-                  onChange={e => setDeliveryTime(e.target.value)}
-                  className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-sm text-slate-200 font-mono focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div className="flex items-center justify-between pt-4 border-t border-slate-900">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-200">Push Notification</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">One calm notification per morning</p>
-                </div>
-                <button 
-                  onClick={() => setNotificationsEnabled(!notificationsEnabled)}
-                  className={`w-11 h-6 rounded-full transition relative ${notificationsEnabled ? 'bg-amber-500' : 'bg-slate-800'}`}
-                >
-                  <div className={`w-5 h-5 rounded-full bg-white absolute top-0.5 transition-transform ${notificationsEnabled ? 'translate-x-5.5' : 'translate-x-0.5'}`} />
-                </button>
-              </div>
-
-              <div className="pt-2">
-                <button 
-                  onClick={() => {
-                    showToast('Test notification sent: 6 items ready, 1 stretch item');
-                  }}
-                  className="px-4 py-2 text-xs font-medium rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-slate-100 transition"
-                >
-                  Send me a test notification
-                </button>
-              </div>
-            </div>
-
-            {/* Reading Preferences (Topics & Themes) */}
-            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-200">Reading Preferences (Topics & Depth)</h3>
+                  <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                    <BarChart3 className="w-4 h-4 text-amber-400" />
+                    <span>Weekly Reading Retrospective</span>
+                  </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Curator learns your reading tastes from Thumbs Up / Down. Your feed and author subscriptions in Sources remain untouched.
+                    {totalWeeklyMinutes} minutes read across {weeklyRecent.length} articles over the past 7 days.
                   </p>
                 </div>
-                {((signals.moreTopics && signals.moreTopics.length > 0) || (signals.lessTopics && signals.lessTopics.length > 0) || (signals.moreIds && signals.moreIds.length > 0) || (signals.lessIds && signals.lessIds.length > 0)) && (
+                <button
+                  type="button"
+                  onClick={() => setShowWeeklyReviewModal(true)}
+                  className="px-3.5 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <span>Open Full Review</span>
+                  <ArrowRight className="w-3 h-3" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 pt-1">
+                <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center">
+                  <span className="text-xs text-slate-400 block mb-0.5">Time Spent</span>
+                  <span className="text-base font-bold font-serif text-slate-100">{totalWeeklyMinutes}m</span>
+                </div>
+                <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center">
+                  <span className="text-xs text-slate-400 block mb-0.5">Completed</span>
+                  <span className="text-base font-bold font-serif text-slate-100">{weeklyRecent.length}</span>
+                </div>
+                <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center truncate">
+                  <span className="text-xs text-slate-400 block mb-0.5">Lead Focus</span>
+                  <span className="text-xs font-bold text-amber-300 block leading-tight whitespace-normal">{topWeeklyTopic}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Server-side request tally, folded away: it is plumbing, not a reading setting */}
+            <details className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
+              <summary className="flex items-start justify-between gap-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-amber-400" />
+                    <span>Server activity</span>
+                    <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Every request Curator has made, counted on the server. Kept for {usageStats?.retentionDays ?? 120} days. Open for the tally and cost estimate.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={(e) => { e.preventDefault(); loadUsageStats(); }}
+                  className="p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border border-slate-800 text-slate-400 hover:text-amber-300 hover:border-amber-500/30 transition"
+                  title="Refresh the tally"
+                >
+                  <RefreshCw className={`w-4 h-4 ${loadingUsage ? 'animate-spin' : ''}`} />
+                </button>
+              </summary>
+
+              <div className="space-y-2">
+                {([
+                  ['Today', usageStats?.today],
+                  ['Last 7 days', usageStats?.week],
+                  ['Last 30 days', usageStats?.month],
+                ] as Array<[string, any]>).map(([label, bucket]) => (
+                  <div key={label} className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-slate-200">{label}</div>
+                      <div className="text-xs text-slate-400 mt-0.5 break-words">
+                        {bucket
+                          ? `${bucket.outboundRequests} outbound · ${bucket.aiCalls} AI · ${bucket.apiCalls} app calls${bucket.feedFetches ? ` · ${bucket.feedFetches} feed fetches` : ''}`
+                          : 'No tally yet'}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-sm font-semibold text-amber-300">
+                        {bucket ? `£${formatGbp(bucket.gbp)}` : '—'}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {bucket ? `$${bucket.usd.toFixed(4)}` : ''}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {usageStats?.month && (usageStats.month.inputTokens > 0 || usageStats.month.outputTokens > 0) && (
+                <p className="text-xs text-slate-400">
+                  Tokens this month: {formatTokens(usageStats.month.inputTokens)} in
+                  {usageStats.month.cachedInputTokens > 0 ? ` (${formatTokens(usageStats.month.cachedInputTokens)} cached)` : ''}
+                  {' '}· {formatTokens(usageStats.month.outputTokens)} out
+                </p>
+              )}
+
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Estimate at ${usageStats?.rates?.inputMiss ?? 0.15}/1M input, ${usageStats?.rates?.inputHit ?? 0.003}/1M cached input
+                and ${usageStats?.rates?.output ?? 0.6}/1M output, converted at £1 = ${usageStats?.usdPerGbp ?? 1.32}.
+                {usageStats?.peakNow ? ' Peak hours now — these calls bill at 2×.' : ' Peak hours (Mon–Fri, 01:00–04:00 and 06:00–10:00 UTC) double these rates.'}
+              </p>
+
+              <p className="text-xs text-slate-500">
+                Counted inside the server container, so it survives app restarts but starts fresh on a redeploy.
+              </p>
+            </details>
+
+            {/* Read aloud: the onboard voice and pace the reader speaks with */}
+            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                  <Volume2 className="w-4 h-4 text-amber-400" />
+                  <span>Read aloud</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  The reader speaks with a voice installed on this device. Add or download more in
+                  Settings › Accessibility › Spoken Content › Voices, then start Read aloud once.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">Voice</label>
+                <select
+                  value={speechVoiceUri}
+                  onChange={e => setSpeechVoiceUri(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
+                >
+                  <option value={SPEECH_VOICE_JAMIE_DEFAULT}>
+                    Jamie (Premium){jamiePremiumSpeechVoice?.lang ? ` · ${jamiePremiumSpeechVoice.lang}` : ''} — default
+                  </option>
+                  <option value={SPEECH_VOICE_AUTO}>
+                    {automaticSpeechVoice ? `Automatic — ${automaticSpeechVoice.name}` : 'Automatic — your device voice'}
+                  </option>
+                  {speechVoiceOptions
+                    .filter(voice => voice.voiceURI !== jamiePremiumSpeechVoice?.voiceURI)
+                    .map(voice => (
+                    <option key={voice.voiceURI} value={voice.voiceURI}>
+                      {voice.name} · {voice.lang}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-slate-500 mt-1">
+                  {speechVoiceOptions.length > 0
+                    ? `${speechVoiceOptions.length} ${speechVoiceOptions.length === 1 ? 'voice' : 'voices'} available on this device. Enhanced and Premium voices sound markedly better than the compact ones.`
+                    : 'This device has not reported its voices yet — start Read aloud once and they appear here.'}
+                </p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Jamie (Premium) is the default. If this browser does not expose that voice, Read aloud
+                  leaves voice selection to the device and its Spoken Content settings.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5 flex items-center justify-between">
+                  <span>Speed</span>
+                  <span className="text-amber-300 tabular-nums">{speechRate.toFixed(2)}×</span>
+                </label>
+                <input
+                  type="range"
+                  min={SPEECH_RATE_MIN}
+                  max={SPEECH_RATE_MAX}
+                  step={0.05}
+                  value={speechRate}
+                  onChange={e => setSpeechRate(Number(e.target.value))}
+                  className="w-full accent-amber-400"
+                  aria-label="Read aloud speed"
+                />
+                <div className="flex justify-between text-xs text-slate-500">
+                  <span>Slower</span>
+                  <span>Calm default {SPEECH_RATE_DEFAULT.toFixed(2)}×</span>
+                  <span>Faster</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handlePreviewSpeech}
+                className="px-4 py-2 text-xs font-medium rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition"
+              >
+                Hear this voice
+              </button>
+            </div>
+
+            {/* Provider-configurable AI services */}
+            <div id="provider-settings" className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-5 scroll-mt-6">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-200">Optional AI services</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Curator works without an external AI service. Connect one if you want AI-assisted digest writing or richer topic matching.</p>
+              </div>
+
+              <div
+                role={startupApiStatus === 'issue' ? 'alert' : 'status'}
+                aria-live={startupApiStatus === 'issue' ? 'assertive' : 'polite'}
+                className={`rounded-xl border px-3 py-2 text-xs leading-relaxed space-y-1 ${
+                  startupApiStatus === 'issue'
+                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+                    : startupApiStatus === 'healthy'
+                      ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
+                      : 'border-slate-800 bg-slate-950/60 text-slate-400'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-semibold flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${
+                      startupApiStatus === 'issue' ? 'bg-amber-400' : startupApiStatus === 'healthy' ? 'bg-emerald-400' : 'bg-slate-500 animate-pulse'
+                    }`} />
+                    {startupApiStatus === 'checking' ? 'Checking server and APIs' : startupApiStatus === 'healthy' ? 'Server and API check passed' : 'Server or API needs attention'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void checkStartupServices()}
+                    disabled={startupApiStatus === 'checking'}
+                    className="shrink-0 underline underline-offset-2 disabled:opacity-50"
+                  >
+                    {startupApiStatus === 'checking' ? 'Checking…' : 'Check again'}
+                  </button>
+                </div>
+                <p>{startupApiMessage}</p>
+                <p className="text-xs opacity-75">Startup checks send a minimal request only to configured external providers; provider billing may apply. Built-in services need no external API key.</p>
+              </div>
+
+              {(() => {
+                const chatKey = customApiKey.trim();
+                const usesServerGemini = aiProvider === 'gemini' && serverGeminiAvailable;
+                const hasChatKey = Boolean(chatKey) || usesServerGemini;
+                const providerConfigured = aiProvider !== 'openai-compatible' || Boolean(aiBaseUrl.trim() && aiModel.trim());
+                const ready = aiProvider !== 'deterministic' && hasChatKey && providerConfigured;
+                const masked = chatKey ? `••••${chatKey.slice(-4)}` : '';
+
+                const embeddingKey = embeddingApiKey.trim() || (embeddingKeyMatchesChatProvider ? chatKey : '');
+                const embeddingReady = embeddingProvider !== 'none' &&
+                  Boolean(embeddingKey || (embeddingProvider === 'gemini' && serverGeminiAvailable));
+
+                let heading = 'API key not active';
+                let detail = 'No key saved — digests and ranking use the built-in engine.';
+                let tone = 'border-amber-500/25 bg-amber-500/10 text-amber-300';
+
+                if (aiProvider === 'deterministic') {
+                  heading = 'Built-in engine';
+                  detail = 'No API key in use. Nothing is sent to an external service.';
+                  tone = 'border-slate-800 bg-slate-950/60 text-slate-400';
+                } else if (!hasChatKey) {
+                  heading = 'API key not active';
+                  detail = 'No key saved yet — Curator keeps using the built-in engine until you add one below.';
+                } else if (!providerConfigured) {
+                  heading = 'API key saved, provider incomplete';
+                  detail = `The key (${masked || 'server'}) is stored, but the provider URL and model are missing, so the built-in engine is still doing the work.`;
+                } else {
+                  heading = 'API key active';
+                  detail = usesServerGemini
+                    ? 'Using the server’s GEMINI_API_KEY for digests.'
+                    : `Key saved in this browser (${masked}) and sent only with your own requests.`;
+                  tone = 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300';
+                }
+
+                const embeddingLabel = embeddingProvider === 'none'
+                  ? 'Topic matching: built-in (no key needed).'
+                  : embeddingReady
+                    ? `Topic matching: key active${embeddingKey ? ` (••••${embeddingKey.slice(-4)})` : ''}.`
+                    : 'Topic matching: no key yet — built-in matching continues.';
+
+                return (
+                  <div className={`rounded-xl border px-3 py-2 text-xs leading-relaxed space-y-0.5 ${tone}`}>
+                    <div>
+                      <span className="font-semibold">Digest writing: {heading}.</span> {detail}
+                    </div>
+                    <div className={embeddingReady ? 'text-emerald-300/90' : undefined}>{embeddingLabel}</div>
+                  </div>
+                );
+              })()}
+
+              <div className="space-y-3 pt-1">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">Digest writing service</label>
+                  <select
+                    value={aiProvider}
+                    onChange={e => setAiProvider(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
+                  >
+                    <option value="deterministic">Built-in (no external AI)</option>
+                    <option value="openai-compatible">OpenAI or compatible service</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="gemini">Google Gemini</option>
+                  </select>
+                </div>
+
+                {aiProvider === 'openai-compatible' && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">Provider URL</label>
+                    <input
+                      type="url"
+                      value={aiBaseUrl}
+                      onChange={e => setAiBaseUrl(e.target.value)}
+                      placeholder="https://api.openai.com/v1"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">Use the HTTPS API URL from your provider. OpenAI, OpenRouter, and compatible services are supported.</p>
+                  </div>
+                )}
+
+                {aiProvider !== 'deterministic' && (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Model name</label>
+                      <input
+                        type="text"
+                        value={aiModel}
+                        onChange={e => setAiModel(e.target.value)}
+                        placeholder={aiProvider === 'openai-compatible' ? 'e.g. gpt-4o-mini or provider model ID' : aiProvider === 'anthropic' ? 'e.g. claude-3-5-sonnet-20241022' : 'e.g. gemini-2.5-flash'}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Provider API key</label>
+                      <input
+                        type="password"
+                        value={customApiKey}
+                        onChange={e => setCustomApiKey(e.target.value)}
+                        placeholder="Your provider API key"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                      />
+                      <p className="text-xs text-slate-500 mt-1">Stored in this browser, sent securely to Curator, then forwarded to your chosen provider.</p>
+                    </div>
+
+                    <ProviderTestButton
+                      kind="chat"
+                      provider={aiProvider}
+                      apiKey={customApiKey}
+                      baseUrl={aiBaseUrl}
+                      model={aiModel}
+                      disabled={loadingDigest}
+                    />
+                  </>
+                )}
+
+                <div className="pt-3 border-t border-slate-800">
+                  <label htmlFor="topic-matching-service" className="block text-xs font-medium text-slate-300 mb-1.5">Topic-matching service</label>
+                  <select
+                    id="topic-matching-service"
+                    value={embeddingProvider}
+                    onChange={e => {
+                      const nextProvider = e.target.value;
+                      setEmbeddingProvider(nextProvider);
+                      setEmbeddingModel(current => {
+                        if (current === 'text-embedding-3-small' || current === 'gemini-embedding-001') {
+                          return nextProvider === 'gemini' ? 'gemini-embedding-001' : 'text-embedding-3-small';
+                        }
+                        return current;
+                      });
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
+                  >
+                    <option value="openai-compatible">
+                      {`OpenAI or compatible service${(embeddingApiKey.trim() || (embeddingKeyMatchesChatProvider && customApiKey.trim())) ? '' : ' (needs a key)'}`}
+                    </option>
+                    <option value="gemini">
+                      {`Google Gemini${(embeddingApiKey.trim() || (embeddingKeyMatchesChatProvider && customApiKey.trim()) || serverGeminiAvailable) ? '' : ' (needs a key)'}`}
+                    </option>
+                    <option value="none">Off — use built-in matching</option>
+                  </select>
+                  <p className="text-xs text-slate-500 mt-1">Optional: helps match articles by meaning, not just shared words.</p>
+                  {(() => {
+                    const hasEmbeddingKey = Boolean(embeddingApiKey.trim() || (embeddingKeyMatchesChatProvider && customApiKey.trim()));
+                    const hasEmbeddingBase = Boolean(embeddingBaseUrl.trim() || (embeddingKeyMatchesChatProvider && aiBaseUrl.trim()));
+                    const embeddingActive =
+                      embeddingProvider === 'gemini'
+                        ? Boolean(hasEmbeddingKey || serverGeminiAvailable)
+                        : embeddingProvider === 'openai-compatible'
+                          ? Boolean(hasEmbeddingKey && hasEmbeddingBase)
+                          : false;
+                    const serviceName = embeddingProvider === 'gemini' ? 'Google Gemini' : 'OpenAI-compatible service';
+                    return (
+                      <p className={`text-xs mt-1 font-medium ${embeddingActive ? 'text-emerald-300' : 'text-amber-300'}`}>
+                        {embeddingProvider === 'none'
+                          ? 'Currently matching with: Built-in engine (no key needed).'
+                          : embeddingActive
+                            ? `Currently matching with: ${serviceName}.`
+                            : `Currently matching with: Built-in engine — ${serviceName} has no working key yet, so it is not active.`}
+                      </p>
+                    );
+                  })()}
+                </div>
+
+                {embeddingProvider === 'openai-compatible' && (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Provider URL</label>
+                      <input
+                        type="url"
+                        value={embeddingBaseUrl}
+                        onChange={e => setEmbeddingBaseUrl(e.target.value)}
+                        placeholder="https://api.openai.com/v1"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Matching model name</label>
+                      <input
+                        type="text"
+                        value={embeddingModel}
+                        onChange={e => setEmbeddingModel(e.target.value)}
+                        placeholder="text-embedding-3-small"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {embeddingProvider === 'gemini' && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">Matching model name</label>
+                    <input
+                      type="text"
+                      value={embeddingModel}
+                      onChange={e => setEmbeddingModel(e.target.value)}
+                      placeholder="gemini-embedding-001"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                )}
+
+                {embeddingProvider !== 'none' && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">Provider API key (optional)</label>
+                    <input
+                      type="password"
+                      value={embeddingApiKey}
+                      onChange={e => setEmbeddingApiKey(e.target.value)}
+                      placeholder="Optional — blank reuses the chat key"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">Stored in this browser and sent securely to Curator with matching requests. URLs must use HTTPS.</p>
+                  </div>
+                )}
+
+                {embeddingProvider !== 'none' && (
+                  <ProviderTestButton
+                    kind="embedding"
+                    provider={embeddingProvider}
+                    apiKey={embeddingApiKey || (embeddingKeyMatchesChatProvider ? customApiKey : '')}
+                    baseUrl={embeddingBaseUrl || (embeddingKeyMatchesChatProvider ? aiBaseUrl : '')}
+                    model={embeddingModel}
+                    disabled={loadingDigest}
+                  />
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  generateDigest({ fresh: true });
+                  showToast('Provider settings applied; refreshing your digest');
+                }}
+                disabled={loadingDigest}
+                className="px-4 py-2 text-xs font-medium rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition disabled:opacity-50"
+              >
+                Apply providers & refresh digest
+              </button>
+            </div>
+
+            {/* Browser-local semantic reading profile */}
+            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-200">Your reading preferences</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {semanticFeedback.length} of 40 votes saved · {semanticFeedback.filter(item => item.vote === 'like').length} liked · {semanticFeedback.filter(item => item.vote === 'dislike').length} disliked
+                  </p>
+                </div>
+                {(semanticFeedback.length > 0 || signals.moreIds.length > 0 || signals.lessIds.length > 0) && (
                   <button
                     type="button"
                     onClick={() => {
+                      if (!pendingReset) {
+                        setPendingReset(true);
+                        showToast('Tap Reset again to confirm — this clears your votes and signals');
+                        return;
+                      }
+                      setPendingReset(false);
+                      setSemanticFeedback([]);
                       setSignals({ moreTopics: [], lessTopics: [], moreIds: [], lessIds: [], more: [], less: [] });
-                      showToast('Reading preferences reset to neutral');
+                      showToast('Semantic reading profile reset');
                     }}
-                    className="text-xs text-slate-400 hover:text-rose-400 transition"
+                    className={`text-xs transition shrink-0 ${
+                      pendingReset
+                        ? 'text-rose-400 font-semibold'
+                        : 'text-slate-400 hover:text-rose-400'
+                    }`}
                   >
-                    Reset preferences
+                    {pendingReset ? 'Tap again to confirm reset' : 'Reset profile'}
                   </button>
                 )}
               </div>
 
-              <div className="space-y-3 pt-1">
-                <div>
-                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">
-                    Prioritized Reading Topics ({signals.moreTopics?.length || 0})
-                  </span>
-                  {signals.moreTopics && signals.moreTopics.length > 0 ? (
-                    <div className="flex flex-wrap gap-1.5">
-                      {signals.moreTopics.map(topic => (
-                        <span key={topic} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/15 border border-amber-500/30 text-amber-300">
-                          <ThumbsUp className="w-3 h-3 fill-amber-400/40" />
-                          <span>{topic}</span>
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-500 italic">No topic boosts yet. Tap thumbs-up on articles you enjoy to prioritize similar themes.</p>
-                  )}
-                </div>
+              <button
+                type="button"
+                onClick={openSetupWizard}
+                className="w-full px-3 py-2 rounded-xl bg-slate-950/70 border border-slate-800 text-xs font-medium text-amber-300 hover:border-amber-500/40 hover:text-amber-200 transition flex items-center justify-center gap-1.5"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>{semanticFeedback.length > 0 ? 'Teach Curator with more articles' : 'Teach Curator with articles'}</span>
+              </button>
 
-                <div className="pt-2 border-t border-slate-900/80">
-                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">
-                    De-emphasized Reading Topics ({signals.lessTopics?.length || 0})
-                  </span>
-                  {signals.lessTopics && signals.lessTopics.length > 0 ? (
-                    <div className="flex flex-wrap gap-1.5">
-                      {signals.lessTopics.map(topic => (
-                        <span key={topic} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-rose-500/15 border border-rose-500/30 text-rose-300">
-                          <ThumbsDown className="w-3 h-3 fill-rose-400/40" />
-                          <span>{topic}</span>
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-500 italic">No muted topics. Tap thumbs-down to quietly de-prioritize specific subjects without removing any author or feed.</p>
-                  )}
+              <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300">
+                <div className="flex items-center gap-2 font-medium">
+                  <span className={`w-2 h-2 rounded-full ${embeddingProvider === 'none' || semanticServiceReady ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                  {embeddingProvider === 'none'
+                    ? 'Built-in topic matching is active'
+                    : semanticServiceReady
+                      ? `Built-in matching + ${embeddingProvider === 'gemini' ? 'Google Gemini' : 'external'} topic matching`
+                      : 'Built-in matching is active · add a service URL and key for richer topic matching'}
                 </div>
+                {semanticSummary && (
+                  <p className="text-xs text-slate-500 mt-2">
+                    Last digest · {semanticSummary.feedbackExamples} vote example{semanticSummary.feedbackExamples === 1 ? '' : 's'} ·{' '}
+                    {semanticSummary.providerVectors > 0
+                      ? `${semanticSummary.providerVectors} external topic vectors`
+                      : 'built-in matching only'} ·{' '}
+                    {semanticSummary.deprioritized} recently seen articles down-ranked
+                  </p>
+                )}
+                <details className="mt-2 text-xs text-slate-400">
+                  <summary className="cursor-pointer font-medium text-slate-300">What happens to my data?</summary>
+                  <p className="mt-2 leading-relaxed">
+                    Your votes and excerpts are stored in this browser and sent to Curator's server for ranking. Built-in matching does not call an outside AI provider. If you enable external matching, relevant excerpts are also sent to that provider; they are not saved to a database, and cached vectors are temporary.
+                  </p>
+                </details>
               </div>
             </div>
 
-            {/* Subscription Export */}
-            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-200">Data & Subscriptions</h3>
-                <p className="text-xs text-slate-400 mt-0.5">Your OPML subscription file is yours. Export anytime.</p>
+            {/* Declared interests: nudges for the semantic ranking, never a filter */}
+            <InterestsEditor
+              value={interests}
+              suggestions={interestSuggestions}
+              onChange={setInterests}
+            />
+
+            {/* Optional install instructions stay collapsed until needed */}
+            <details className="rounded-2xl bg-slate-900/40 border border-slate-900 p-4">
+              <summary className="cursor-pointer text-sm font-semibold text-slate-200">Install Curator on your iPhone</summary>
+              <div className="pt-3">
+                <p className="text-xs text-slate-400">Scan the code, open Curator in Safari, then use Share → Add to Home Screen.</p>
+                <div className="flex flex-col sm:flex-row items-center gap-6 pt-3">
+                  <QRCodeBox url={typeof window !== 'undefined' ? window.location.origin : 'https://ais-dev-szra6uvq22i3o7dvcof5go-706549575453.europe-west2.run.app'} />
+                  <div className="text-xs text-slate-400">The Home Screen shortcut opens Curator like an app.</div>
+                </div>
               </div>
-              <div>
-                <button 
-                  onClick={handleExportOPML}
-                  className="px-4 py-2 text-xs font-medium rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-slate-100 transition flex items-center gap-2"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Export full subscription list (.opml)</span>
-                </button>
-              </div>
-            </div>
+            </details>
           </div>
         )}
 
@@ -2561,7 +4941,7 @@ export default function App() {
                       <span className="text-xs font-bold text-slate-200">ALL</span>
                     </div>
                   </div>
-                  <span className={`text-[11px] font-medium max-w-[72px] truncate text-center ${
+                  <span className={`text-xs font-medium max-w-[72px] truncate text-center ${
                     !selectedFeedSource || selectedFeedSource === 'all' ? 'text-amber-400 font-semibold' : 'text-slate-400'
                   }`}>
                     All Feeds
@@ -2571,7 +4951,7 @@ export default function App() {
                 {sources.map((src) => {
                   const isSelected = selectedFeedSource === src.title;
                   const isUnread = !readSourceIds.includes(src.id);
-                  const avatarUrl = src.avatar || getSourceAvatar(src.title, src.feedUrl);
+                  const avatarUrl = getSourceAvatar(src.feedUrl);
                   return (
                     <button
                       key={src.id}
@@ -2611,7 +4991,7 @@ export default function App() {
                           />
                         )}
                       </div>
-                      <span className={`text-[11px] font-medium max-w-[76px] truncate text-center group-hover:text-amber-300 transition-colors ${
+                      <span className={`text-xs font-medium max-w-[76px] truncate text-center group-hover:text-amber-300 transition-colors ${
                         isSelected ? 'text-amber-300 font-semibold' : isUnread ? 'text-slate-200 font-semibold' : 'text-slate-400'
                       }`}>
                         {getShortSourceTitle(src.title)}
@@ -2630,13 +5010,15 @@ export default function App() {
                     {selectedFeedSource && selectedFeedSource !== 'all' ? selectedFeedSource : 'All Feeds Stream'}
                   </h2>
                   {selectedFeedSource && selectedFeedSource !== 'all' && (
-                    <span className="text-[10px] uppercase font-mono tracking-wider bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">
+                    <span className="text-xs uppercase font-mono tracking-wider bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">
                       Feed Stream
                     </span>
                   )}
                 </div>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Traditional chronological reading stream · {feedStreamArticles.length} entries
+                  {loadingFeedStream
+                    ? 'Loading stream…'
+                    : `Traditional chronological reading stream · ${feedStreamArticles.length} ${feedStreamArticles.length === 1 ? 'entry' : 'entries'}`}
                 </p>
               </div>
 
@@ -2655,7 +5037,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={markAllSourcesAsUnread}
-                    className="px-3 py-1.5 text-xs font-medium rounded-xl bg-slate-900/60 border border-slate-800 text-slate-400 hover:text-slate-200 transition text-[11px]"
+                    className="px-3 py-1.5 text-xs font-medium rounded-xl bg-slate-900/60 border border-slate-800 text-slate-400 hover:text-slate-200 transition text-xs"
                     title="Reset unread dots"
                   >
                     Reset unread dots
@@ -2692,23 +5074,23 @@ export default function App() {
                 </button>
               </div>
             ) : (
-              <div className="space-y-6">
+              <div key={`stream-${feedStreamRenderKey}`} className="space-y-6">
                 {feedStreamArticles.map((item) => {
                   const actions = getCardActions(item.id);
                   return (
                     <article
                       key={item.id}
                       onClick={() => openArticle(item)}
-                      className={`group rounded-3xl transition-all duration-300 cursor-pointer overflow-hidden relative ${
+                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative ${
                         actions.hasAnyAction
                           ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
                           : 'bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.12)] hover:border-amber-500/60 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(245,158,11,0.35)]'
                       }`}
                     >
-                      <div className="p-5 pb-3 flex items-center justify-between">
-                        <div className="flex items-center gap-3">
+                      <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex items-center justify-between`}>
+                        <div className="flex items-center gap-3 min-w-0">
                           {(() => {
-                            const itemAvatar = item.avatar || getSourceAvatar(item.source, item.url);
+                            const itemAvatar = getSourceAvatar(item.url);
                             return (
                               <div className="w-9 h-9 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center overflow-hidden shrink-0 relative">
                                 {itemAvatar ? (
@@ -2729,41 +5111,47 @@ export default function App() {
                               </div>
                             );
                           })()}
-                          <div>
+                          <div className="min-w-0">
                             <div className="text-xs font-bold text-slate-100 flex items-center gap-1.5">
-                              <span>{item.source}</span>
+                              <span className="truncate">{item.source}</span>
                             </div>
-                            <div className="text-[11px] text-slate-400">
-                              {item.publishedAt ? `${item.publishedAt} · ` : ''}{item.folder} · {item.readTime}
+                            <div className="text-xs text-slate-400 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
+                              {item.publishedAt && (
+                                <>
+                                  <span className="min-w-0">{decodeArticleEntities(item.publishedAt)}</span>
+                                  <span aria-hidden="true">·</span>
+                                </>
+                              )}
+                              <span className="min-w-0">{displayFolder(item.folder)}</span>
+                              <span aria-hidden="true">·</span>
+                              <span className="shrink-0 font-medium text-slate-300">{decodeArticleEntities(item.readTime || '')}</span>
                             </div>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 shrink-0">
                           {actions.isReadThrough ? (
                             <div 
-                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-[10px] font-bold text-emerald-300 shadow-sm"
+                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-xs font-bold text-emerald-300 shadow-sm"
                               title="Read through completed"
                             >
                               <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
-                              <span>Read through</span>
+                              <span>Read</span>
                             </div>
                           ) : actions.isVotedMore ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-950/90 border border-amber-500/50 text-[10px] font-bold text-amber-300">
-                              <ThumbsUp className="w-3 h-3 text-amber-400" />
-                              <span>More like this</span>
+                            <div className="flex items-center px-2 py-1 rounded-full bg-amber-950/90 border border-amber-500/50" title="More like this">
+                              <ThumbsUp className="w-3.5 h-3.5 text-amber-400" />
                             </div>
                           ) : actions.isVotedLess ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-950/90 border border-rose-500/50 text-[10px] font-bold text-rose-300">
-                              <ThumbsDown className="w-3 h-3 text-rose-400" />
-                              <span>Less like this</span>
+                            <div className="flex items-center px-2 py-1 rounded-full bg-rose-950/90 border border-rose-500/50" title="Less like this">
+                              <ThumbsDown className="w-3.5 h-3.5 text-rose-400" />
                             </div>
                           ) : actions.isClicked ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-[10px] font-medium text-sky-300">
+                            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300">
                               <span>Opened</span>
                             </div>
                           ) : (
-                            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-[10px] font-medium text-slate-400">
+                            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-medium text-slate-400">
                               <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
                               <span>New</span>
                             </div>
@@ -2771,107 +5159,87 @@ export default function App() {
                         </div>
                       </div>
 
+                      {!item.bannerImage && (
+                        <div className={`mx-3.5 rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 flex items-center justify-center ${compactCards ? 'h-24' : 'h-32'}`}>
+                          <div className="text-center px-4">
+                            <CuratorMark className="w-7 h-7 mx-auto mb-1.5 opacity-80" />
+                            <div className="text-xs uppercase font-bold tracking-wider text-amber-400/90">{displayFolder(item.folder)}</div>
+                          </div>
+                        </div>
+                      )}
                       {item.bannerImage && (
-                        <div className="relative mx-3.5 rounded-2xl overflow-hidden h-56 md:h-64 shadow-lg border border-slate-700/60">
+                        <div className={`relative mx-3.5 rounded-2xl overflow-hidden ${compactCards ? 'h-40 md:h-48' : 'h-56 md:h-64'} shadow-lg border border-slate-700/60`}>
                           <img 
                             src={item.bannerImage} 
                             alt={item.title} 
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                           />
-                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/45 to-transparent" />
+                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
                           
                           <div className="absolute bottom-4 right-4 z-10">
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                              className={`p-2.5 rounded-xl backdrop-blur-md border transition shadow-lg ${
+                              className={`p-2.5 min-w-11 min-h-11 flex items-center justify-center rounded-xl backdrop-blur-md border transition shadow-lg ${
                                 savedIds.includes(item.id)
                                   ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
                                   : 'bg-slate-950/70 border-slate-700/60 text-slate-200 hover:text-amber-400 hover:bg-slate-900/90'
                               }`}
-                              title="Save for later"
+                              title={savedIds.includes(item.id) ? 'Remove from saved' : 'Save for later'}
+                              aria-label={savedIds.includes(item.id) ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
                             >
                               <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
                             </button>
                           </div>
-
-                          <div className="absolute bottom-4 left-4 right-16">
-                            <div className="text-[10px] uppercase font-bold tracking-wider text-amber-400/90 mb-1">
-                              {item.folder}
-                            </div>
-                            <h3 className="text-lg md:text-xl font-bold tracking-tight text-white leading-snug drop-shadow-sm group-hover:text-amber-300 transition-colors">
-                              {item.title}
-                            </h3>
-                            <p className="text-xs text-slate-300 mt-1 line-clamp-1">
-                              {item.summary}
-                            </p>
-                          </div>
                         </div>
                       )}
 
-                      <div className="p-5 space-y-4 pt-4">
-                        {!item.bannerImage && (
-                          <div>
-                            <h3 className="text-xl font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors">
-                              {item.title}
-                            </h3>
-                            <p className="text-sm text-slate-400 mt-1 line-clamp-2">
-                              {item.summary}
-                            </p>
-                          </div>
-                        )}
+                      <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
+                        <div>
+                          {item.bannerImage && (
+                            <div className="text-xs uppercase font-bold tracking-wider text-amber-400/90 mb-1">
+                              {displayFolder(item.folder)}
+                            </div>
+                          )}
+                          <h3 className={`${compactCards ? 'text-lg' : 'text-xl'} font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors`}>
+                            {item.title}
+                          </h3>
+                          <p className={`${compactCards ? 'text-xs line-clamp-1' : 'text-sm line-clamp-2'} text-slate-400 mt-1`}>
+                            {item.summary}
+                          </p>
+                        </div>
 
-                        <div className="pt-2 flex items-center justify-between border-t border-slate-800/80">
-                          {/* Read More Link directly to original source */}
-                          <a
-                            href={item.url || '#'}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                              showToast(`Opening source on ${item.source}`);
-                            }}
-                            className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-amber-300 transition-colors"
-                            title={`Read more on ${item.source} (opens external browser or app)`}
-                          >
-                            <span>Read original on {item.source}</span>
-                            <ExternalLink className="w-3 h-3 text-slate-500" />
-                          </a>
-
-                          {/* Curation actions: More, Less (icon-only, reading preferences) */}
-                          <div className="flex items-center gap-1.5">
-                            <button 
+                        <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
                               type="button"
-                              onClick={(e) => { e.stopPropagation(); handleMore(item); }}
-                              className={`p-2 rounded-xl border transition ${
-                                actions.isVotedMore
-                                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
-                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-amber-300 hover:border-amber-500/40'
-                              }`}
-                              title={actions.isVotedMore ? `More on ${item.folder || 'this topic'} (voted)` : `More on ${item.folder || 'this topic'}`}
-                              aria-label={`More on ${item.folder || 'this topic'}`}
+                              onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                              className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-amber-300 hover:text-amber-200 transition"
                             >
-                              <ThumbsUp className={`w-3.5 h-3.5 ${
-                                actions.isVotedMore ? 'fill-amber-400/30' : ''
-                              }`} />
+                              Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                             </button>
-                            <button 
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); handleLess(item); }}
-                              className={`p-2 rounded-xl border transition ${
-                                actions.isVotedLess
-                                  ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
-                                  : 'bg-slate-950/80 border-slate-700/80 text-slate-400 hover:text-rose-300 hover:border-rose-500/40'
-                              }`}
-                              title={actions.isVotedLess ? `Fewer on ${item.folder || 'this topic'} (voted)` : `Fewer on ${item.folder || 'this topic'}`}
-                              aria-label={`Fewer on ${item.folder || 'this topic'}`}
+                            <a
+                              href={item.url || '#'}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
+                                showToast(`Opening source on ${item.source}`);
+                              }}
+                              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
+                              title={`Read original on ${item.source} (opens external browser or app)`}
+                              aria-label={`Read original on ${item.source}`}
                             >
-                              <ThumbsDown className={`w-3.5 h-3.5 ${
-                                actions.isVotedLess ? 'fill-rose-400/30' : ''
-                              }`} />
-                            </button>
+                              <ExternalLink className="w-4 h-4" />
+                            </a>
                           </div>
+                          <FeedbackActions
+                            isMore={actions.isVotedMore}
+                            isLess={actions.isVotedLess}
+                            onMore={() => handleMore(item)}
+                            onLess={() => handleLess(item)}
+                          />
                         </div>
                       </div>
                     </article>
@@ -2885,21 +5253,21 @@ export default function App() {
 
 
       {/* Bottom Dock Navigation */}
-      <nav className="fixed bottom-3 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-lg bg-slate-900/90 backdrop-blur-xl border border-slate-800/80 rounded-2xl py-2.5 px-3 shadow-2xl">
+      <nav className="fixed safe-dock left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-lg bg-slate-900/90 backdrop-blur-xl border border-slate-800/80 rounded-2xl py-2.5 px-3 shadow-2xl">
         <div className="flex items-center justify-around">
           <button 
             type="button"
             onClick={() => setActiveTab('today')}
-            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'today' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'today' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Home className="w-5 h-5" />
-            <span className="text-[10px] tracking-tight">Today</span>
+            <span className="text-xs tracking-tight">Today</span>
           </button>
 
           <button 
             type="button"
             onClick={() => setActiveTab('feeds')}
-            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'feeds' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'feeds' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <div className="relative">
               <Rss className="w-5 h-5" />
@@ -2907,13 +5275,13 @@ export default function App() {
                 <div className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-orange-500 border border-slate-950" />
               )}
             </div>
-            <span className="text-[10px] tracking-tight">Feeds</span>
+            <span className="text-xs tracking-tight">Feeds</span>
           </button>
 
           <button 
             type="button"
             onClick={() => setActiveTab('saved')}
-            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'saved' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'saved' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <div className="relative">
               <Bookmark className="w-5 h-5" />
@@ -2921,19 +5289,82 @@ export default function App() {
                 <div className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-orange-500 border border-slate-950" />
               )}
             </div>
-            <span className="text-[10px] tracking-tight">Saved</span>
+            <span className="text-xs tracking-tight">Saved</span>
           </button>
 
           <button 
             type="button"
             onClick={() => setActiveTab('sources')}
-            className={`flex flex-col items-center gap-1 relative transition ${activeTab === 'sources' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'sources' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Compass className="w-5 h-5" />
-            <span className="text-[10px] tracking-tight">Sources</span>
+            <span className="text-xs tracking-tight">Sources</span>
           </button>
+
         </div>
       </nav>
+
+      {showStartupApiPrompt && createPortal(
+        <div className="fixed inset-0 z-[110] bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 safe-modal">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="startup-api-alert-title"
+            aria-describedby="startup-api-alert-message"
+            className="w-full max-w-md rounded-3xl bg-slate-900 border border-amber-500/30 p-5 shadow-2xl space-y-4"
+          >
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <h2 id="startup-api-alert-title" className="text-base font-semibold text-slate-100">Service check needs attention</h2>
+                <p id="startup-api-alert-message" className="text-sm text-amber-200 mt-1 leading-relaxed">{startupApiMessage}</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Settings are open. If a provider failed, update its URL, model, or key. If Curator’s server is unreachable, retry when your connection is back. You can also ignore this warning for now.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowStartupApiPrompt(false);
+                  setActiveTab('settings');
+                  setShowSetupWizard(false);
+                  window.setTimeout(() => {
+                    document.getElementById('provider-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }, 150);
+                }}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-semibold hover:bg-amber-400 transition"
+              >
+                Update settings
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowStartupApiPrompt(false)}
+                className="px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs font-medium text-slate-300 hover:text-slate-100 transition"
+              >
+                Ignore
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Weekly Reading Review Modal */}
+      <WeeklyReviewModal
+        isOpen={showWeeklyReviewModal}
+        onClose={() => setShowWeeklyReviewModal(false)}
+        readingItems={weeklyHistory}
+        onOpenArticle={(id) => {
+          const item = digest.find(d => d.id === id) || savedArticles.find(s => s.id === id) || feedStreamArticles.find(f => f.id === id);
+          if (item) setSelectedArticle(item);
+        }}
+        onOpenSettings={() => {
+          setActiveTab('settings');
+        }}
+        showToast={showToast}
+      />
 
     </div>
   );
