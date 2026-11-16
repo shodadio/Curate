@@ -1264,6 +1264,8 @@ async function startServer() {
           ? String.fromCodePoint(code)
           : entity;
       })
+      .replace(/&bull;/gi, '•')
+      .replace(/&middot;/gi, '·')
       .replace(/&nbsp;/gi, ' ')
       .replace(/&mdash;/gi, '—')
       .replace(/&ndash;/gi, '–')

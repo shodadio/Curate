@@ -17,8 +17,8 @@
 - [Editorial Philosophy](#editorial-philosophy)
 - [Key Features](#key-features)
   - [1. Daily Curated Digest](#1-daily-curated-digest)
-  - [2. "Out of the Bubble" Serendipity](#2-out-of-the-bubble-serendipity)
-  - [3. Signal Tuning with Undo / Redo Safeguards](#3-signal-tuning-with-undo--redo-safeguards)
+  - [2. Deliberate Stretch ("Out of the Bubble" picks)](#2-deliberate-stretch-out-of-the-bubble-picks)
+  - [3. Signal Tuning with Undo Safeguards](#3-signal-tuning-with-undo-safeguards)
   - [4. Google Search RSS Discovery & Feed Synthesis](#4-google-search-rss-discovery--feed-synthesis)
   - [5. Outbound SSRF Hardening & Network Security](#5-outbound-ssrf-hardening--network-security)
   - [6. High-Signal Deterministic Fallback Engine](#6-high-signal-deterministic-fallback-engine)
@@ -52,7 +52,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 **Curator** reintroduces the classic ritual of the **finite morning edition**:
 - **Finite editions**: Choose between 3, 5, 8, 12, or 15 high-signal pieces each morning. When you reach the bottom, you are done for the day.
 - **Editorial signal over clickbait**: Evaluates articles based on analytical depth, evergreen value, and original reporting rather than sensationalism.
-- **Serendipity by design**: Includes deliberate "Out of the Bubble" selections from history, philosophy, design, and economics to prevent intellectual echo chambers.
+- **Deliberate stretch by design**: The digest includes "Out of the Bubble" selections from history, philosophy, design, and economics — tuned by the **Serendipity** slider in the Today controls — to prevent intellectual echo chambers.
 - **Forgiving user controls**: Any negative preference signal (such as clicking "Fewer like this") provides an immediate inline undo confirmation and interactive toast fallback, ensuring accidental taps never purge content permanently.
 
 ---
@@ -64,18 +64,19 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Dynamic Summaries**: Automatically generates concise, informative executive summaries and reading notes.
 - **Editorial Ranking**: Scores articles on analytical density, source reputation, topic diversity, and personal reading history.
 
-### 2. "Out of the Bubble" Serendipity
+### 2. Deliberate Stretch ("Out of the Bubble" picks)
+- The Today controls label the dial **Serendipity**, and the digest section carrying these picks is titled **Deliberate Stretch — Outside Your Usual Bubble**.
 - Deliberately identifies and highlights articles outside your standard reading habits.
 - Pulls from foundational domains such as long-term thinking, political philosophy, urbanism, and deep history to challenge assumptions and spark creative cross-pollination.
 
-### 3. Signal Tuning with Undo / Redo Safeguards
+### 3. Signal Tuning with Undo Safeguards
 - **Streamlined Icon-Only Controls**: Clean, minimalist thumbs-up and thumbs-down icon buttons on cards keep the layout uncluttered without extraneous "More" or "Less" text labels.
 - **More Like This**: Boosts weights for related topics and source categories (amber highlight on activation).
 - **Fewer Like This**: Deprioritizes recurring themes without abrupt card deletion (rose highlight on activation).
-- **Undo / Redo Fallback**:
-  - When clicking "Fewer", the card morphs into an inline placeholder with `[ ⟲ Undo / Redo ]` and a dismiss option.
-  - An interactive toast notification persists for 7 seconds with a direct one-click `Undo / Redo` action.
-  - Inside the reader modal, clicking "Fewer" preserves your place and displays a reversible `✓ Fewer like this (Undo)` state without closing the article.
+- **Undo fallback**:
+  - When clicking "Fewer", the card morphs into an inline placeholder with an **Undo** button and a dismiss option.
+  - A toast notification appears with a direct one-click **Undo** action.
+  - Inside the reader modal, clicking "Fewer" preserves your place and shows an **Undo** button without closing the article.
 
 ### 4. Google Search RSS Discovery & Feed Synthesis
 - **Search Authors & Outlets**: Enter the name of any publication, thinker, or newsletter (e.g., *Stratechery*, *Marginal Revolution*, *Dan Luu*).
@@ -109,7 +110,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Scroll Depth Tracker**: Automatically tracks reading progress and marks articles as finished once the user scrolls past 85% depth.
 
 ### 9. Mobile & iOS Safari Viewport Hardening
-- **Zero Horizontal Bleed**: `overflow-x: hidden`, `width: 100%`, and `background-color: #020617` enforced across `html`, `body`, `#root`, and layout wrappers.
+- **Zero Horizontal Bleed**: `overflow-x: clip`, `width: 100%`, and `background-color: #020617` enforced across `html`, `body`, `#root`, and layout wrappers. Clipping avoids creating an overflow scroll container that can interrupt the sticky header.
 - **Safe Area Insets**: Uses `viewport-fit=cover` and responsive padding (`px-4 sm:px-6`) to prevent notch clipping or cut-off margins on mobile viewports.
 - **Floating Bottom Dock**: Floating navigation dock centered using `left-1/2 -translate-x-1/2` and clamped to `w-[calc(100%-2rem)] max-w-lg`, preventing horizontal page jitter.
 
@@ -130,7 +131,7 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 │  - Inter (self-hosted, sole family)                                │
 │  - Top Header Navigation with Refresh & Settings Controls       │
 │  - Bottom Dock Navigation (Today, Feeds, Saved, Sources)        │
-│  - Signal Tuning with Undo/Redo Fallbacks                       │
+│  - Signal Tuning with Undo Fallbacks                            │
 │  - Sentence-Queued Read Aloud (voice + rate)                    │
 │  - LocalStorage State Manager (Bookmarks, Stats, Signal Weights)│
 └────────────────────────────────┬────────────────────────────────┘
@@ -169,7 +170,7 @@ Ranking happens in three layers, and all three run without any API key:
 3. **Optional provider embeddings** — when an OpenAI-compatible or Gemini embeddings endpoint is configured, provider similarity is blended 65/35 with the built-in scores. Provider failures fall back to the built-in engine rather than silently disabling semantic ranking.
 
 ### Setup and calibration
-A cold profile has nothing to rank against, so the app ships a three-step setup flow (shown on first run when no votes exist, and re-runnable from **Settings → Semantic Reading Profile → Re-run calibration**):
+A cold profile has nothing to rank against, so the app ships a three-step setup flow (shown on first run when no votes exist, and re-runnable from **Settings → Your reading preferences → Teach Curator with articles**):
 
 1. **Sources** — shows the feed count and scans them.
 2. **Calibration** — presents up to 12 recent articles from across the library (max 2 per source) with *More like this* / *Not for me*. Each tap is written to the browser-local profile exactly like a digest vote.

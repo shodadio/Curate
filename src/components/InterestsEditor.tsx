@@ -55,9 +55,9 @@ function InterestRow({
       <div className="flex items-baseline justify-between gap-2">
         <div>
           <h4 className="text-xs font-semibold text-slate-200">{title}</h4>
-          <p className="text-[11px] text-slate-500 mt-0.5">{summary}</p>
+          <p className="text-xs text-slate-500 mt-0.5">{summary}</p>
         </div>
-        <span className="text-[10px] font-mono text-slate-600 shrink-0">
+        <span className="text-xs font-mono text-slate-400 shrink-0">
           {items.length}/{MAX_INTERESTS}
         </span>
       </div>
@@ -69,7 +69,7 @@ function InterestRow({
               key={label}
               type="button"
               onClick={() => onChange(removeInterest(value, group, label))}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-2 rounded-xl border text-[11px] font-medium transition cursor-pointer ${CHIP_TONE[group]}`}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-2 rounded-xl border text-xs font-medium transition cursor-pointer ${CHIP_TONE[group]}`}
               title={`Remove ${label}`}
             >
               <span>{label}</span>
@@ -93,7 +93,7 @@ function InterestRow({
           placeholder={hint}
           disabled={atCap}
           maxLength={40}
-          className="flex-1 min-w-0 rounded-xl bg-slate-950 border border-slate-800 px-3 py-2.5 text-xs text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-amber-500 disabled:opacity-50"
+          className="flex-1 min-w-0 rounded-xl bg-slate-950 border border-slate-800 px-3 py-2.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500 disabled:opacity-50"
         />
         <button
           type="button"
@@ -108,13 +108,13 @@ function InterestRow({
 
       {unusedSuggestions.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] text-slate-600">From your folders:</span>
+          <span className="text-xs text-slate-400">From your folders:</span>
           {unusedSuggestions.map(label => (
             <button
               key={label}
               type="button"
               onClick={() => onChange(addInterest(value, group, label))}
-              className="text-[10px] px-2 py-1.5 rounded-lg text-slate-400 border border-slate-800 hover:text-slate-200 hover:border-slate-700 transition"
+              className="text-xs px-2 py-1.5 rounded-lg text-slate-400 border border-slate-800 hover:text-slate-200 hover:border-slate-700 transition"
             >
               {label}
             </button>

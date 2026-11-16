@@ -22,7 +22,7 @@ export function FeedbackActions({ isMore, isLess, onMore, onLess }: FeedbackActi
         type="button"
         onClick={event => { event.stopPropagation(); onMore(); }}
         className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-xl border transition ${moreClasses}`}
-        title={isMore ? 'More like this (selected)' : 'Show me more like this'}
+        title={isMore ? 'More like this, selected' : 'More like this'}
         aria-label={isMore ? 'More like this, selected' : 'More like this'}
         aria-pressed={isMore}
       >
@@ -32,7 +32,7 @@ export function FeedbackActions({ isMore, isLess, onMore, onLess }: FeedbackActi
         type="button"
         onClick={event => { event.stopPropagation(); onLess(); }}
         className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-xl border transition ${lessClasses}`}
-        title={isLess ? 'Less like this (selected)' : 'Show me fewer like this'}
+        title={isLess ? 'Less like this, selected' : 'Less like this'}
         aria-label={isLess ? 'Less like this, selected' : 'Less like this'}
         aria-pressed={isLess}
       >

@@ -156,7 +156,7 @@ export function WeeklyReviewModal({
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-serif text-sm tracking-[0.2em] font-semibold text-amber-400">THE CURATOR</span>
-                <span className="text-[10px] uppercase font-mono tracking-wider px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                <span className="text-xs uppercase font-mono tracking-wider px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
                   Weekly Review
                 </span>
               </div>
@@ -189,7 +189,7 @@ export function WeeklyReviewModal({
               <div className="text-2xl font-bold font-serif text-slate-100">
                 {totalMinutes} <span className="text-xs font-sans text-slate-400 font-normal">mins</span>
               </div>
-              <div className={`text-[11px] mt-1 flex items-center gap-1 ${
+              <div className={`text-xs mt-1 flex items-center gap-1 ${
                 weekDeltaPct === null ? 'text-slate-500' : weekDeltaPct >= 0 ? 'text-emerald-400' : 'text-rose-400'
               }`}>
                 <TrendingUp className="w-3 h-3" />
@@ -209,7 +209,7 @@ export function WeeklyReviewModal({
               <div className="text-2xl font-bold font-serif text-slate-100">
                 {totalArticles} <span className="text-xs font-sans text-slate-400 font-normal">items</span>
               </div>
-              <div className="text-[11px] text-slate-400 mt-1">
+              <div className="text-xs text-slate-400 mt-1">
                 {avgMinutesPerArticle} min average per article
               </div>
             </div>
@@ -222,7 +222,7 @@ export function WeeklyReviewModal({
               <div className="text-base sm:text-lg font-bold font-serif text-slate-100 truncate">
                 {topTopic || 'No reading yet'}
               </div>
-              <div className="text-[11px] text-amber-300/80 mt-1">
+              <div className="text-xs text-amber-300/80 mt-1">
                 {totalMinutes > 0 ? `${sortedTopics[0]?.pct ?? 0}% of reading time` : 'Nothing recorded yet'}
               </div>
             </div>
@@ -235,7 +235,7 @@ export function WeeklyReviewModal({
               <div className="text-2xl font-bold font-serif text-slate-100">
                 {stretchCount} <span className="text-xs font-sans text-slate-400 font-normal">stretch</span>
               </div>
-              <div className="text-[11px] text-slate-400 mt-1">
+              <div className="text-xs text-slate-400 mt-1">
                 Outside routine
               </div>
             </div>
@@ -248,7 +248,7 @@ export function WeeklyReviewModal({
                 <BarChart3 className="w-4 h-4 text-amber-400" />
                 <span>Daily Reading Rhythm (Minutes per Day)</span>
               </div>
-              <span className="text-slate-400 text-[11px]">Past 7 Days</span>
+              <span className="text-slate-400 text-xs">Past 7 Days</span>
             </div>
 
             <div className="pt-4 pb-1 grid grid-cols-7 gap-2 items-end h-32">
@@ -257,7 +257,7 @@ export function WeeklyReviewModal({
                 const isPeak = maxDayMins > 0 && d.minutes === maxDayMins;
                 return (
                   <div key={d.day} className="flex flex-col items-center gap-1.5 h-full justify-end group">
-                    <span className="text-[10px] font-mono text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <span className="text-xs font-mono text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity">
                       {d.minutes}m
                     </span>
                     <div 
@@ -268,7 +268,7 @@ export function WeeklyReviewModal({
                       }`}
                       style={{ height: `${heightPct}%` }}
                     />
-                    <span className={`text-[11px] font-medium ${isPeak ? 'text-amber-300 font-semibold' : 'text-slate-400'}`}>
+                    <span className={`text-xs font-medium ${isPeak ? 'text-amber-300 font-semibold' : 'text-slate-400'}`}>
                       {d.day}
                     </span>
                   </div>
@@ -330,7 +330,7 @@ export function WeeklyReviewModal({
                     </div>
                     <div className="flex items-center gap-2 text-slate-400 shrink-0">
                       <span className="font-mono text-slate-300 font-semibold">{top.minutes} min</span>
-                      <span className="text-[11px] text-slate-500">({top.pct}%)</span>
+                      <span className="text-xs text-slate-500">({top.pct}%)</span>
                     </div>
                   </div>
                 );
@@ -349,7 +349,7 @@ export function WeeklyReviewModal({
                 >
                   <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                   <span className="font-medium text-slate-200">{s.source}</span>
-                  <span className="text-slate-500 font-mono text-[11px]">· {s.minutes}m</span>
+                  <span className="text-slate-500 font-mono text-xs">· {s.minutes}m</span>
                 </div>
               ))}
             </div>
@@ -376,14 +376,14 @@ export function WeeklyReviewModal({
                     <h4 className="font-medium text-slate-200 group-hover:text-amber-300 transition-colors line-clamp-1">
                       {item.title}
                     </h4>
-                    <div className="flex items-center gap-2 text-slate-400 text-[11px] mt-0.5">
+                    <div className="flex items-center gap-2 text-slate-400 text-xs mt-0.5">
                       <span className="text-slate-300">{item.source}</span>
                       <span>·</span>
                       <span className="text-amber-400/90">{displayFolder(item.folder)}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <span className="font-mono text-slate-400 text-[11px] bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                    <span className="font-mono text-slate-400 text-xs bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
                       {item.readTime || `${item.minutesSpent ?? 0} min read`}
                     </span>
                     <Check className="w-4 h-4 text-emerald-400" />
@@ -411,8 +411,8 @@ export function WeeklyReviewModal({
           </div>
         </div>
 
-        {/* Modal Footer Actions */}
-        <div className="sticky bottom-0 z-10 p-4 sm:p-6 bg-slate-950 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
+        {/* Modal Footer Actions — static at the end, so it never covers the content above it */}
+        <div className="p-4 sm:p-6 bg-slate-950 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
           <button 
             type="button"
             onClick={handleShare}

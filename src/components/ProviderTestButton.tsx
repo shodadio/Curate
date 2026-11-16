@@ -75,14 +75,14 @@ export function ProviderTestButton({
       </button>
 
       {status.state === 'ok' && (
-        <p className="text-[11px] text-emerald-400 flex items-start gap-1.5">
+        <p className="text-xs text-emerald-400 flex items-start gap-1.5">
           <Check className="w-3 h-3 mt-0.5 shrink-0" />
           <span>{status.message}</span>
         </p>
       )}
 
       {status.state === 'failed' && (
-        <p className="text-[11px] text-rose-400 flex items-start gap-1.5">
+        <p className="text-xs text-rose-400 flex items-start gap-1.5">
           <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />
           <span>{status.message}</span>
         </p>
