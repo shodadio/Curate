@@ -48,6 +48,14 @@ interface SourceItem {
   avatar?: string;
 }
 
+// Digest size choices for today's issue, expressed as a range of items.
+// The count is the top of the range, so "0-10" shows the 10 best items of the day.
+const DIGEST_SIZE_RANGES = [
+  { label: '0-10', count: 10 },
+  { label: '10-20', count: 20 },
+  { label: '20-30', count: 30 },
+] as const;
+
 export default function App() {
   // Navigation & View state
   const [activeTab, setActiveTab] = useState<'today' | 'saved' | 'sources' | 'settings' | 'feeds'>('today');
@@ -167,7 +175,10 @@ export default function App() {
   });
   const [itemCount, setItemCount] = useState<number>(() => {
     const saved = localStorage.getItem('curator_item_count');
-    return saved ? Number(saved) : 6;
+    const parsed = saved ? Number(saved) : DIGEST_SIZE_RANGES[0].count;
+    return DIGEST_SIZE_RANGES.some(range => range.count === parsed)
+      ? parsed
+      : DIGEST_SIZE_RANGES[0].count;
   });
 
   const [loadingDigest, setLoadingDigest] = useState<boolean>(false);
@@ -1279,16 +1290,22 @@ export default function App() {
                 <p className="text-xs text-slate-400 mt-0.5">Curated at 7:00 AM · {digest.length} items worth your time</p>
               </div>
               <div className="flex items-center gap-2 text-xs text-slate-400">
-                <span>Show:</span>
-                {[5, 6, 8, 10].map(num => (
-                  <button
-                    key={num}
-                    onClick={() => setItemCount(num)}
-                    className={`px-2.5 py-1 rounded-lg font-medium transition ${itemCount === num ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'}`}
-                  >
-                    {num}
-                  </button>
-                ))}
+                <label htmlFor="digest-size-range">Show:</label>
+                <select
+                  id="digest-size-range"
+                  value={itemCount}
+                  onChange={(e) => setItemCount(Number(e.target.value))}
+                  className="bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-200 text-xs font-medium rounded-lg pl-2.5 pr-6 py-1.5 transition focus:outline-none focus:border-amber-500/60 cursor-pointer"
+                  style={{ colorScheme: 'dark' }}
+                  title="Choose how many items today's digest shows"
+                  aria-label="How many items today's digest shows"
+                >
+                  {DIGEST_SIZE_RANGES.map(range => (
+                    <option key={range.label} value={range.count}>
+                      {range.label}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
