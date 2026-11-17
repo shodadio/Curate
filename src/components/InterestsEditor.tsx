@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import { Plus, Sparkles, X } from 'lucide-react';
+import { Plus, X } from 'lucide-react';
 import {
   MAX_INTERESTS,
-  TAXONOMY_NOTE,
   addInterest,
   removeInterest,
   type InterestGroup,
@@ -53,14 +52,9 @@ function InterestRow({
 
   return (
     <div className="space-y-2.5">
-      <div className="flex items-baseline justify-between gap-2">
-        <div>
-          <h4 className="text-xs font-semibold text-slate-200">{title}</h4>
-          <p className="text-xs text-slate-400 mt-0.5">{summary}</p>
-        </div>
-        <span className="text-xs font-mono text-slate-400 shrink-0">
-          {items.length}/{MAX_INTERESTS}
-        </span>
+      <div>
+        <h4 className="text-xs font-semibold text-slate-200">{title}</h4>
+        <p className="text-xs text-slate-400 mt-0.5">{summary}</p>
       </div>
 
       {items.length > 0 && (
@@ -128,21 +122,7 @@ function InterestRow({
 
 export function InterestsEditor({ value, suggestions, onChange }: InterestsEditorProps) {
   return (
-    <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-5">
-      <div className="flex items-start gap-3">
-        <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0">
-          <Sparkles className="w-4 h-4 text-amber-400" />
-        </div>
-        <div>
-          <h3 className="text-sm font-semibold text-slate-200">Interests</h3>
-          <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
-            What you want more or less of. {TAXONOMY_NOTE} A chip matches its exact words in a title,
-            summary or folder, so “AI” and “Artificial Intelligence” are different matches. Serendipity
-            still pulls in the unexpected.
-          </p>
-        </div>
-      </div>
-
+    <div className="space-y-5">
       <InterestRow
         group="more"
         title="More of this"

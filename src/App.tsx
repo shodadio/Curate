@@ -14,6 +14,7 @@ import { InterestsEditor } from './components/InterestsEditor';
 import { ProviderTestButton } from './components/ProviderTestButton';
 import { FeedbackActions } from './components/FeedbackActions';
 import { DigestEmptyState } from './components/DigestEmptyState';
+import { SettingsSection } from './components/SettingsSection';
 import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
 import { safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, type StorageFailure } from './storage';
 import { DEFAULT_FEEDS } from './defaultFeeds';
@@ -4322,59 +4323,55 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
         {/* TAB 4: SETTINGS */}
         {activeTab === 'settings' && (
-          <div className="space-y-8 animate-fade-in">
-            <div className="border-b border-slate-900 pb-4">
+          <div className="space-y-4 animate-fade-in">
+            <div>
               <h2 className="text-xl font-semibold tracking-tight text-slate-100">Settings</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Tune your digest and manage your reading preferences.</p>
             </div>
 
+
             {/* Weekly Reading Activity Summary in Settings */}
-            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
+            <SettingsSection
+              icon={<BarChart3 className="w-4 h-4" />}
+              title="Weekly retrospective"
+              meta={`${totalWeeklyMinutes}m · ${weeklyRecent.length} ${weeklyRecent.length === 1 ? 'article' : 'articles'}`}
+            >
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
-                    <BarChart3 className="w-4 h-4 text-amber-400" />
-                    <span>Weekly Reading Retrospective</span>
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {totalWeeklyMinutes} minutes read across {weeklyRecent.length} articles over the past 7 days.
-                  </p>
-                </div>
+                <span className="text-xs text-slate-400">Past 7 days</span>
                 <button
                   type="button"
                   onClick={() => setShowWeeklyReviewModal(true)}
                   className="px-3.5 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
                 >
-                  <span>Open Full Review</span>
+                  <span>Open full review</span>
                   <ArrowRight className="w-3 h-3" />
                 </button>
               </div>
 
-              <div className="grid grid-cols-3 gap-3 pt-1">
+              <div className="grid grid-cols-3 gap-3">
                 <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center">
-                  <span className="text-xs text-slate-400 block mb-0.5">Time Spent</span>
+                  <span className="text-xs text-slate-400 block mb-0.5">Time spent</span>
                   <span className="text-base font-bold font-serif text-slate-100">{totalWeeklyMinutes}m</span>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center">
-                  <span className="text-xs text-slate-400 block mb-0.5">Completed</span>
+                  <span className="text-xs text-slate-400 block mb-0.5">Finished</span>
                   <span className="text-base font-bold font-serif text-slate-100">{weeklyRecent.length}</span>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center truncate">
-                  <span className="text-xs text-slate-400 block mb-0.5">Lead Focus</span>
+                  <span className="text-xs text-slate-400 block mb-0.5">Focus</span>
                   <span className="text-xs font-bold text-amber-300 block leading-tight whitespace-normal">{topWeeklyTopic}</span>
                 </div>
               </div>
-            </div>
+            </SettingsSection>
 
             {/* Server-side request tally: plumbing, and only shown with the debug flag on */}
             {showDiagnostics && (
-            <details className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
+            <details className="group p-5 rounded-3xl border border-slate-700/70 bg-slate-900/40 space-y-4 open:border-slate-600/80 open:bg-slate-900/60">
               <summary className="flex items-start justify-between gap-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
                 <div>
                   <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
                     <Activity className="w-4 h-4 text-amber-400" />
                     <span>Server activity</span>
-                    <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                    <ChevronDown className="w-3.5 h-3.5 text-slate-400 transition-transform group-open:rotate-180" />
                   </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
                     Every request Curator has made, counted on the server. Kept for {usageStats?.retentionDays ?? 120} days. Open for the tally and cost estimate.
@@ -4438,18 +4435,11 @@ Search for writers, publications, or topics. Curator checks whether each result 
             )}
 
             {/* Read aloud: the onboard voice and pace the reader speaks with */}
-            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
-                  <Volume2 className="w-4 h-4 text-amber-400" />
-                  <span>Read aloud</span>
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  The reader speaks with a voice installed on this device. Add or download more in
-                  Settings › Accessibility › Spoken Content › Voices, then start Read aloud once.
-                </p>
-              </div>
-
+            <SettingsSection
+              icon={<Volume2 className="w-4 h-4" />}
+              title="Read aloud"
+              meta={`${speechRate.toFixed(2)}×`}
+            >
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1.5">Voice</label>
                 <select
@@ -4473,12 +4463,8 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 </select>
                 <p className="text-xs text-slate-400 mt-1">
                   {speechVoiceOptions.length > 0
-                    ? `${speechVoiceOptions.length} ${speechVoiceOptions.length === 1 ? 'voice' : 'voices'} available on this device. Enhanced and Premium voices sound markedly better than the compact ones.`
-                    : 'This device has not reported its voices yet — start Read aloud once and they appear here.'}
-                </p>
-                <p className="text-xs text-slate-400 mt-1">
-                  Jamie (Premium) is the default. If this browser does not expose that voice, Read aloud
-                  leaves voice selection to the device and its Spoken Content settings.
+                    ? `${speechVoiceOptions.length} ${speechVoiceOptions.length === 1 ? 'voice' : 'voices'} on this device`
+                    : 'Start Read aloud once to load this device’s voices.'}
                 </p>
               </div>
 
@@ -4499,7 +4485,6 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 />
                 <div className="flex justify-between text-xs text-slate-400">
                   <span>Slower</span>
-                  <span>Calm default {SPEECH_RATE_DEFAULT.toFixed(2)}×</span>
                   <span>Faster</span>
                 </div>
               </div>
@@ -4511,21 +4496,15 @@ Search for writers, publications, or topics. Curator checks whether each result 
               >
                 Hear this voice
               </button>
-            </div>
+            </SettingsSection>
 
             {/* Provider-configurable AI services */}
-            <details id="provider-settings" className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-5 scroll-mt-6">
-              <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-                <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
-                  <span>Connect an AI service (optional)</span>
-                  <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Curator writes and ranks with its built-in engine. Connect a provider only if you want its
-                  writing, its deeper matching, or both. Everything below is advanced and optional.
-                </p>
-              </summary>
-
+            <SettingsSection
+              id="provider-settings"
+              icon={<Sparkles className="w-4 h-4" />}
+              title="Connect an AI service"
+              meta="Optional"
+            >
               <div
                 role={startupApiStatus === 'issue' ? 'alert' : 'status'}
                 aria-live={startupApiStatus === 'issue' ? 'assertive' : 'polite'}
@@ -4554,62 +4533,51 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   </button>
                 </div>
                 <p>{startupApiMessage}</p>
-                <p className="text-xs opacity-75">Startup checks send a minimal request only to configured external providers; provider billing may apply. Built-in services need no external API key.</p>
+                <p className="text-xs opacity-75">A check sends one small request to your provider and may incur a charge.</p>
               </div>
 
-              {(() => {
-                const chatKey = customApiKey.trim();
-                const usesServerGemini = aiProvider === 'gemini' && serverGeminiAvailable;
-                const hasChatKey = Boolean(chatKey) || usesServerGemini;
-                const providerConfigured = aiProvider !== 'openai-compatible' || Boolean(aiBaseUrl.trim() && aiModel.trim());
-                const ready = aiProvider !== 'deterministic' && hasChatKey && providerConfigured;
-                const masked = chatKey ? `••••${chatKey.slice(-4)}` : '';
+              {/* Digest writing: the provider that writes the digest copy */}
+              <div className="space-y-3 rounded-2xl border border-slate-700/60 bg-slate-950/40 p-4">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Digest writing</h4>
 
-                const embeddingKey = embeddingApiKey.trim() || (embeddingKeyMatchesChatProvider ? chatKey : '');
-                const embeddingReady = embeddingProvider !== 'none' &&
-                  Boolean(embeddingKey || (embeddingProvider === 'gemini' && serverGeminiAvailable));
+                {(() => {
+                  const chatKey = customApiKey.trim();
+                  const usesServerGemini = aiProvider === 'gemini' && serverGeminiAvailable;
+                  const hasChatKey = Boolean(chatKey) || usesServerGemini;
+                  const providerConfigured = aiProvider !== 'openai-compatible' || Boolean(aiBaseUrl.trim() && aiModel.trim());
+                  const masked = chatKey ? `••••${chatKey.slice(-4)}` : '';
 
-                let heading = 'API key not active';
-                let detail = 'No key saved — digests and ranking use the built-in engine.';
-                let tone = 'border-amber-500/25 bg-amber-500/10 text-amber-300';
+                  let heading = 'API key not active';
+                  let detail = 'No key saved — digests use the built-in engine.';
+                  let tone = 'border-amber-500/25 bg-amber-500/10 text-amber-300';
 
-                if (aiProvider === 'deterministic') {
-                  heading = 'Built-in engine';
-                  detail = 'No API key in use. Nothing is sent to an external service.';
-                  tone = 'border-slate-800 bg-slate-950/60 text-slate-400';
-                } else if (!hasChatKey) {
-                  heading = 'API key not active';
-                  detail = 'No key saved yet — Curator keeps using the built-in engine until you add one below.';
-                } else if (!providerConfigured) {
-                  heading = 'API key saved, provider incomplete';
-                  detail = `The key (${masked || 'server'}) is stored, but the provider URL and model are missing, so the built-in engine is still doing the work.`;
-                } else {
-                  heading = 'API key active';
-                  detail = usesServerGemini
-                    ? 'Using the server’s GEMINI_API_KEY for digests.'
-                    : `Key saved in this browser (${masked}) and sent only with your own requests.`;
-                  tone = 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300';
-                }
+                  if (aiProvider === 'deterministic') {
+                    heading = 'Built-in engine';
+                    detail = 'No API key in use. Nothing is sent to an external service.';
+                    tone = 'border-slate-800 bg-slate-950/60 text-slate-400';
+                  } else if (!hasChatKey) {
+                    heading = 'API key not active';
+                    detail = 'No key saved yet — the built-in engine keeps writing your digest.';
+                  } else if (!providerConfigured) {
+                    heading = 'API key saved, provider incomplete';
+                    detail = `The key (${masked || 'server'}) is stored, but the provider URL and model are missing.`;
+                  } else {
+                    heading = 'API key active';
+                    detail = usesServerGemini
+                      ? 'Using the server’s GEMINI_API_KEY for digests.'
+                      : `Key saved in this browser (${masked}), sent only with your requests.`;
+                    tone = 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300';
+                  }
 
-                const embeddingLabel = embeddingProvider === 'none'
-                  ? 'Topic matching: built-in (no key needed).'
-                  : embeddingReady
-                    ? `Topic matching: key active${embeddingKey ? ` (••••${embeddingKey.slice(-4)})` : ''}.`
-                    : 'Topic matching: no key yet — built-in matching continues.';
-
-                return (
-                  <div className={`rounded-xl border px-3 py-2 text-xs leading-relaxed space-y-0.5 ${tone}`}>
-                    <div>
-                      <span className="font-semibold">Digest writing: {heading}.</span> {detail}
+                  return (
+                    <div className={`rounded-xl border px-3 py-2 text-xs leading-relaxed ${tone}`}>
+                      <span className="font-semibold">{heading}.</span> {detail}
                     </div>
-                    <div className={embeddingReady ? 'text-emerald-300/90' : undefined}>{embeddingLabel}</div>
-                  </div>
-                );
-              })()}
+                  );
+                })()}
 
-              <div className="space-y-3 pt-1">
                 <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1.5">Digest writing service</label>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">Service</label>
                   <select
                     value={aiProvider}
                     onChange={e => setAiProvider(e.target.value)}
@@ -4632,7 +4600,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       placeholder="https://api.openai.com/v1"
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                     />
-                    <p className="text-xs text-slate-400 mt-1">Use the HTTPS API URL from your provider. OpenAI, OpenRouter, and compatible services are supported.</p>
+                    <p className="text-xs text-slate-400 mt-1">HTTPS API URL from your provider.</p>
                   </div>
                 )}
 
@@ -4657,7 +4625,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         placeholder="Your provider API key"
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                       />
-                      <p className="text-xs text-slate-400 mt-1">Stored in this browser, sent securely to Curator, then forwarded to your chosen provider.</p>
+                      <p className="text-xs text-slate-400 mt-1">Stored in this browser, then forwarded only to your provider.</p>
                     </div>
 
                     <ProviderTestButton
@@ -4671,8 +4639,25 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   </>
                 )}
 
-                <div className="pt-3 border-t border-slate-800">
-                  <label htmlFor="topic-matching-service" className="block text-xs font-medium text-slate-300 mb-1.5">Deeper matching service</label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    generateDigest({ fresh: true });
+                    showToast('Writing service applied — refreshing your digest');
+                  }}
+                  disabled={loadingDigest}
+                  className="w-full px-4 py-2 text-xs font-semibold rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition disabled:opacity-50"
+                >
+                  Apply & refresh digest
+                </button>
+              </div>
+
+              {/* Deeper matching: optional embeddings that sharpen ranking, configured apart */}
+              <div className="space-y-3 rounded-2xl border border-slate-700/60 bg-slate-950/40 p-4">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Deeper matching</h4>
+
+                <div>
+                  <label htmlFor="topic-matching-service" className="block text-xs font-medium text-slate-300 mb-1.5">Service</label>
                   <select
                     id="topic-matching-service"
                     value={embeddingProvider}
@@ -4696,7 +4681,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     </option>
                     <option value="none">Off — use built-in matching</option>
                   </select>
-                  <p className="text-xs text-slate-400 mt-1">Optional: helps match articles by meaning, not just shared words.</p>
+                  <p className="text-xs text-slate-400 mt-1">Matches by meaning, not just shared words.</p>
                   {(() => {
                     const hasEmbeddingKey = Boolean(embeddingApiKey.trim() || (embeddingKeyMatchesChatProvider && customApiKey.trim()));
                     const hasEmbeddingBase = Boolean(embeddingBaseUrl.trim() || (embeddingKeyMatchesChatProvider && aiBaseUrl.trim()));
@@ -4713,7 +4698,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                           ? 'Currently matching with: Built-in engine (no key needed).'
                           : embeddingActive
                             ? `Currently matching with: ${serviceName}.`
-                            : `Currently matching with: Built-in engine — ${serviceName} has no working key yet, so it is not active.`}
+                            : `Currently matching with: Built-in engine — ${serviceName} has no working key yet.`}
                       </p>
                     );
                   })()}
@@ -4767,7 +4752,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       placeholder="Optional — blank reuses the chat key"
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                     />
-                    <p className="text-xs text-slate-400 mt-1">Stored in this browser and sent securely to Curator with matching requests. URLs must use HTTPS.</p>
+                    <p className="text-xs text-slate-400 mt-1">Stored in this browser. HTTPS only.</p>
                   </div>
                 )}
 
@@ -4781,29 +4766,33 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     disabled={loadingDigest}
                   />
                 )}
+
+                {embeddingProvider !== 'none' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      generateDigest({ fresh: true });
+                      showToast('Matching service applied — re-ranking your digest');
+                    }}
+                    disabled={loadingDigest}
+                    className="w-full px-4 py-2 text-xs font-semibold rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition disabled:opacity-50"
+                  >
+                    Apply & re-match
+                  </button>
+                )}
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  generateDigest({ fresh: true });
-                  showToast('Provider settings applied; refreshing your digest');
-                }}
-                disabled={loadingDigest}
-                className="px-4 py-2 text-xs font-medium rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition disabled:opacity-50"
-              >
-                Apply providers & refresh digest
-              </button>
-            </details>
+            </SettingsSection>
 
             {/* Browser-local semantic reading profile */}
-            <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-200">Your reading preferences</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {semanticFeedback.length} of 40 votes saved · {semanticFeedback.filter(item => item.vote === 'like').length} liked · {semanticFeedback.filter(item => item.vote === 'dislike').length} disliked
-                  </p>
-                </div>
+            <SettingsSection
+              icon={<Sliders className="w-4 h-4" />}
+              title="Your reading preferences"
+              meta={`${semanticFeedback.length}/40 votes`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs text-slate-400">
+                  {semanticFeedback.filter(item => item.vote === 'like').length} liked · {semanticFeedback.filter(item => item.vote === 'dislike').length} disliked
+                </p>
                 {(semanticFeedback.length > 0 || signals.moreIds.length > 0 || signals.lessIds.length > 0) && (
                   <button
                     type="button"
@@ -4845,7 +4834,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     ? 'Built-in topic matching is active'
                     : semanticServiceReady
                       ? `Built-in matching + ${embeddingProvider === 'gemini' ? 'Google Gemini' : 'external'} topic matching`
-                      : 'Built-in matching is active · add a service URL and key for richer topic matching'}
+                      : 'Built-in matching · add a service key for richer matching'}
                 </div>
                 {semanticSummary && (
                   <p className="text-xs text-slate-400 mt-2">
@@ -4853,24 +4842,34 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     {semanticSummary.providerVectors > 0
                       ? `${semanticSummary.providerVectors} AI-matched stories`
                       : 'built-in matching only'} ·{' '}
-                    {semanticSummary.deprioritized} recently seen articles down-ranked
+                    {semanticSummary.deprioritized} down-ranked
                   </p>
                 )}
                 <details className="mt-2 text-xs text-slate-400">
                   <summary className="cursor-pointer font-medium text-slate-300">What happens to my data?</summary>
                   <p className="mt-2 leading-relaxed">
-                    Your votes and excerpts are stored in this browser and sent to Curator's server for ranking. Built-in matching does not call an outside AI provider. If you enable external matching, relevant excerpts are also sent to that provider; they are not saved to a database, and cached vectors are temporary.
+                    Votes and excerpts stay in this browser and are sent to Curator's server for ranking. External
+                    matching also sends them to your provider; nothing is stored in a database.
                   </p>
                 </details>
               </div>
-            </div>
+            </SettingsSection>
 
             {/* Declared interests: nudges for the ranking, never a filter */}
-            <InterestsEditor
-              value={interests}
-              suggestions={interestSuggestions}
-              onChange={setInterests}
-            />
+            <SettingsSection
+              icon={<Compass className="w-4 h-4" />}
+              title="Interests"
+              meta={interests.more.length || interests.less.length
+                ? `${interests.more.length} more · ${interests.less.length} less`
+                : 'None yet'}
+            >
+              <InterestsEditor
+                value={interests}
+                suggestions={interestSuggestions}
+                onChange={setInterests}
+              />
+            </SettingsSection>
+
 
           </div>
         )}
