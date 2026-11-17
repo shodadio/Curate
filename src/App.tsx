@@ -2693,6 +2693,8 @@ export default function App() {
   const editionIsToday = digestCuratedAt > 0
     && new Date(digestCuratedAt).toDateString() === new Date().toDateString();
   const editionHeading = digest.length === 0 || editionIsToday ? "Today's Digest" : 'Your last edition';
+  // The settings sheet names the same edition the page is showing, so the two never disagree.
+  const editionSheetTitle = digest.length === 0 || editionIsToday ? 'Today\u2019s edition' : 'Your last edition';
   const editionItems = digest.filter(item => !mutedCards[item.id]);
   const editionMinutes = editionItems.reduce((total, item) => total + (parseInt(item.readTime, 10) || 0), 0);
   const allDigestItemsMuted = digest.length > 0 && mutedDigestItems.length === digest.length;
@@ -5858,7 +5860,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
           >
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h3 id="digest-settings-title" className="text-base font-semibold text-slate-100">Today&rsquo;s edition</h3>
+                <h3 id="digest-settings-title" className="text-base font-semibold text-slate-100">{editionSheetTitle}</h3>
                 <p className="text-xs text-slate-400 mt-0.5">How long it is, and how far it wanders.</p>
               </div>
               <button
