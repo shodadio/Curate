@@ -772,7 +772,16 @@ export default function App() {
   // When the digest on screen was actually curated, so the header can say so honestly.
   const [digestCuratedAt, setDigestCuratedAt] = useState<number>(() => {
     const saved = Number(localStorage.getItem('curator_digest_curated_at'));
-    return Number.isFinite(saved) && saved > 0 ? saved : 0;
+    if (Number.isFinite(saved) && saved > 0) return saved;
+    // Older caches only kept the timestamp inside the payload. Without it a days-old edition
+    // has no age to show and the header would have to guess.
+    try {
+      const cached = JSON.parse(localStorage.getItem('curator_digest_cache') || 'null');
+      const fallback = Number(cached?.curatedAt);
+      return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
+    } catch {
+      return 0;
+    }
   });
   const [itemCount, setItemCount] = useState<number>(() => {
     const saved = localStorage.getItem('curator_item_count');
@@ -2679,6 +2688,11 @@ export default function App() {
   const outOfBubbleDigest = digest.filter(d => d.isOutOfBubble);
   const mutedDigestItems = digest.filter(item => Boolean(mutedCards[item.id]));
   // What the reader can actually read in this edition, for the closing card
+  // The app only builds when it is opened, and a failed build leaves the cached edition on
+  // screen. Once that edition is from an earlier day the heading cannot say "Today's".
+  const editionIsToday = digestCuratedAt > 0
+    && new Date(digestCuratedAt).toDateString() === new Date().toDateString();
+  const editionHeading = digest.length === 0 || editionIsToday ? "Today's Digest" : 'Your last edition';
   const editionItems = digest.filter(item => !mutedCards[item.id]);
   const editionMinutes = editionItems.reduce((total, item) => total + (parseInt(item.readTime, 10) || 0), 0);
   const allDigestItemsMuted = digest.length > 0 && mutedDigestItems.length === digest.length;
@@ -3132,13 +3146,15 @@ export default function App() {
           <div className="space-y-6 animate-fade-in w-full max-w-full">
             <div className="flex flex-col items-start gap-3 border-b border-slate-900 pb-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h2 className="text-xl font-semibold tracking-tight text-slate-100">Today's Digest</h2>
+                <h2 className="text-xl font-semibold tracking-tight text-slate-100">{editionHeading}</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
                   {loadingDigest && digest.length === 0
                     ? "Synthesizing today's list…"
                     : `${digestCuratedAt > 0
-                        ? `Built ${formatCuratedAt(digestCuratedAt)}`
-                        : `Today's digest · ${new Date().toLocaleDateString([], { month: 'short', day: 'numeric' })}`
+                        ? `Built ${formatCuratedAt(digestCuratedAt)}${editionIsToday ? '' : ' — not today’s'}`
+                        : digest.length > 0
+                          ? 'Edition date not recorded'
+                          : `Today's digest · ${new Date().toLocaleDateString([], { month: 'short', day: 'numeric' })}`
                       } · ${digestSummaryLabel}${
                         semanticSummary && semanticSummary.feedbackExamples > 0
                           ? ` · ranked from ${semanticSummary.feedbackExamples} vote example${semanticSummary.feedbackExamples === 1 ? '' : 's'}`
