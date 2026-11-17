@@ -1,6 +1,6 @@
 # Curator — Morning Reading Editor & Intelligent RSS Digest
 
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-7.x-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=black)](https://react.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-v4-38bdf8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)](https://expressjs.com/)
@@ -21,7 +21,7 @@
   - [3. Signal Tuning with Undo Safeguards](#3-signal-tuning-with-undo-safeguards)
   - [4. Google Search RSS Discovery & Feed Synthesis](#4-google-search-rss-discovery--feed-synthesis)
   - [5. Outbound SSRF Hardening & Network Security](#5-outbound-ssrf-hardening--network-security)
-  - [6. High-Signal Deterministic Fallback Engine](#6-high-signal-deterministic-fallback-engine)
+  - [6. Provider-Configurable Curation & Semantic Ranking](#6-provider-configurable-curation--semantic-ranking)
   - [7. OPML Import & Export](#7-opml-import--export)
   - [8. Distraction-Free Reader & Onboard Read Aloud](#8-distraction-free-reader--onboard-read-aloud)
   - [9. Mobile & iOS Safari Viewport Hardening](#9-mobile--ios-safari-viewport-hardening)
@@ -29,11 +29,17 @@
 - [System Architecture](#system-architecture)
 - [API Reference](#api-reference)
   - [`POST /api/curate`](#post-apicurate)
+  - [`POST /api/calibrate`](#post-apicalibrate)
   - [`POST /api/feed-stream`](#post-apifeed-stream)
+  - [`POST /api/check-feed`](#post-apicheck-feed)
   - [`POST /api/discover-sources`](#post-apidiscover-sources)
   - [`POST /api/parse-opml`](#post-apiparse-opml)
+  - [`POST /api/test-provider`](#post-apitest-provider)
   - [`GET /api/generated-feed`](#get-apigenerated-feed)
   - [`GET /api/favicon`](#get-apifavicon)
+  - [`GET /api/health`](#get-apihealth)
+  - [`GET /api/semantic-status`](#get-apisemantic-status)
+  - [`GET /api/usage`](#get-apiusage)
 - [Getting Started](#getting-started)
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
@@ -161,6 +167,8 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 
 ## API Reference
 
+Every endpoint lives on the same Express server, so there is no separate API host or CORS setup. Routes that fetch feeds or reach an AI provider are rate-limited in memory per client per minute (30 for `/api/curate`, 6 for `/api/discover-sources` and `/api/parse-opml`, and so on); over the limit they answer `429` with a `Retry-After` header. "Per client" means the requesting address, which is only the real visitor when `TRUST_PROXY=1` is set behind your proxy — see [Environment Variables](#environment-variables).
+
 ### `POST /api/curate`
 Accepts a list of sources, item count target (3–15), and optional topic preference adjustments. Gathers recent feed entries and returns ranked, summarized digest articles with an "Out of the Bubble" pick.
 
@@ -219,6 +227,23 @@ Calibration is served by `POST /api/calibrate` with `{ sources, excludeIds }` an
 
 ---
 
+### `POST /api/calibrate`
+Builds the three-step setup flow's calibration list: up to 12 recent articles, spread across at most 14 sources with no more than two per source and newest first. It shares the curation feed cache, so a calibration scan followed by a digest does not re-download every feed.
+
+**Request Body:**
+```json
+{
+  "sources": [
+    { "id": "src_0", "title": "Nicole Williams", "feedUrl": "https://pmresearcher.substack.com/feed", "folder": "Strategy & Craft" }
+  ],
+  "excludeIds": ["live_cd34"]
+}
+```
+
+**Response:** `{ "candidates": [...] }` in the same article shape as a digest entry. Answers `404` when no live articles could be read.
+
+---
+
 ### `POST /api/feed-stream`
 Retrieves chronological feed entries for a specific source ID or across all subscribed sources for the traditional "Feeds" stream.
 
@@ -228,6 +253,18 @@ Retrieves chronological feed entries for a specific source ID or across all subs
   "sourceTitle": "Nicole Williams"
 }
 ```
+
+---
+
+### `POST /api/check-feed`
+Proves a feed URL works before it is added to the watch list, using the same outbound filter and parser as curation.
+
+**Request Body:**
+```json
+{ "feedUrl": "https://marginalrevolution.com/feed" }
+```
+
+**Response:** `{ "ok": true, "itemCount": 25, "title": "Marginal Revolution" }`, or `{ "ok": false, "error": "…" }` with a readable reason. A bad address is a normal answer here, so both cases return `200`.
 
 ---
 
@@ -255,6 +292,24 @@ Parses an uploaded `.opml` or `.xml` file and converts it into structured `Sourc
 
 ---
 
+### `POST /api/test-provider`
+The **Test API** button in Settings: one minimal request using the provider, key, base URL and model currently configured, so a wrong credential surfaces there instead of silently falling back to deterministic ranking during a digest. `kind` is `chat` or `embedding`; an embeddings ping also reports the returned vector `dimensions`.
+
+**Request Body:**
+```json
+{
+  "kind": "chat",
+  "provider": "openai-compatible",
+  "apiKey": "sk-…",
+  "baseUrl": "https://api.openai.com/v1",
+  "model": "gpt-4o-mini"
+}
+```
+
+**Response:** `{ "ok": true, "provider": "openai-compatible", "model": "gpt-4o-mini", "latencyMs": 412, "reply": "pong" }`. Failures return `{ "ok": false, "error": "…" }` with `200`, because the route reports a bad key rather than throwing.
+
+---
+
 ### `GET /api/generated-feed`
 Synthesizes a live RSS 2.0 XML feed for websites that do not provide native feeds, validated through the outbound security filter.
 
@@ -271,12 +326,28 @@ Returns a source's site icon, fetched server-side and cached in memory for seven
 
 ---
 
+### `GET /api/health`
+Liveness probe used by the client at startup and by container health checks. Returns `{ "ok": true, "service": "curator" }` with `Cache-Control: no-store`.
+
+---
+
+### `GET /api/semantic-status`
+Reports whether a server-side Gemini key is configured (`geminiConfigured`) alongside `localEngine: true`. The built-in semantic engine is always available, so this route never gates curation.
+
+---
+
+### `GET /api/usage`
+Running token and cost accounting for the AI and outbound traffic the server has made: `today`, `week` and `month` totals plus a 30-day `days` series, with USD (and GBP at `usdPerGbp`), current peak-pricing flag, the rates in use and the retention window. Counters live in server memory and reset on restart, so this is a spend tripwire for an operator, not a billing record.
+
+> Be aware that this route is **not authenticated**: on a public deployment it reveals your AI spend, so gate it at your proxy if that matters.
+
+---
+
 ## Getting Started
 
 ### Prerequisites
-- **Node.js**: v18.0.0 or higher
-- **Bun**: v1.1 or higher — the committed `bun.lock` is the one authoritative lockfile
-- **npm**: v9.0.0 or higher *(optional; `npm install` works, but there is no committed npm lockfile)*
+- **Bun**: v1.1 or higher — the committed `bun.lock` is the one authoritative lockfile, and installs are `bun install --frozen-lockfile`
+- **Node.js**: v22 — the runtime the Docker image ships (`node:22-slim`); Bun runs the server locally via `tsx`, so no separate build step is needed for development
 - *(Optional)* Provider API keys: configure an OpenAI-compatible endpoint, Anthropic, or Gemini in Curator's Settings. A server-side Gemini key is optional for Google Search-grounded discovery and Gemini-provider fallback.
 
 ### Installation
@@ -302,44 +373,57 @@ GEMINI_API_KEY=your_gemini_api_key_here
 
 # Server port (defaults to 3000)
 PORT=3000
+
+# Set to 1 when Curator runs behind a reverse proxy you control
+# (Cloud Run, Render, Fly, nginx, a load balancer).
+TRUST_PROXY=1
+
+# Set to 1 only to let public source discovery spend the server's own
+# GEMINI_API_KEY; otherwise it uses a key supplied by the browser.
+ALLOW_SERVER_KEY=1
 ```
+
+> **`TRUST_PROXY` matters on any deployment.** Rate limits are keyed by the requesting address. Unset, that address is the proxy's socket, so every visitor shares a single bucket and one busy client can trigger `429`s for everyone. Set it to `1` behind a trusted proxy — and only then, since `X-Forwarded-For` is client-controlled otherwise, which would let a caller mint a fresh bucket per request.
 
 > **Note**: Other provider keys and OpenAI-compatible base URLs are configured in Curator's Settings and stored in this browser. Without an AI provider, Curator uses deterministic curation.
 
 ### Running Locally
 
-Start the full-stack development server:
+Start the full-stack development server (Express with Vite middleware mounted in-process, run through `tsx`):
 ```bash
-npm run dev
+bun run dev
 ```
 
-Open your browser to [http://localhost:3000](http://localhost:3000).
+Open your browser to [http://localhost:3000](http://localhost:3000), or whichever `PORT` you set. TypeScript and TSX need no build step here — `tsx` transpiles on the fly and Vite serves the client.
 
 ### Production Deployment
 
-1. Build the production client bundle:
+1. Build the production client bundle into `dist/`:
    ```bash
-   npm run build
+   bun run build
    ```
 
-2. Start the production server:
+2. Start the server with `NODE_ENV=production` so it serves `dist/` instead of mounting the Vite dev middleware:
    ```bash
-   npm start
+   NODE_ENV=production bun run start
    ```
+
+   `bun run start` executes `tsx server.ts`, the same entry point as development. Without `NODE_ENV=production` you get the development middleware and the built bundle is ignored, so set it in your process environment (the `Dockerfile` already sets it, along with `PORT=8080`).
+
+If you deploy behind a proxy, set `TRUST_PROXY=1` as described in [Environment Variables](#environment-variables) — otherwise the per-client rate limits collapse into one shared bucket.
 
 ---
 
 ## Available Scripts
 
-Every script below also runs with `bun run <script>`; the table uses `npm run` for brevity.
-
 | Command | Description |
 | :--- | :--- |
-| `npm run dev` | Starts the Express server with Vite middleware in development mode (`tsx server.ts`). |
-| `npm run build` | Compiles TypeScript and builds the production client assets into `dist/`. |
-| `npm run start` | Runs the server in production mode (`node server.ts`). |
-| `npm run lint` | Runs the TypeScript compiler check (`tsc --noEmit`) to validate type safety. |
-| `npm run clean` | Deletes build output (`dist/` and `server.js`). |
+| `bun run dev` | Starts the Express server with Vite middleware in development mode (`tsx server.ts`). |
+| `bun run build` | Builds the production client assets into `dist/` (`vite build`). |
+| `bun run start` | Runs `tsx server.ts`; add `NODE_ENV=production` to serve the built `dist/`. |
+| `bun run lint` | Runs the TypeScript compiler check (`tsc --noEmit`) to validate type safety. |
+| `bun run preview` | Serves the built bundle with `vite preview` (client only, no API routes). |
+| `bun run clean` | Deletes build output (`dist/` and `server.js`). |
 
 ---
 
