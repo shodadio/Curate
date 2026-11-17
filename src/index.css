@@ -92,3 +92,64 @@ body {
   font-family: 'Inter', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
   font-feature-settings: "tnum";
 }
+
+/* Motion here is decoration — fade-ins, pulsing dots, spinners and hover scales — so it all
+   stops for readers who ask their device to reduce motion. */
+@keyframes curator-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.animate-fade-in {
+  animation: curator-fade-in 260ms ease-out both;
+}
+
+/* Horizontal carousels keep scrolling but lose the scrollbar that cuts through the content. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .animate-fade-in {
+    animation: none !important;
+    opacity: 1;
+  }
+
+  .animate-pulse,
+  .animate-spin,
+  .animate-bounce {
+    animation: none !important;
+  }
+
+  .group:hover .group-hover\:scale-105,
+  .group-hover\:scale-105:hover {
+    transform: none !important;
+  }
+}
+
+/* iOS zooms the whole page when a focused field's text is under 16px, which pushes a modal
+   off-screen mid-form. Phone-width fields ask for text at 16px and still render at text-xs
+   on desktop. */
+@media (max-width: 640px) {
+  input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}

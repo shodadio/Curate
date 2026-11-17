@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Plus, Sparkles, X } from 'lucide-react';
 import {
   MAX_INTERESTS,
+  TAXONOMY_NOTE,
   addInterest,
   removeInterest,
   type InterestGroup,
@@ -55,7 +56,7 @@ function InterestRow({
       <div className="flex items-baseline justify-between gap-2">
         <div>
           <h4 className="text-xs font-semibold text-slate-200">{title}</h4>
-          <p className="text-xs text-slate-500 mt-0.5">{summary}</p>
+          <p className="text-xs text-slate-400 mt-0.5">{summary}</p>
         </div>
         <span className="text-xs font-mono text-slate-400 shrink-0">
           {items.length}/{MAX_INTERESTS}
@@ -93,7 +94,7 @@ function InterestRow({
           placeholder={hint}
           disabled={atCap}
           maxLength={40}
-          className="flex-1 min-w-0 rounded-xl bg-slate-950 border border-slate-800 px-3 py-2.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500 disabled:opacity-50"
+          className="flex-1 min-w-0 rounded-xl bg-slate-950 border border-slate-800 px-3 py-2.5 text-xs text-slate-100 placeholder:text-slate-400 focus:outline-none focus:border-amber-500 disabled:opacity-50"
         />
         <button
           type="button"
@@ -135,9 +136,9 @@ export function InterestsEditor({ value, suggestions, onChange }: InterestsEdito
         <div>
           <h3 className="text-sm font-semibold text-slate-200">Interests</h3>
           <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
-            What you want more or less of. These nudge the ranking of your digest — they never hide your feeds.
-            A chip matches its exact words in a title, summary or folder, so “AI” and “Artificial Intelligence”
-            are different matches. Your votes keep teaching the profile, and Serendipity still pulls in the unexpected.
+            What you want more or less of. {TAXONOMY_NOTE} A chip matches its exact words in a title,
+            summary or folder, so “AI” and “Artificial Intelligence” are different matches. Serendipity
+            still pulls in the unexpected.
           </p>
         </div>
       </div>

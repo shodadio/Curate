@@ -10,6 +10,10 @@ export interface InterestSet {
 
 export const MAX_INTERESTS = 12;
 
+// One sentence for the three places folders, categories and interests meet, so the same three
+// words are never explained three different ways.
+export const TAXONOMY_NOTE = 'A folder files a source, categories say what it covers, and interests nudge what Curator picks — none of them hide stories from you.';
+
 const STORAGE_KEY = 'curator_interests';
 
 export const emptyInterests = (): InterestSet => ({ more: [], less: [] });

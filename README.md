@@ -33,6 +33,7 @@
   - [`POST /api/discover-sources`](#post-apidiscover-sources)
   - [`POST /api/parse-opml`](#post-apiparse-opml)
   - [`GET /api/generated-feed`](#get-apigenerated-feed)
+  - [`GET /api/favicon`](#get-apifavicon)
 - [Getting Started](#getting-started)
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
@@ -262,11 +263,20 @@ Synthesizes a live RSS 2.0 XML feed for websites that do not provide native feed
 
 ---
 
+### `GET /api/favicon`
+Returns a source's site icon, fetched server-side and cached in memory for seven days. The browser asks this route rather than a favicon provider, so opening the digest makes no third-party requests.
+
+**Query Parameters:**
+- `domain`: The feed's hostname (e.g., `marginalrevolution.com`).
+
+---
+
 ## Getting Started
 
 ### Prerequisites
 - **Node.js**: v18.0.0 or higher
-- **npm**: v9.0.0 or higher
+- **Bun**: v1.1 or higher — the committed `bun.lock` is the one authoritative lockfile
+- **npm**: v9.0.0 or higher *(optional; `npm install` works, but there is no committed npm lockfile)*
 - *(Optional)* Provider API keys: configure an OpenAI-compatible endpoint, Anthropic, or Gemini in Curator's Settings. A server-side Gemini key is optional for Google Search-grounded discovery and Gemini-provider fallback.
 
 ### Installation
@@ -277,9 +287,9 @@ Synthesizes a live RSS 2.0 XML feed for websites that do not provide native feed
    cd curator
    ```
 
-2. Install dependencies:
+2. Install dependencies from the committed lockfile:
    ```bash
-   npm install
+   bun install --frozen-lockfile
    ```
 
 ### Environment Variables
@@ -321,6 +331,8 @@ Open your browser to [http://localhost:3000](http://localhost:3000).
 
 ## Available Scripts
 
+Every script below also runs with `bun run <script>`; the table uses `npm run` for brevity.
+
 | Command | Description |
 | :--- | :--- |
 | `npm run dev` | Starts the Express server with Vite middleware in development mode (`tsx server.ts`). |
@@ -335,7 +347,8 @@ Open your browser to [http://localhost:3000](http://localhost:3000).
 
 Curator is built local-first:
 - **No Remote User Accounts**: Subscriptions, reading stats, saved articles, and signal preferences are stored exclusively in your browser's `localStorage`.
-- **Zero Third-Party Trackers**: No analytics SDKs, advertising pixels, or telemetry services are included.
+- **No Trackers**: No analytics SDKs, advertising pixels, or telemetry services are included. Source icons are fetched by the Curator server (`GET /api/favicon`) and cached there, so your browser never asks a favicon provider about the feeds you read.
+- **What still talks to publishers**: article thumbnails load from each publication's own image CDN, and opening "Read original" obviously visits them. That reveals your IP to that publisher — the same exposure as subscribing in any RSS reader — but nothing else about your reading is shared.
 - **Your Data Remains Yours**: Export your entire reading library at any time using standard OPML.
 
 ---

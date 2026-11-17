@@ -21,7 +21,7 @@ export function DigestEmptyState({
 }: DigestEmptyStateProps) {
   const isMuted = mode === 'muted';
   const headingId = isMuted ? 'digest-empty-muted-heading' : 'digest-empty-quiet-heading';
-  const restoreLabel = mutedCount === 1 ? 'Restore the muted story' : `Restore ${mutedCount} muted stories`;
+  const restoreLabel = mutedCount === 1 ? 'Restore the hidden story' : `Restore ${mutedCount} hidden stories`;
 
   return (
     <section
@@ -42,7 +42,7 @@ export function DigestEmptyState({
         </h3>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-slate-400">
           {isMuted
-            ? "You muted every story here, so there is nothing left to read. Restore them to pick up where you left off, or refresh for a new mix."
+            ? "You marked every story here \u201cLess like this\u201d, so there is nothing left to read. Restore them to pick up where you left off, or refresh for a new mix."
             : 'Your feeds are quiet right now. Refresh to look again, or check that your sources are still reachable.'}
         </p>
       </div>

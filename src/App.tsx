@@ -8,13 +8,16 @@ import {
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { createPortal } from 'react-dom';
+import { focusableWithin, trapTabKey } from './overlayFocus';
 import { CuratorMark } from './components/CuratorLogo';
 import { WeeklyReviewModal, WeeklyReadingItem } from './components/WeeklyReviewModal';
 import { InterestsEditor } from './components/InterestsEditor';
 import { ProviderTestButton } from './components/ProviderTestButton';
 import { FeedbackActions } from './components/FeedbackActions';
 import { DigestEmptyState } from './components/DigestEmptyState';
-import { loadInterests, saveInterests, suggestionsFromFolders, type InterestSet } from './interests';
+import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
+import { safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, type StorageFailure } from './storage';
+import { DEFAULT_FEEDS } from './defaultFeeds';
 
 interface DiscoveredSource {
   title: string;
@@ -72,6 +75,9 @@ interface SemanticFeedbackItem {
   source?: string;
   folder?: string;
 }
+
+// Duplicate detection compares feeds by address, not by the name a reader gave them.
+const normalizeFeedUrl = (url?: string): string => (url || '').trim().toLowerCase().replace(/\/+$/, '');
 
 const normalizeCategoryLabels = (raw: unknown, fallback?: string): string[] => {
   const labels = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
@@ -192,6 +198,9 @@ interface SpeechChunk {
 // engine's comfort zone, and the paragraph beat keeps the prose from running together.
 const SPEECH_MAX_CHUNK_CHARS = 220;
 const SPEECH_SENTENCE_PAUSE_MS = 40;
+// iOS can take a moment before the first utterance starts; give it longer than the eye expects
+// before telling the reader the device never spoke.
+const SPEECH_START_GRACE_MS = 3000;
 const SPEECH_PARAGRAPH_PAUSE_MS = 340;
 
 const SPEECH_RATE_DEFAULT = 0.95;
@@ -255,7 +264,12 @@ function resolveSpeechVoice(
     const chosen =
       voices.find(voice => voice.voiceURI === preference) ||
       voices.find(voice => voice.name === preference) ||
-      pool.find(voice => speechVoiceBaseName(voice) === preference.toLowerCase());
+      // A voice saved by an older build can return under a new URI after an OS update, so the
+      // English pool is also searched by URI, by name, and by the voice name inside a legacy
+      // full URI such as com.apple.voice.premium.en-US.Jamie.
+      pool.find(voice => voice.voiceURI === preference || voice.name === preference) ||
+      pool.find(voice => speechVoiceBaseName(voice) === preference.toLowerCase()) ||
+      pool.find(voice => preference.toLowerCase().includes(speechVoiceBaseName(voice)));
     return chosen || null;
   }
 
@@ -526,7 +540,8 @@ export default function App() {
     if (saved) {
       try { return JSON.parse(saved); } catch (e) { /* ignore */ }
     }
-    return ['src_mr', 'src_dan'];
+    // Every starter feed begins unread, so the first run honestly shows what is waiting.
+    return [];
   });
   const [readArticleIds, setReadArticleIds] = useState<string[]>(() => {
     const saved = localStorage.getItem('curator_read_articles');
@@ -550,31 +565,56 @@ export default function App() {
 
   // App data state with localStorage persistence
   const [sources, setSources] = useState<SourceItem[]>(() => {
-    const defaultSources: SourceItem[] = [
-      { id: 'src_row', title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech', categories: ['Global Tech'], status: 'active', lastSyncedAt: Date.now() - 75 * 60 * 1000 }
-    ];
+    // A new reader starts with the same eight feeds the server falls back to, so the first
+    // digest is an edition rather than one publication's front page.
+    const defaultSources: SourceItem[] = DEFAULT_FEEDS.map(feed => ({
+      id: feed.id,
+      title: feed.title,
+      feedUrl: feed.feedUrl,
+      folder: feed.folder,
+      categories: [feed.folder],
+      status: 'active' as const,
+    }));
+
+    // A few demo feeds shipped in early builds and were later retired. Drop those rows, and
+    // only those rows: treating one stale entry as "the whole list is junk" is what used to
+    // replace a tester's entire library with the single default feed.
+    const isRetiredDemoFeed = (feedUrl?: string) => {
+      const url = (feedUrl || '').toLowerCase();
+      return url.includes('pmresearcher') ||
+        url.includes('bhaskar.econ') ||
+        url.includes('worldhistory.com');
+    };
 
     const saved = localStorage.getItem('curator_sources');
     if (saved) {
       try {
-        const parsed: SourceItem[] = JSON.parse(saved);
-        const hasStaleDummy = parsed.some(s =>
-          s.feedUrl.includes('pmresearcher') ||
-          s.feedUrl.includes('bhaskar.econ') ||
-          s.feedUrl.includes('worldhistory.com')
+        const parsed = JSON.parse(saved);
+        if (!Array.isArray(parsed)) return defaultSources;
+        const kept = parsed.filter((source: SourceItem) =>
+          source && typeof source === 'object' && !isRetiredDemoFeed(source.feedUrl)
         );
-        if (!hasStaleDummy && Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map(source => ({
-            ...source,
-            categories: normalizeCategoryLabels(source.categories, source.folder),
-          }));
-        }
+        // Only an all-stale list falls back to the defaults; anything the reader added is kept.
+        if (kept.length === 0) return defaultSources;
+        return kept.map((source: SourceItem) => ({
+          ...source,
+          categories: normalizeCategoryLabels(source.categories, source.folder),
+        }));
       } catch (e) { /* ignore */ }
     }
     return defaultSources;
   });
 
-  const [digest, setDigest] = useState<DigestItem[]>([]);
+  // The last edition this browser built, so a launch with no connection shows yesterday's
+  // stories (labelled as such) instead of pretending the feeds were quiet.
+  const [digest, setDigest] = useState<DigestItem[]>(() => {
+    try {
+      const cached = JSON.parse(localStorage.getItem('curator_digest_cache') || 'null');
+      return Array.isArray(cached?.items) ? cached.items : [];
+    } catch {
+      return [];
+    }
+  });
   const [semanticSummary, setSemanticSummary] = useState<{
     feedbackExamples: number;
     providerVectors: number;
@@ -639,7 +679,7 @@ export default function App() {
   const [showWeeklyReviewModal, setShowWeeklyReviewModal] = useState<boolean>(false);
 
   useEffect(() => {
-    localStorage.setItem('curator_weekly_history', JSON.stringify(weeklyHistory));
+    safeSetJson('curator_weekly_history', weeklyHistory);
   }, [weeklyHistory]);
 
   const weekCutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -717,6 +757,14 @@ export default function App() {
   // Settings
   const DIGEST_ITEM_COUNTS = [3, 5, 8, 12, 15] as const;
   const READ_THROUGH_DEPTH = 85;
+  // 75s covers a Cloud Run cold start plus a feed sweep; the softer hint at 20s gives the
+  // reader a way out long before that.
+  const DIGEST_TIMEOUT_MS = 75000;
+  // Every reversible action gets the same window: the toast offering the undo and the pending
+  // state it protects both stay up this long. Plain notices clear sooner.
+  const UNDO_WINDOW_MS = 7000;
+  const NOTICE_MS = 3500;
+  const DIGEST_SLOW_HINT_MS = 20000;
   const [serendipityDial, setSerendipityDial] = useState<number>(() => {
     const saved = localStorage.getItem('curator_serendipity');
     return saved ? Number(saved) : 25;
@@ -738,6 +786,8 @@ export default function App() {
     );
   });
   const [compactCards, setCompactCards] = useState<boolean>(() => localStorage.getItem('curator_compact_cards') === '1');
+  // Count, density and serendipity live behind one pill instead of filling the first screen
+  const [showDigestSettings, setShowDigestSettings] = useState<boolean>(false);
   const [aiProvider, setAiProvider] = useState<string>(() => {
     const saved = localStorage.getItem('curator_ai_provider');
     if (saved === 'openai') return 'openai-compatible';
@@ -763,6 +813,26 @@ export default function App() {
   // Starts true: the first digest request is queued by an effect right after mount, so the
   // view opens on the "synthesizing" state instead of flashing "no new items today".
   const [loadingDigest, setLoadingDigest] = useState<boolean>(true);
+  // A digest request can die on a cold container. Both are surfaced in the view, so a
+  // stalled request never leaves "Synthesizing…" on screen forever.
+  const [digestSlow, setDigestSlow] = useState<boolean>(false);
+  const [digestError, setDigestError] = useState<string | null>(null);
+  // True when the last attempt failed to reach the server at all, as opposed to the server
+  // answering that it had nothing to offer.
+  const [digestOffline, setDigestOffline] = useState<boolean>(false);
+  // The request tally and its cost estimate are for alpha testing, not for readers: ?debug in
+  // the URL, or a stored flag, is the only way to see them.
+  const [showDiagnostics] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return new URLSearchParams(window.location.search).has('debug')
+        || localStorage.getItem('curator_debug') === '1';
+    } catch {
+      return false;
+    }
+  });
+  // Set when this browser refuses to persist the library (quota or blocked storage)
+  const [storageFailure, setStorageFailure] = useState<StorageFailure | null>(null);
   const [activeToast, setActiveToast] = useState<{
     id: string;
     message: string;
@@ -775,6 +845,8 @@ export default function App() {
   const wakeLockWantedRef = React.useRef(false);
   // Monotonic ids so a slow, superseded response can never overwrite newer state
   const digestRequestRef = React.useRef(0);
+  // The request in flight, so a retry or a timeout can actually cancel it
+  const digestAbortRef = React.useRef<AbortController | null>(null);
   const feedStreamRequestRef = React.useRef(0);
   // Read Aloud queue: the sentences still to speak, which one is playing, and the session
   // they belong to, so a superseded callback can never speak over a newer one
@@ -786,10 +858,11 @@ export default function App() {
   const speechGapTimerRef = React.useRef<any>(null);
   // The utterance in flight, so resume knows whether to continue one or speak the next
   const speechUtteranceRef = React.useRef<SpeechSynthesisUtterance | null>(null);
+  const speechArticleItemRef = React.useRef<DigestItem | null>(null);
   // Whether the engine actually started the current session (iOS refuses silently sometimes)
   const speechStartedRef = React.useRef(false);
 
-  // Muted cards state for immediate inline Undo / Redo when user clicks "Fewer"
+  // Hidden cards: each "Less like this" keeps the story in place as an inline Undo target
   const [mutedCards, setMutedCards] = useState<Record<string, DigestItem>>({});
 
   // Add source modal state
@@ -800,6 +873,7 @@ export default function App() {
   const [newSourceUrlError, setNewSourceUrlError] = useState<string | null>(null);
   const [newSourceFolder, setNewSourceFolder] = useState<string>('General');
   const [newSourceFolderCustom, setNewSourceFolderCustom] = useState(false);
+  const [newSourceValidating, setNewSourceValidating] = useState(false);
 
   // OPML Import state
   const [importText, setImportText] = useState<string>('');
@@ -808,13 +882,19 @@ export default function App() {
   const [isDraggingOpml, setIsDraggingOpml] = useState<boolean>(false);
   const [isImportingOpml, setIsImportingOpml] = useState<boolean>(false);
   const [showImportModal, setShowImportModal] = useState<boolean>(false);
+  // A file that would land on top of an existing list is confirmed in the modal first.
+  const [pendingImportText, setPendingImportText] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<{
     totalImported: number;
     successCount: number;
     failCount: number;
+    duplicates?: number;
     failures?: Array<{ title: string; reason: string }>;
   } | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const addSourceOverlayRef = React.useRef<HTMLDivElement | null>(null);
+  const importOverlayRef = React.useRef<HTMLDivElement | null>(null);
+  const wizardOverlayRef = React.useRef<HTMLDivElement | null>(null);
 
   // Google Search & RSS investigation state
   const [discoverQuery, setDiscoverQuery] = useState<string>('');
@@ -856,11 +936,11 @@ export default function App() {
   });
 
   useEffect(() => {
-    localStorage.setItem(SPEECH_VOICE_STORAGE_KEY, speechVoiceUri);
+    safeSetItem(SPEECH_VOICE_STORAGE_KEY, speechVoiceUri);
   }, [speechVoiceUri]);
 
   useEffect(() => {
-    localStorage.setItem(SPEECH_RATE_STORAGE_KEY, String(speechRate));
+    safeSetItem(SPEECH_RATE_STORAGE_KEY, String(speechRate));
   }, [speechRate]);
 
   // Safari fills the voice list lazily and does not always fire voiceschanged
@@ -906,24 +986,32 @@ export default function App() {
     [speechVoices]
   );
 
+  // A refused write is worth interrupting for: the reader needs to know that what they save
+  // may not survive a reload, and gets a one-tap export while the warning is on screen.
+  useEffect(() => subscribeToStorageFailures(setStorageFailure), []);
+
   useEffect(() => {
-    localStorage.setItem('curator_saved_articles', JSON.stringify(savedArticles));
+    // Saved articles carry their full bodies, so this is the write most likely to hit the
+    // origin's quota. If it does, keep the queue by dropping the bodies rather than losing
+    // every saved title.
+    if (safeSetJson('curator_saved_articles', savedArticles)) return;
+    safeSetJson('curator_saved_articles', savedArticles.map(({ fullText, ...rest }) => rest));
   }, [savedArticles]);
 
   useEffect(() => {
-    localStorage.setItem('curator_sources', JSON.stringify(sources));
+    safeSetJson('curator_sources', sources);
   }, [sources]);
 
   useEffect(() => {
-    localStorage.setItem('curator_saved_ids', JSON.stringify(savedIds));
+    safeSetJson('curator_saved_ids', savedIds);
   }, [savedIds]);
 
   useEffect(() => {
-    localStorage.setItem('curator_signals', JSON.stringify(signals));
+    safeSetJson('curator_signals', signals);
   }, [signals]);
 
   useEffect(() => {
-    localStorage.setItem('curator_semantic_feedback', JSON.stringify(semanticFeedback));
+    safeSetJson('curator_semantic_feedback', semanticFeedback);
   }, [semanticFeedback]);
 
   const checkStartupServices = async () => {
@@ -1060,12 +1148,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('curator_serendipity', serendipityDial.toString());
+    safeSetItem('curator_serendipity', serendipityDial.toString());
   }, [serendipityDial]);
 
   useEffect(() => {
     if (digestCuratedAt > 0) {
-      localStorage.setItem('curator_digest_curated_at', String(digestCuratedAt));
+      safeSetItem('curator_digest_curated_at', String(digestCuratedAt));
     }
   }, [digestCuratedAt]);
 
@@ -1086,51 +1174,94 @@ export default function App() {
   }, [showSetupWizard, showImportModal, showAddSourceModal]);
 
   useEffect(() => {
-    localStorage.setItem('curator_item_count', itemCount.toString());
+    if (!showDigestSettings) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowDigestSettings(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showDigestSettings]);
+
+  // The three full-screen overlays are dialogs too: Escape closes the top one, Tab stays inside
+  // it, and focus moves in when it opens instead of staying on the button behind.
+  useEffect(() => {
+    const overlay = showAddSourceModal
+      ? addSourceOverlayRef.current
+      : showImportModal
+        ? importOverlayRef.current
+        : showSetupWizard
+          ? wizardOverlayRef.current
+          : null;
+    if (!overlay) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        if (showAddSourceModal) setShowAddSourceModal(false);
+        else if (showImportModal) setShowImportModal(false);
+        else if (showSetupWizard) dismissSetupWizard();
+        return;
+      }
+      trapTabKey(event, overlay);
+    };
+
+    window.addEventListener('keydown', onKeyDown, true);
+    const focusTimer = window.setTimeout(() => {
+      if (!overlay.contains(document.activeElement)) focusableWithin(overlay)[0]?.focus();
+    }, 30);
+
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [showAddSourceModal, showImportModal, showSetupWizard]);
+
+  useEffect(() => {
+    safeSetItem('curator_item_count', itemCount.toString());
   }, [itemCount]);
 
   useEffect(() => {
-    localStorage.setItem('curator_compact_cards', compactCards ? '1' : '0');
+    safeSetItem('curator_compact_cards', compactCards ? '1' : '0');
   }, [compactCards]);
 
   useEffect(() => {
-    localStorage.setItem('curator_custom_api_key', customApiKey);
+    safeSetItem('curator_custom_api_key', customApiKey);
   }, [customApiKey]);
 
   useEffect(() => {
-    localStorage.setItem('curator_ai_base_url', aiBaseUrl);
+    safeSetItem('curator_ai_base_url', aiBaseUrl);
   }, [aiBaseUrl]);
 
   useEffect(() => {
-    localStorage.setItem('curator_ai_model', aiModel);
+    safeSetItem('curator_ai_model', aiModel);
   }, [aiModel]);
 
   useEffect(() => {
-    localStorage.setItem('curator_embedding_provider', embeddingProvider);
+    safeSetItem('curator_embedding_provider', embeddingProvider);
   }, [embeddingProvider]);
 
   useEffect(() => {
-    localStorage.setItem('curator_embedding_api_key', embeddingApiKey);
+    safeSetItem('curator_embedding_api_key', embeddingApiKey);
   }, [embeddingApiKey]);
 
   useEffect(() => {
-    localStorage.setItem('curator_embedding_base_url', embeddingBaseUrl);
+    safeSetItem('curator_embedding_base_url', embeddingBaseUrl);
   }, [embeddingBaseUrl]);
 
   useEffect(() => {
-    localStorage.setItem('curator_embedding_model', embeddingModel);
+    safeSetItem('curator_embedding_model', embeddingModel);
   }, [embeddingModel]);
 
   useEffect(() => {
-    localStorage.setItem('curator_read_sources', JSON.stringify(readSourceIds));
+    safeSetJson('curator_read_sources', readSourceIds);
   }, [readSourceIds]);
 
   useEffect(() => {
-    localStorage.setItem('curator_read_articles', JSON.stringify(readArticleIds));
+    safeSetJson('curator_read_articles', readArticleIds);
   }, [readArticleIds]);
 
   useEffect(() => {
-    localStorage.setItem('curator_reading_stats', JSON.stringify(readingStats));
+    safeSetJson('curator_reading_stats', readingStats);
   }, [readingStats]);
 
   useEffect(() => {
@@ -1279,7 +1410,18 @@ export default function App() {
 
   const generateDigest = async (options?: { fresh?: boolean }) => {
     const requestId = ++digestRequestRef.current;
+    // A retry must cancel the request it replaces, and a request that never answers has to
+    // end in a retryable state rather than an endless "Synthesizing…".
+    digestAbortRef.current?.abort();
+    const controller = new AbortController();
+    digestAbortRef.current = controller;
     setLoadingDigest(true);
+    setDigestError(null);
+    setDigestSlow(false);
+    const timeout = window.setTimeout(() => controller.abort(), DIGEST_TIMEOUT_MS);
+    const slowHint = window.setTimeout(() => {
+      if (requestId === digestRequestRef.current) setDigestSlow(true);
+    }, DIGEST_SLOW_HINT_MS);
     try {
       let readingStats = {};
       try {
@@ -1325,17 +1467,25 @@ export default function App() {
           previousDigestIds: [...currentDigestIds],
           fresh: Boolean(options?.fresh),
           seed: options?.fresh ? `${Date.now()}-${Math.random()}` : 'stable',
-        })
+        }),
+        signal: controller.signal,
       });
       const data = await res.json().catch(() => ({}));
       if (requestId !== digestRequestRef.current) return;
       if (!res.ok) {
-        showToast(data?.error ? `Could not refresh the digest: ${data.error}` : 'Could not refresh the digest');
+        const message = data?.error
+          ? `Curator could not build the digest: ${String(data.error).slice(0, 200)}`
+          : `Curator’s server returned HTTP ${res.status}.`;
+        if (digest.length === 0) setDigestError(message);
+        else showToast(message);
         return;
       }
+      setDigestError(null);
+      setDigestOffline(false);
       setDigestCuratedAt(Date.now());
       if (Array.isArray(data.digest) && data.digest.length > 0) {
         setDigest(data.digest);
+        safeSetJson('curator_digest_cache', { curatedAt: Date.now(), items: data.digest });
         applySourceMetadata(data.digest);
         if (data.semanticSummary) setSemanticSummary(data.semanticSummary);
         if (data.feedReport) {
@@ -1349,14 +1499,29 @@ export default function App() {
           ...shownHistory.filter(entry => !freshIds.has(entry.id)),
           ...data.digest.map((item: DigestItem) => ({ id: item.id, shownAt })),
         ].slice(-150);
-        localStorage.setItem('curator_digest_history', JSON.stringify(mergedHistory));
+        safeSetJson('curator_digest_history', mergedHistory);
       } else if (options?.fresh) {
-        showToast('No other stories are ready right now. Restore muted stories or review your sources.');
+        showToast('No other stories are ready right now. Restore hidden stories or review your sources.');
       }
-    } catch (e) {
-      showToast('Could not refresh the digest');
+    } catch {
+      if (requestId !== digestRequestRef.current) return;
+      const timedOut = controller.signal.aborted;
+      const message = timedOut
+        ? 'Curator’s server did not answer in time. It may be waking up from idle — try again in a moment.'
+        : 'Could not reach Curator’s server. Check your connection and try again.';
+      // With stories already on screen a toast is enough; an empty screen needs a card that
+      // stays put, because a passing message looks identical to "nothing to read today".
+      setDigestOffline(true);
+      if (digest.length === 0) setDigestError(message);
+      else showToast(timedOut ? 'Digest took too long — try refreshing again' : 'Could not refresh the digest');
     } finally {
-      if (requestId === digestRequestRef.current) setLoadingDigest(false);
+      window.clearTimeout(timeout);
+      window.clearTimeout(slowHint);
+      if (digestAbortRef.current === controller) digestAbortRef.current = null;
+      if (requestId === digestRequestRef.current) {
+        setLoadingDigest(false);
+        setDigestSlow(false);
+      }
     }
   };
 
@@ -1365,7 +1530,7 @@ export default function App() {
 
   useEffect(() => {
     if (!pendingDeleteId && !pendingReset) return;
-    const t = setTimeout(() => { setPendingDeleteId(null); setPendingReset(false); }, 5000);
+    const t = setTimeout(() => { setPendingDeleteId(null); setPendingReset(false); }, UNDO_WINDOW_MS);
     return () => clearTimeout(t);
   }, [pendingDeleteId, pendingReset]);
 
@@ -1380,7 +1545,7 @@ export default function App() {
     setActiveToast(item);
     toastTimeoutRef.current = setTimeout(() => {
       setActiveToast(prev => (prev?.id === item.id ? null : prev));
-    }, onAction ? 7000 : 3500);
+    }, onAction ? UNDO_WINDOW_MS : NOTICE_MS);
   };
 
   const recordSemanticFeedback = (item: DigestItem, vote: 'like' | 'dislike') => {
@@ -1400,9 +1565,7 @@ export default function App() {
   };
 
   const markSetupComplete = () => {
-    try {
-      localStorage.setItem('curator_setup_complete', '1');
-    } catch { /* ignore */ }
+    safeSetItem('curator_setup_complete', '1');
   };
 
   const openSetupWizard = () => {
@@ -1478,7 +1641,7 @@ export default function App() {
         less: [],
       }));
       removeSemanticFeedback(item.id);
-      showToast('Removed this article from your semantic profile');
+      showToast('Undone — this story is back to unrated');
       return;
     }
     if (alreadyMore) {
@@ -1491,7 +1654,7 @@ export default function App() {
         less: [],
       }));
       recordSemanticFeedback(item, 'like');
-      showToast('Added this like to your semantic profile');
+      showToast('More like this — noted for your next edition');
       return;
     }
 
@@ -1505,7 +1668,7 @@ export default function App() {
       less: [],
     }));
     recordSemanticFeedback(item, 'like');
-    showToast('Semantic profile learned from this article');
+    showToast('More like this — noted for your next edition');
   };
 
   const handleLess = (item: DigestItem) => {
@@ -1516,7 +1679,7 @@ export default function App() {
         undoHandleLess(item.id);
       } else {
         recordSemanticFeedback(item, 'dislike');
-        showToast('Added this dislike to your semantic profile');
+        showToast('Less like this — noted for your next edition');
       }
       return;
     }
@@ -1538,12 +1701,11 @@ export default function App() {
       [item.id]: item
     }));
 
-    showToast(`Fewer like this · "${item.title}" quietened`, 'Undo', () => undoHandleLess(item.id));
+    showToast(`Less like this · "${item.title}" hidden`, 'Undo this story', () => undoHandleLess(item.id));
   };
 
   const undoHandleLess = (itemId: string) => {
     const item = mutedCards[itemId] || digest.find(d => d.id === itemId) || feedStreamArticles.find(d => d.id === itemId);
-    const topic = item?.folder;
 
     setMutedCards(prev => {
       const next = { ...prev };
@@ -1561,7 +1723,7 @@ export default function App() {
       less: [],
     }));
 
-    showToast(topic ? `Restored article from ${topic}` : 'Restored article to feed');
+    showToast(item ? `"${item.title}" is back in your digest` : 'Story restored to your digest');
   };
 
   const permanentlyDismissMuted = (itemId: string) => {
@@ -1589,7 +1751,7 @@ export default function App() {
     }
   };
 
-  const handleAddSource = (e: React.FormEvent) => {
+  const handleAddSource = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedTitle = newSourceTitle.trim();
     const trimmedUrl = newSourceUrl.trim();
@@ -1609,6 +1771,33 @@ export default function App() {
       return;
     }
     setNewSourceUrlError(null);
+    // A source is only "active" once Curator has actually read it: a URL that returns 404,
+    // a login page or an HTML article used to be added and then quietly fail in every digest.
+    setNewSourceValidating(true);
+    let feedItemCount = 0;
+    try {
+      const check = await fetch('/api/check-feed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feedUrl: trimmedUrl })
+      });
+      const checkData = await check.json().catch(() => ({}));
+      if (!check.ok || !checkData?.ok) {
+        setNewSourceUrlError(
+          checkData?.error
+            ? `Curator could not read that feed: ${String(checkData.error)}.`
+            : 'Curator could not read that feed. Check the address serves RSS or Atom.'
+        );
+        return;
+      }
+      feedItemCount = Number(checkData.itemCount) || 0;
+    } catch {
+      setNewSourceUrlError('Could not reach the server to check that feed. Try again in a moment.');
+      return;
+    } finally {
+      setNewSourceValidating(false);
+    }
+
     const requestedFolder = newSourceFolder.trim();
     const chosenFolder = sources
       .map(src => displayFolder(src.folder))
@@ -1627,7 +1816,7 @@ export default function App() {
     setNewSourceTitle('');
     setNewSourceUrl('');
     setShowAddSourceModal(false);
-    showToast('Source added successfully');
+    showToast(`Added "${trimmedTitle}" · ${feedItemCount} recent ${feedItemCount === 1 ? 'story' : 'stories'} found`);
   };
 
   const toggleSourceCategory = (sourceId: string, category: string) => {
@@ -1675,8 +1864,13 @@ export default function App() {
     );
   };
 
-  const processOpmlText = async (rawText: string) => {
+  const processOpmlText = async (rawText: string, options?: { skipConfirm?: boolean }) => {
     if (!rawText.trim()) return;
+    // Importing merges, so an existing list is never replaced — but say so before the first file.
+    if (!options?.skipConfirm && sources.length > 0) {
+      setPendingImportText(rawText);
+      return;
+    }
     setIsImportingOpml(true);
     setImportError(null);
     setImportResult(null);
@@ -1704,17 +1898,35 @@ export default function App() {
         return;
       }
       if (data.success && data.sources) {
-        setSources(data.sources.map((source: SourceItem) => ({
-          ...source,
-          categories: normalizeCategoryLabels(source.categories, source.folder),
-        })));
+        const known = new Set(sources.map(source => normalizeFeedUrl(source.feedUrl)));
+        const added: SourceItem[] = [];
+        let duplicates = 0;
+        for (const source of data.sources as SourceItem[]) {
+          const key = normalizeFeedUrl(source.feedUrl);
+          if (!key || known.has(key)) {
+            duplicates += 1;
+            continue;
+          }
+          known.add(key);
+          added.push({
+            ...source,
+            id: `src_${Date.now()}_${added.length}_${Math.random().toString(36).slice(2, 6)}`,
+            categories: normalizeCategoryLabels(source.categories, source.folder),
+          });
+        }
+        if (added.length > 0) setSources(prev => [...added, ...prev]);
         setImportResult({
-          totalImported: data.totalImported,
-          successCount: data.successCount,
-          failCount: data.failCount,
+          totalImported: added.length,
+          successCount: added.filter(source => source.status !== 'failing').length,
+          failCount: added.filter(source => source.status === 'failing').length,
+          duplicates,
           failures: data.failures || []
         });
-        showToast(`Imported ${data.totalImported} sources with folders intact`);
+        showToast(
+          added.length === 0
+            ? `No new feeds — ${duplicates === 1 ? 'the only feed in that file is' : `all ${duplicates} feeds are`} already in your list`
+            : `Added ${added.length} ${added.length === 1 ? 'feed' : 'feeds'}${duplicates > 0 ? ` · ${duplicates} already in your list` : ''}`
+        );
       }
     } catch (e) {
       setImportError('Unable to reach the OPML import service. Please try again.');
@@ -1743,6 +1955,7 @@ export default function App() {
     setImportError(null);
     setImportResult(null);
     setImportFileName(null);
+    setPendingImportText(null);
     setShowImportModal(true);
   };
 
@@ -1830,7 +2043,8 @@ export default function App() {
     if (!feedUrl) return undefined;
     try {
       const url = new URL(feedUrl);
-      return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(url.hostname)}&sz=128`;
+      // Served by our own server and cached there: no third-party request per card.
+      return `/api/favicon?domain=${encodeURIComponent(url.hostname)}`;
     } catch (e) {
       return undefined;
     }
@@ -1848,7 +2062,8 @@ export default function App() {
     return `${days}d ago`;
   };
 
-  // Always show the digest date with its local curation time; retain the year for older digests.
+  // "4 min ago · Nov 20": how long ago the edition was built, then its date, so nobody has to
+  // work out whether "Nov 20 at 6:03 AM" is today. The year only appears when it differs.
   const formatCuratedAt = (value: number): string => {
     if (!Number.isFinite(value) || value <= 0) return '';
     const d = new Date(value);
@@ -1856,8 +2071,8 @@ export default function App() {
     const dateOptions: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
     if (d.getFullYear() !== now.getFullYear()) dateOptions.year = 'numeric';
     const date = d.toLocaleDateString([], dateOptions);
-    const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    return `${date} at ${time}`;
+    const relative = formatSyncTime(value);
+    return `${relative === 'Just now' ? 'just now' : relative} · ${date}`;
   };
 
   // Pounds, with enough precision that a few tenths of a penny still show
@@ -2030,6 +2245,7 @@ export default function App() {
     speechQueueRef.current = [];
     speechIndexRef.current = 0;
     speechArticleIdRef.current = null;
+    speechArticleItemRef.current = null;
     speechUtteranceRef.current = null;
     releaseWakeLock();
     setSpeechPlaying(false);
@@ -2041,6 +2257,7 @@ export default function App() {
   // Only a queue that ran to its end counts as listening; stopSpeech() is the other exit
   const finishSpeech = () => {
     const finishedId = speechArticleIdRef.current;
+    const finishedArticle = speechArticleItemRef.current;
     stopSpeech();
     if (!finishedId) return;
     setReadingStats(prev => ({
@@ -2048,6 +2265,23 @@ export default function App() {
       [finishedId]: { maxDepth: 100, finished: true, lastRead: Date.now() }
     }));
     setReadArticleIds(prev => (prev.includes(finishedId) ? prev : [...prev, finishedId]));
+    // A listen that ran to the end is reading time, so it belongs in the weekly review too.
+    if (finishedArticle) {
+      const minutes = parseInt(finishedArticle.readTime, 10) || 0;
+      setWeeklyHistory(prev => {
+        if (prev.some(it => it.id === finishedArticle.id)) return prev;
+        return [{
+          id: finishedArticle.id,
+          title: finishedArticle.title,
+          source: finishedArticle.source,
+          folder: finishedArticle.folder,
+          readTime: finishedArticle.readTime,
+          minutesSpent: minutes,
+          completedAt: Date.now(),
+          url: finishedArticle.url
+        }, ...prev];
+      });
+    }
     showToast('Finished listening · Read through recorded');
   };
 
@@ -2127,6 +2361,7 @@ export default function App() {
     speechQueueRef.current = queue;
     speechIndexRef.current = first;
     speechArticleIdRef.current = article.id;
+    speechArticleItemRef.current = article;
     speechStartedRef.current = false;
     setSpeechArticleId(article.id);
     setSpeechProgress({ index: first, total: queue.length, paragraph: queue[first].paragraphIndex });
@@ -2141,7 +2376,7 @@ export default function App() {
       if (speechStartedRef.current) return;
       stopSpeech();
       showToast('The device did not start speaking — try Read aloud again.');
-    }, 1600);
+    }, SPEECH_START_GRACE_MS);
   };
 
   const pauseSpeech = () => {
@@ -2267,9 +2502,9 @@ export default function App() {
     }
 
     if (isVotedMore) {
-      actionTags.push({ label: 'Voted More', color: 'amber' });
+      actionTags.push({ label: 'More like this', color: 'amber' });
     } else if (isVotedLess) {
-      actionTags.push({ label: 'Voted Less', color: 'rose' });
+      actionTags.push({ label: 'Less like this', color: 'rose' });
     }
 
     if (isSaved) {
@@ -2327,6 +2562,21 @@ export default function App() {
     readerHistoryDepthRef.current += 1;
   };
 
+  // The reader opens from Today, Feeds or Saved and never changes the tab underneath, so the
+  // way back should name the page the reader actually came from.
+  const readerBackLabel = activeTab === 'feeds'
+    ? 'Back to Feeds'
+    : activeTab === 'saved'
+      ? 'Back to Saved'
+      : 'Back to Digest';
+
+  const backgroundInert = Boolean(selectedArticle)
+    || showAddSourceModal
+    || showImportModal
+    || showSetupWizard
+    || showWeeklyReviewModal
+    || showDigestSettings;
+
   const closeArticle = () => {
     if (readerHistoryDepthRef.current > 0 && window.history.state?.curatorReader) {
       // Consuming the pushed entry fires popstate, which does the actual close below —
@@ -2362,7 +2612,9 @@ export default function App() {
   React.useEffect(() => {
     if (selectedArticle) {
       readerReturnFocusRef.current = (document.activeElement as HTMLElement) || null;
-      readerCloseButtonRef.current?.focus();
+      // Wait a frame: the reader paints in this commit, and focusing before it lands makes iOS
+      // scroll the page instead of the reader.
+      requestAnimationFrame(() => readerCloseButtonRef.current?.focus());
     } else if (readerReturnFocusRef.current) {
       readerReturnFocusRef.current.focus?.();
       readerReturnFocusRef.current = null;
@@ -2385,6 +2637,7 @@ export default function App() {
     }
   }, [digest, feedStreamArticles, savedIds]);
 
+  const unreadSourceCount = sources.filter(source => !readSourceIds.includes(source.id)).length;
   const sourcesByFolder = sources.reduce((acc, src) => {
     const folder = displayFolder(src.folder);
     if (!acc[folder]) acc[folder] = [];
@@ -2425,12 +2678,15 @@ export default function App() {
   const normalDigest = digest.filter(d => !d.isOutOfBubble);
   const outOfBubbleDigest = digest.filter(d => d.isOutOfBubble);
   const mutedDigestItems = digest.filter(item => Boolean(mutedCards[item.id]));
+  // What the reader can actually read in this edition, for the closing card
+  const editionItems = digest.filter(item => !mutedCards[item.id]);
+  const editionMinutes = editionItems.reduce((total, item) => total + (parseInt(item.readTime, 10) || 0), 0);
   const allDigestItemsMuted = digest.length > 0 && mutedDigestItems.length === digest.length;
   // Say how much is actually readable, so a fully muted digest never claims items are waiting.
   const digestSummaryLabel = digest.length === 0
     ? 'No stories yet'
     : mutedDigestItems.length > 0
-      ? `${digest.length} ${digest.length === 1 ? 'story' : 'stories'} · ${mutedDigestItems.length} muted`
+      ? `${digest.length} ${digest.length === 1 ? 'story' : 'stories'} · ${mutedDigestItems.length} hidden`
       : `${digest.length} ${digest.length === 1 ? 'story' : 'stories'} worth your time`;
 
   const restoreAllMutedCards = () => {
@@ -2458,8 +2714,8 @@ export default function App() {
     }));
 
     showToast(restoredIds.length === 1
-      ? 'Restored 1 muted story to your digest'
-      : `Restored ${restoredIds.length} muted stories to your digest`);
+      ? 'Restored 1 hidden story to your digest'
+      : `Restored ${restoredIds.length} hidden stories to your digest`);
   };
   const currentCalibrationItem = calibrationCandidates[calibrationIndex];
   const articleParagraphs = selectedArticle ? buildArticleParagraphs(selectedArticle.fullText) : [];
@@ -2486,7 +2742,7 @@ export default function App() {
                 activeToast.onAction?.();
                 setActiveToast(null);
               }}
-              className="ml-auto shrink-0 px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-semibold text-xs border border-amber-500/40 transition flex items-center gap-1 cursor-pointer"
+              className="ml-auto shrink-0 inline-flex min-h-11 items-center justify-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/20 px-3 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/30 cursor-pointer"
             >
               <RotateCcw className="w-3 h-3" />
               <span>{activeToast.actionLabel}</span>
@@ -2560,13 +2816,13 @@ export default function App() {
               className="flex items-center gap-2 min-h-10 px-1 text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors"
             >
               <ArrowLeft className="w-4 h-4" />
-              <span>Back to Digest</span>
+              <span>{readerBackLabel}</span>
             </button>
             <div className="flex items-center gap-2">
               <button 
                 type="button"
                 onClick={() => handleToggleReadAloud(selectedArticle)}
-                className={`px-3 py-2 min-h-10 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${
+                className={`px-3 py-2 min-h-11 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${
                   speechPlaying
                     ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 ring-2 ring-amber-500/30'
                     : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-amber-400 hover:border-slate-700'
@@ -2604,7 +2860,7 @@ export default function App() {
                   title={showReaderSourceNote ? 'Hide the source description' : `About ${selectedArticle.source}`}
                 >
                   <span>{selectedArticle.source}</span>
-                  <ChevronDown className={`w-3 h-3 text-slate-500 transition-transform ${showReaderSourceNote ? 'rotate-180' : ''}`} />
+                  <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform ${showReaderSourceNote ? 'rotate-180' : ''}`} />
                 </button>
               ) : (
                 <span className="font-medium text-slate-300">{selectedArticle.source}</span>
@@ -2639,7 +2895,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => handleToggleReadAloud(selectedArticle)}
-                      className="w-7 h-7 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center shrink-0 hover:bg-amber-400 transition"
+                      className="h-11 w-11 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center shrink-0 hover:bg-amber-400 transition"
                       title={speechPaused ? 'Resume' : 'Pause'}
                     >
                       {speechPaused ? <Play className="w-3.5 h-3.5 fill-current ml-0.5" /> : <Pause className="w-3.5 h-3.5 fill-current" />}
@@ -2653,7 +2909,7 @@ export default function App() {
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-xs text-slate-500 tabular-nums">{speechPercent}%</span>
+                    <span className="text-xs text-slate-400 tabular-nums">{speechPercent}%</span>
                     <button
                       type="button"
                       onClick={handleStopReadAloud}
@@ -2680,7 +2936,7 @@ export default function App() {
                   />
                 </div>
 
-                <p className="mt-2 text-xs text-slate-500">
+                <p className="mt-2 text-xs text-slate-400">
                   {speechProgress.paragraph >= 0 && articleParagraphs.length > 0
                     ? `Paragraph ${Math.min(speechProgress.paragraph + 1, articleParagraphs.length)} of ${articleParagraphs.length} · `
                     : ''}
@@ -2727,22 +2983,24 @@ export default function App() {
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={() => {
+                    // Only a record of when it was opened: reading the rest happens in another
+                    // app, which this one cannot see, so it must not claim the article was finished.
                     setReadingStats(prev => ({
                       ...prev,
                       [selectedArticle.id]: {
-                        maxDepth: Math.max(prev[selectedArticle.id]?.maxDepth || 0, 100),
-                        finished: true,
+                        ...prev[selectedArticle.id],
                         lastRead: Date.now()
                       }
                     }));
                     setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
                     showToast(`Opening original on ${selectedArticle.source}`);
                   }}
-                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-amber-400 hover:text-amber-300 transition-colors cursor-pointer"
+                  className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-amber-400 hover:text-amber-300 transition-colors cursor-pointer"
                   title={`Read original on ${selectedArticle.source} (opens external browser or app)`}
                   aria-label={`Read original on ${selectedArticle.source}`}
                 >
                   <ExternalLink className="w-4 h-4 text-amber-400/80 hover:text-amber-300 transition-colors" />
+                  <span>Read original</span>
                 </a>
 
                 {/* Feedback Icons Aligned to Right */}
@@ -2758,8 +3016,8 @@ export default function App() {
                       type="button"
                       onClick={() => undoHandleLess(selectedArticle.id)}
                       className="inline-flex min-h-11 items-center gap-1.5 rounded-xl px-3 text-xs font-medium text-amber-400 hover:bg-amber-500/10 hover:text-amber-300 transition-colors"
-                      title="Undo fewer on this topic"
-                      aria-label="Undo fewer on this topic"
+                      title="Undo — put this one story back in your digest"
+                      aria-label="Undo — put this one story back in your digest"
                     >
                       <RotateCcw className="w-4 h-4" />
                       <span>Undo</span>
@@ -2773,13 +3031,13 @@ export default function App() {
       )}
 
       {/* Main Top Header Bar */}
-      <header className="sticky top-0 z-40 w-full safe-header bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-3 sm:px-6 pb-3 shrink-0 shadow-sm">
+      <header inert={backgroundInert} className="sticky top-0 z-40 w-full safe-header bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-3 sm:px-6 pb-3 shrink-0 shadow-sm">
         <div className="max-w-3xl w-full mx-auto flex items-center justify-between gap-3">
           {/* Official Brand Logo & Subtitle */}
           <button 
             type="button" 
             onClick={() => setActiveTab('today')}
-            className="flex items-center gap-3 text-left focus:outline-none group cursor-pointer"
+            className="flex items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 group cursor-pointer"
             title="The Curator — Home"
           >
             <CuratorMark className="w-9 h-9 sm:w-10 sm:h-10 drop-shadow-md group-hover:scale-105 transition-transform" />
@@ -2803,6 +3061,7 @@ export default function App() {
               aria-haspopup="dialog"
             >
               <BarChart3 className="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform" />
+              <span className="sm:hidden text-xs font-semibold">Week</span>
               <span className="hidden sm:inline font-mono text-xs text-amber-300 font-semibold">{totalWeeklyMinutes}m week</span>
             </button>
             <button 
@@ -2834,7 +3093,40 @@ export default function App() {
       </header>
 
       {/* Content Area */}
-      <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-32 safe-main overflow-x-clip">
+      <main inert={backgroundInert} className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-32 safe-main overflow-x-clip">
+        {/* A write the browser refused: say so plainly, and offer a copy while it is still here */}
+        {storageFailure && (
+          <div
+            role="status"
+            className="mb-4 flex flex-wrap items-start gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-3 text-xs text-amber-200"
+          >
+            <AlertCircle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+            <p className="min-w-0 flex-1 leading-relaxed">
+              {storageFailure === 'quota'
+                ? 'This browser is out of space for Curator, so new saves may not survive a reload.'
+                : 'This browser is blocking local storage, so nothing new can be kept after a reload.'}
+              {' '}Export a copy to keep your library.
+            </p>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => downloadAppData()}
+                className="inline-flex min-h-11 items-center rounded-lg border border-amber-500/40 px-3 font-semibold text-amber-200 transition hover:bg-amber-500/20"
+              >
+                Export
+              </button>
+              <button
+                type="button"
+                onClick={() => setStorageFailure(null)}
+                aria-label="Dismiss the storage warning"
+                className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-amber-300/80 transition hover:text-amber-100"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* TAB 1: TODAY */}
         {activeTab === 'today' && (
           <div className="space-y-6 animate-fade-in w-full max-w-full">
@@ -2845,7 +3137,7 @@ export default function App() {
                   {loadingDigest && digest.length === 0
                     ? "Synthesizing today's list…"
                     : `${digestCuratedAt > 0
-                        ? `Curated on ${formatCuratedAt(digestCuratedAt)}`
+                        ? `Built ${formatCuratedAt(digestCuratedAt)}`
                         : `Today's digest · ${new Date().toLocaleDateString([], { month: 'short', day: 'numeric' })}`
                       } · ${digestSummaryLabel}${
                         semanticSummary && semanticSummary.feedbackExamples > 0
@@ -2854,46 +3146,18 @@ export default function App() {
                       }`}
                 </p>
               </div>
-              <div className="flex w-full flex-wrap items-center gap-2 text-xs text-slate-400 sm:w-auto">
-                <div role="group" aria-label="Articles per digest" className="flex items-center gap-1.5">
-                  <span>Articles:</span>
-                  {DIGEST_ITEM_COUNTS.map(num => (
-                    <button
-                      key={num}
-                      type="button"
-                      onClick={() => setItemCount(num)}
-                      aria-label={`Show ${num} articles per digest`}
-                      aria-pressed={itemCount === num}
-                      className={`min-w-11 min-h-11 rounded-lg px-3 font-medium transition ${itemCount === num ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'}`}
-                    >
-                      {num}
-                    </button>
-                  ))}
-                </div>
+              <div className="flex w-full items-center gap-2 text-xs text-slate-400 sm:w-auto">
                 <button
                   type="button"
-                  onClick={() => setCompactCards(value => !value)}
-                  aria-label="Compact article cards"
-                  aria-pressed={compactCards}
-                  className={`min-h-11 rounded-xl border px-3 font-medium transition ${compactCards ? 'bg-amber-500/15 border-amber-500/40 text-amber-300' : 'border-slate-800 text-slate-400 hover:text-slate-200'}`}
+                  onClick={() => setShowDigestSettings(true)}
+                  aria-haspopup="dialog"
+                  aria-expanded={showDigestSettings}
+                  className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/60 px-3 font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300"
                 >
-                  Compact cards
+                  <Sliders className="w-3.5 h-3.5 text-amber-400" />
+                  <span>{itemCount} stories</span>
+                  {compactCards && <span className="text-slate-400">· compact</span>}
                 </button>
-                <label className="flex min-h-11 flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-slate-800 px-3 py-2" title="Choose how much of the digest should be outside your usual interests.">
-                  <span className="font-medium text-slate-300">Serendipity</span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={serendipityDial}
-                    onChange={e => setSerendipityDial(Number(e.target.value))}
-                    aria-label="Serendipity"
-                    aria-valuetext={`${serendipityDial}% outside your usual interests`}
-                    className="w-20 accent-amber-500 cursor-pointer"
-                  />
-                  <span className="min-w-8 text-right text-amber-300">{serendipityDial}%</span>
-                  <span className="basis-full text-xs leading-tight text-slate-500">of the digest beyond your usual interests</span>
-                </label>
               </div>
             </div>
 
@@ -2912,10 +3176,91 @@ export default function App() {
               </button>
             )}
 
+            {digestOffline && digest.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-200">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span className="min-w-0 flex-1">
+                  Can’t reach the server, so this is your last edition{digestCuratedAt > 0 ? ` from ${formatCuratedAt(digestCuratedAt)}` : ''} — not today’s.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => generateDigest({ fresh: true })}
+                  className="min-h-9 rounded-lg border border-amber-500/40 px-2.5 font-medium transition hover:bg-amber-500/15"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+
+            {/* One feed is a real digest, but a thin one. Say so instead of waiting for the
+                reader to notice the carousel has a single circle. */}
+            {sources.length === 1 && (
+              <div className="rounded-3xl border border-amber-500/25 bg-amber-500/5 p-5">
+                <div className="flex items-start gap-3">
+                  <Rss className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-slate-100">One feed makes a thin edition</h3>
+                    <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                      You are following <span className="text-slate-200">{sources[0]?.title || 'a single feed'}</span>.
+                      Add a few more, or import the feeds you already follow, and tomorrow's digest is wider.
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('sources')}
+                        className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-amber-500 px-4 text-xs font-semibold text-slate-950 transition hover:bg-amber-400"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add sources</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={openImportModal}
+                        className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-slate-700 px-4 text-xs font-medium text-slate-200 transition hover:border-amber-500/40 hover:text-amber-300"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Import OPML</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {loadingDigest && digest.length === 0 ? (
-              <div className="py-20 text-center text-slate-500 space-y-3">
+              <div className="py-20 text-center text-slate-400 space-y-3">
                 <RefreshCw className="w-6 h-6 animate-spin mx-auto text-amber-500" />
                 <p className="text-sm">Synthesizing your morning reading list...</p>
+                {digestSlow && (
+                  <div className="mx-auto max-w-xs space-y-2 pt-2">
+                    <p className="text-xs leading-relaxed text-slate-400">
+                      Still working — the server may be waking up from idle. A cold start can take
+                      up to a minute.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => generateDigest({ fresh: true })}
+                      className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-700 px-4 text-xs font-semibold text-slate-200 transition hover:border-amber-500/40 hover:text-amber-300"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Start over</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : digestError && digest.length === 0 ? (
+              <div className="py-16 text-center space-y-3">
+                <AlertCircle className="w-6 h-6 mx-auto text-amber-400" />
+                <p className="text-sm font-medium text-slate-200">Couldn’t build today’s edition</p>
+                <p className="mx-auto max-w-sm text-xs leading-relaxed text-slate-400">{digestError}</p>
+                <button
+                  type="button"
+                  onClick={() => generateDigest({ fresh: true })}
+                  className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-amber-500 px-4 text-sm font-semibold text-slate-950 transition hover:bg-amber-400"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  <span>Try again</span>
+                </button>
               </div>
             ) : allDigestItemsMuted ? (
               <DigestEmptyState
@@ -2948,9 +3293,9 @@ export default function App() {
                         className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800/80 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-xs animate-fade-in backdrop-blur-sm shadow-sm"
                       >
                         <div className="flex items-center gap-2.5 min-w-0 flex-1 text-slate-300">
-                          <EyeOff className="w-4 h-4 text-slate-500 shrink-0" />
+                          <EyeOff className="w-4 h-4 text-slate-400 shrink-0" />
                           <span className="min-w-0">
-                            Fewer like this · <span className="font-semibold text-slate-200">"{item.title}"</span> quietened
+                            Less like this · <span className="font-semibold text-slate-200">"{item.title}"</span> hidden
                           </span>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
@@ -2958,8 +3303,8 @@ export default function App() {
                             type="button"
                             onClick={(e) => { e.stopPropagation(); undoHandleLess(item.id); }}
                             className="px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 font-semibold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
-                            title="Undo: restore this story to your digest"
-                            aria-label="Undo: restore this story to your digest"
+                            title="Undo — put this one story back in your digest"
+                            aria-label="Undo — put this one story back in your digest"
                           >
                             <RotateCcw className="w-3.5 h-3.5" />
                             <span>Undo</span>
@@ -2982,6 +3327,16 @@ export default function App() {
                     <article 
                       key={item.id}
                       onClick={() => openArticle(item)}
+                      // A card is a reading surface, not a button: a short name, and the four actions
+                      // inside it stay separately announced instead of being flattened into one label.
+                      aria-label={`${item.title} — ${item.source}`}
+                      tabIndex={0}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          openArticle(item);
+                        }
+                      }}
                       className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative ${
                         actions.hasAnyAction
                           ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
@@ -3076,22 +3431,6 @@ export default function App() {
                           />
                           <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
                           
-                          {/* Bookmark button in bottom right corner of image */}
-                          <div className="absolute bottom-4 right-4 z-10">
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                              className={`p-2.5 min-w-11 min-h-11 flex items-center justify-center rounded-xl backdrop-blur-md border transition shadow-lg ${
-                                savedIds.includes(item.id)
-                                  ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
-                                  : 'bg-slate-950/70 border-slate-700/60 text-slate-200 hover:text-amber-400 hover:bg-slate-900/90'
-                              }`}
-                              title={savedIds.includes(item.id) ? 'Remove from saved' : 'Save for later'}
-                              aria-label={savedIds.includes(item.id) ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
-                            >
-                              <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
-                            </button>
-                          </div>
                         </div>
                       )}
 
@@ -3140,6 +3479,20 @@ export default function App() {
                             >
                               <ExternalLink className="w-4 h-4" />
                             </a>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleSave(item); }}
+                              className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border transition ${
+                                savedIds.includes(item.id)
+                                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
+                                  : 'border-transparent text-slate-400 hover:text-amber-300'
+                              }`}
+                              title={savedIds.includes(item.id) ? 'Remove from saved' : 'Save for later'}
+                              aria-label={savedIds.includes(item.id) ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
+                              aria-pressed={savedIds.includes(item.id)}
+                            >
+                              <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
+                            </button>
                           </div>
                           <FeedbackActions
                             isMore={actions.isVotedMore}
@@ -3159,7 +3512,7 @@ export default function App() {
                     <div className="flex items-center gap-2 border-b border-slate-900 pb-3">
                       <Sparkles className="w-4 h-4 text-rose-400" />
                       <h3 className="text-xs font-semibold uppercase tracking-wider text-rose-400">
-                        Deliberate Stretch — Outside Your Usual Bubble
+                        Deliberate stretch
                       </h3>
                     </div>
 
@@ -3173,9 +3526,9 @@ export default function App() {
                             className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800/80 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-xs animate-fade-in backdrop-blur-sm shadow-sm"
                           >
                             <div className="flex items-center gap-2.5 min-w-0 flex-1 text-slate-300">
-                              <EyeOff className="w-4 h-4 text-slate-500 shrink-0" />
+                              <EyeOff className="w-4 h-4 text-slate-400 shrink-0" />
                               <span className="min-w-0">
-                                Fewer like this · <span className="font-semibold text-slate-200">"{item.title}"</span> quietened
+                                Less like this · <span className="font-semibold text-slate-200">"{item.title}"</span> hidden
                               </span>
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
@@ -3183,8 +3536,8 @@ export default function App() {
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); undoHandleLess(item.id); }}
                                 className="px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 font-semibold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
-                                title="Undo: restore this story to your digest"
-                                aria-label="Undo: restore this story to your digest"
+                                title="Undo — put this one story back in your digest"
+                                aria-label="Undo — put this one story back in your digest"
                               >
                                 <RotateCcw className="w-3.5 h-3.5" />
                                 <span>Undo</span>
@@ -3207,6 +3560,16 @@ export default function App() {
                         <article 
                           key={item.id}
                           onClick={() => openArticle(item)}
+                          // A card is a reading surface, not a button: a short name, and the four actions
+                          // inside it stay separately announced instead of being flattened into one label.
+                          aria-label={`${item.title} — ${item.source}`}
+                          tabIndex={0}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              openArticle(item);
+                            }
+                          }}
                           className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative ${
                             actions.hasAnyAction
                               ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
@@ -3267,14 +3630,9 @@ export default function App() {
                                 <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300">
                                   <span>Opened</span>
                                 </div>
-                              ) : (
-                                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-rose-950/70 border border-rose-800/60 text-xs font-medium text-rose-300">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
-                                  <span>Stretch</span>
-                                </div>
-                              )}
+                              ) : null}
                               <span className="text-xs uppercase font-semibold tracking-wider bg-rose-950/80 text-rose-300 px-2.5 py-0.5 rounded-full border border-rose-800/60">
-                                Outside Bubble
+                                Outside your bubble
                               </span>
                             </div>
                           </div>
@@ -3282,8 +3640,7 @@ export default function App() {
                           {!item.bannerImage && (
                             <div className={`mx-3.5 rounded-2xl border border-rose-900/60 bg-gradient-to-br from-rose-950/40 via-slate-950 to-slate-900 flex items-center justify-center ${compactCards ? 'h-24' : 'h-32'}`}>
                               <div className="text-center px-4">
-                                <CuratorMark className="w-7 h-7 mx-auto mb-1.5 opacity-80" />
-                                <div className="text-xs uppercase font-bold tracking-wider text-rose-400/90">Deliberate Stretch</div>
+                                <CuratorMark className="w-7 h-7 mx-auto opacity-80" />
                               </div>
                             </div>
                           )}
@@ -3296,31 +3653,11 @@ export default function App() {
                               />
                               <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
                               
-                              <div className="absolute bottom-4 right-4 z-10">
-                                <button
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                                  className={`p-2.5 min-w-11 min-h-11 flex items-center justify-center rounded-xl backdrop-blur-md border transition shadow-lg ${
-                                    savedIds.includes(item.id)
-                                      ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
-                                      : 'bg-slate-950/70 border-rose-800/60 text-slate-200 hover:text-amber-400'
-                                  }`}
-                                  title={savedIds.includes(item.id) ? 'Remove from saved' : 'Save for later'}
-                                  aria-label={savedIds.includes(item.id) ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
-                                >
-                                  <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
-                                </button>
-                              </div>
                             </div>
                           )}
 
                           <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
                             <div>
-                              {item.bannerImage && (
-                                <div className="text-xs uppercase font-bold tracking-wider text-rose-400/90 mb-1">
-                                  Deliberate Stretch
-                                </div>
-                              )}
                               <h3 className={`${compactCards ? 'text-lg' : 'text-xl'} font-bold tracking-tight text-slate-100 group-hover:text-rose-300 transition-colors`}>
                                 {item.title}
                               </h3>
@@ -3359,6 +3696,20 @@ export default function App() {
                                 >
                                   <ExternalLink className="w-4 h-4" />
                                 </a>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); handleSave(item); }}
+                                  className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border transition ${
+                                    savedIds.includes(item.id)
+                                      ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
+                                      : 'border-transparent text-slate-400 hover:text-amber-300'
+                                  }`}
+                                  title={savedIds.includes(item.id) ? 'Remove from saved' : 'Save for later'}
+                                  aria-label={savedIds.includes(item.id) ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
+                                  aria-pressed={savedIds.includes(item.id)}
+                                >
+                                  <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
+                                </button>
                               </div>
                               <FeedbackActions
                                 isMore={actions.isVotedMore}
@@ -3373,6 +3724,23 @@ export default function App() {
                     })}
                   </div>
                 )}
+
+                {/* The edition ends here: say what they just read, and when the next one lands */}
+                <div className="rounded-3xl border border-slate-800 bg-slate-900/40 px-5 py-6 text-center">
+                  <CuratorMark className="w-8 h-8 mx-auto mb-3 opacity-90" />
+                  <p className="text-sm font-semibold text-slate-100">
+                    That&apos;s your edition — {editionItems.length} {editionItems.length === 1 ? 'story' : 'stories'}, ~{editionMinutes} minutes.
+                  </p>
+                  <p className="mt-1 text-xs text-slate-400">Next issue tomorrow at 7am.</p>
+                  <button
+                    type="button"
+                    onClick={() => generateDigest({ fresh: true })}
+                    className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-700 px-4 text-xs font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Read more now</span>
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -3387,7 +3755,7 @@ export default function App() {
             </div>
 
             {savedDigestItems.length === 0 ? (
-              <div className="py-20 text-center text-slate-500 space-y-2">
+              <div className="py-20 text-center text-slate-400 space-y-2">
                 <Bookmark className="w-8 h-8 mx-auto text-slate-700 mb-2" />
                 <p className="text-sm">No saved items yet.</p>
                 <p className="text-xs text-slate-400">Tap the bookmark icon on any digest item to save it here.</p>
@@ -3400,6 +3768,16 @@ export default function App() {
                     <article 
                       key={item.id}
                       onClick={() => openArticle(item)}
+                      // A card is a reading surface, not a button: a short name, and the four actions
+                      // inside it stay separately announced instead of being flattened into one label.
+                      aria-label={`${item.title} — ${item.source}`}
+                      tabIndex={0}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          openArticle(item);
+                        }
+                      }}
                       className={`p-5 rounded-2xl transition-all duration-300 cursor-pointer space-y-3 relative ${
                         actions.hasAnyAction
                           ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_16px_40px_-6px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.3)] hover:border-emerald-400'
@@ -3468,10 +3846,9 @@ export default function App() {
         )}
 
         {/* TAB 3: SOURCES */}
-        {/* The first-run wizard and the Add Source / OPML overlays live in this branch, so it
-            also mounts when one of them is open — otherwise a button that opens them from
-            Settings would appear to do nothing. */}
-        {(activeTab === 'sources' || showSetupWizard || showImportModal || showAddSourceModal) && (
+        {/* The setup wizard and the Add Source / OPML overlays are portalled at the top level,
+            so opening one of them never mounts this page underneath. */}
+        {activeTab === 'sources' && (
           <div className="space-y-8 animate-fade-in">
             <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-900 pb-4">
               <div>
@@ -3520,7 +3897,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       setDiscoverGroundingLinks([]);
                       setDiscoverError(null);
                     }}
-                    className="text-xs text-slate-400 hover:text-slate-200 shrink-0"
+                    className="inline-flex min-h-11 shrink-0 items-center px-2 -mr-2 text-xs text-slate-400 hover:text-slate-200"
                   >
                     Clear
                   </button>
@@ -3529,13 +3906,13 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
               <form onSubmit={handleDiscoverSources} className="flex flex-col sm:flex-row gap-2">
                 <div className="relative flex-1">
-                  <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     type="text"
                     value={discoverQuery}
                     onChange={e => setDiscoverQuery(e.target.value)}
                     placeholder="Search writers, publications, or topics"
-                    className="w-full rounded-xl bg-slate-950 border border-slate-800 pl-10 pr-3 py-2.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 pl-10 pr-3 py-2.5 text-xs text-slate-100 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                   />
                 </div>
                 <button
@@ -3658,7 +4035,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                           </div>
 
                           {item.feedUrl && (
-                            <div className="text-xs text-slate-500 font-mono truncate">
+                            <div className="text-xs text-slate-400 font-mono truncate">
                               Feed: {item.feedUrl}
                             </div>
                           )}
@@ -3699,28 +4076,40 @@ Search for writers, publications, or topics. Curator checks whether each result 
               <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-start gap-3 w-full max-w-full">
                 <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                 <div className="min-w-0 flex-1">
-                  <span className="font-semibold block mb-0.5">Some sources require attention</span>
-                  <span>{sources.filter(s => s.status === 'failing').length} source is currently not responding and has been quietly bypassed in digests.</span>
+                  <span className="font-semibold block mb-0.5">
+                    {(() => {
+                      const failing = sources.filter(s => s.status === 'failing').length;
+                      return failing === 1 ? 'One source needs attention' : `${failing} sources need attention`;
+                    })()}
+                  </span>
+                  <span>
+                    {(() => {
+                      const failing = sources.filter(s => s.status === 'failing').length;
+                      return failing === 1
+                        ? 'It is not responding right now and has been left out of recent digests.'
+                        : 'They are not responding right now and have been left out of recent digests.';
+                    })()}
+                  </span>
                 </div>
               </div>
             )}
 
             <div className="relative">
-              <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="search"
                 value={sourceSearch}
                 onChange={e => setSourceSearch(e.target.value)}
                 placeholder="Search your sources"
                 aria-label="Search sources by name, feed URL, folder, or category"
-                className="w-full rounded-xl bg-slate-950 border border-slate-800 pl-10 pr-3 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+                className="w-full rounded-xl bg-slate-950 border border-slate-800 pl-10 pr-3 py-3 text-sm text-slate-100 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
               />
             </div>
 
             <div className="space-y-6 w-full max-w-full">
               {Object.entries(filteredSourcesByFolder).sort(([a], [b]) => a.localeCompare(b)).map(([folder, folderSources]: [string, SourceItem[]]) => (
                 <div key={folder} className="space-y-3 w-full max-w-full">
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-900 pb-2">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 border-b border-slate-900 pb-2">
                     {folder} ({folderSources.length})
                   </h3>
                   <div className="grid gap-2 w-full max-w-full">
@@ -3830,13 +4219,16 @@ Search for writers, publications, or topics. Curator checks whether each result 
                             >
                               <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-amber-400' : ''}`} />
                             </button>
+                            {pendingDeleteId === src.id && (
+                              <span className="self-center pl-1 text-xs font-medium text-rose-300">Tap again to remove</span>
+                            )}
                             <button 
                               type="button"
                               onClick={() => handleDeleteSource(src.id)}
                               className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
                                 pendingDeleteId === src.id
                                   ? 'bg-rose-500/15 border-rose-500/50 text-rose-300'
-                                  : 'border-transparent text-slate-500 hover:text-rose-400'
+                                  : 'border-transparent text-slate-400 hover:text-rose-400'
                               }`}
                               title={pendingDeleteId === src.id ? 'Tap again to confirm removal' : 'Remove source'}
                               aria-label={pendingDeleteId === src.id ? 'Tap again to confirm removal' : 'Remove source'}
@@ -3850,9 +4242,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                               <div className="rounded-xl bg-slate-950/70 border border-slate-800 p-3 sm:p-3.5 space-y-3">
                                 <div className="space-y-0.5">
                                   <p className="text-xs font-medium text-slate-200">Categories</p>
-                                  <p className="text-xs text-slate-500 leading-relaxed">
-                                    Pick any that describe this feed. Its folder stays unchanged.
-                                  </p>
+                                  <p className="text-xs text-slate-400 leading-relaxed">{TAXONOMY_NOTE}</p>
                                 </div>
                                 <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto overscroll-contain py-0.5">
                                   {sourceCategories.map(category => {
@@ -3890,7 +4280,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                                     onChange={e => setCategoryDraft(e.target.value)}
                                     placeholder="New category"
                                     aria-label={`Create a category for ${src.title}`}
-                                    className="min-w-0 flex-1 rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+                                    className="min-w-0 flex-1 rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                                   />
                                   <button
                                     type="submit"
@@ -3922,443 +4312,13 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 type="button"
                 onClick={handleExportOPML}
                 title="Download every watched source as an OPML file, to import into another reader"
-                className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition"
+                className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-300 transition"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Export subscriptions (OPML)</span>
               </button>
             </div>
 
-            {/* Add Source Modal — portalled as well, so it paints above the setup wizard */}
-            {showAddSourceModal && createPortal(
-              <div className="fixed inset-0 z-[85] bg-slate-950/85 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
-                <div className="w-full max-w-md my-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold text-slate-100">Add New Source</h3>
-                    <button type="button" onClick={() => setShowAddSourceModal(false)} title="Close" aria-label="Close the Add Source form" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-slate-100 transition">
-                      <X className="w-5 h-5" />
-                    </button>
-                  </div>
-                  <form onSubmit={handleAddSource} noValidate className="space-y-4">
-                    <div>
-                      <label className="block text-xs font-medium text-slate-400 mb-1">Source Title</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. Marginal Revolution"
-                        value={newSourceTitle}
-                        onChange={e => { setNewSourceTitle(e.target.value); setNewSourceTitleError(null); }}
-                        aria-invalid={newSourceTitleError ? true : undefined}
-                        className={`w-full rounded-xl bg-slate-950 border px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500 ${newSourceTitleError ? 'border-rose-500' : 'border-slate-800'}`}
-                      />
-                      {newSourceTitleError && (
-                        <p role="alert" className="text-xs text-rose-400 mt-1">{newSourceTitleError}</p>
-                      )}
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-400 mb-1">RSS / Atom Feed URL</label>
-                      <input
-                        type="url"
-                        required
-                        placeholder="https://example.com/feed.xml"
-                        value={newSourceUrl}
-                        onChange={e => { setNewSourceUrl(e.target.value); setNewSourceUrlError(null); }}
-                        aria-invalid={newSourceUrlError ? true : undefined}
-                        className={`w-full rounded-xl bg-slate-950 border px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500 ${newSourceUrlError ? 'border-rose-500' : 'border-slate-800'}`}
-                      />
-                      {newSourceUrlError && (
-                        <p role="alert" className="text-xs text-rose-400 mt-1">{newSourceUrlError}</p>
-                      )}
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-400 mb-1">Folder</label>
-                      <select
-                        value={newSourceFolderCustom ? '__new__' : newSourceFolder}
-                        onChange={e => {
-                          if (e.target.value === '__new__') {
-                            setNewSourceFolderCustom(true);
-                            setNewSourceFolder('');
-                          } else {
-                            setNewSourceFolderCustom(false);
-                            setNewSourceFolder(e.target.value);
-                          }
-                        }}
-                        className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
-                      >
-                        {sourceFolders.map(folder => <option key={folder} value={folder}>{folder}</option>)}
-                        <option value="__new__">Create a new folder…</option>
-                      </select>
-                      {newSourceFolderCustom && (
-                        <input
-                          type="text"
-                          required
-                          autoFocus
-                          placeholder="New folder name"
-                          value={newSourceFolder}
-                          onChange={e => setNewSourceFolder(e.target.value)}
-                          className="mt-2 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
-                        />
-                      )}
-                    </div>
-                    <div className="flex justify-end gap-2 pt-2">
-                      <button 
-                        type="button" 
-                        onClick={() => setShowAddSourceModal(false)}
-                        className="px-4 py-2 text-xs font-medium text-slate-400 hover:text-slate-200"
-                      >
-                        Cancel
-                      </button>
-                      <button 
-                        type="submit"
-                        className="px-4 py-2 text-xs font-medium rounded-xl bg-amber-500 text-slate-950 font-semibold hover:bg-amber-400 transition"
-                      >
-                        Add Source
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              </div>,
-              document.body
-            )}
-
-            {/* First-run semantic setup — portalled to <body> so the overlay always covers
-                the whole screen (header and dock included), whichever tab opened it */}
-            {showSetupWizard && createPortal(
-              <div className="fixed inset-0 z-[80] bg-slate-950/90 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
-                <div className="w-full max-w-lg my-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-5 animate-fade-in">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-xs uppercase tracking-wider text-amber-400/90 font-semibold">
-                        Setup · step {setupStep} of 3
-                      </p>
-                      <h3 className="text-lg font-semibold text-slate-100 mt-1">
-                        {setupStep === 1
-                          ? 'Set up your semantic curator'
-                          : setupStep === 2
-                            ? 'Teach it in ten taps'
-                            : 'Your engine is ready'}
-                      </h3>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={dismissSetupWizard}
-                      className="p-1 text-slate-500 hover:text-slate-200 transition"
-                      title="Skip setup"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  <div className="flex items-center gap-1.5">
-                    {[1, 2, 3].map(step => (
-                      <span
-                        key={step}
-                        className={`h-1 flex-1 rounded-full transition-colors ${step <= setupStep ? 'bg-amber-500' : 'bg-slate-800'}`}
-                      />
-                    ))}
-                  </div>
-
-                  {setupStep === 1 && (
-                    <div className="space-y-4">
-                      <p className="text-xs text-slate-400 leading-relaxed">
-                        Curator ranks your feeds by similarity to what you vote on. That profile comes from a few quick
-                        verdicts below and stays in this browser — no account, no key, no third-party calls.
-                      </p>
-
-                      <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 space-y-1.5">
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-400">Feeds in your library</span>
-                          <span className="font-semibold text-slate-100">{sources.length}</span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-400">Votes already in your profile</span>
-                          <span className="font-semibold text-slate-100">{semanticFeedback.length}</span>
-                        </div>
-                      </div>
-
-                      {setupError && (
-                        <p className="text-xs text-rose-400 leading-relaxed">{setupError}</p>
-                      )}
-
-                      <div className="space-y-2">
-                        <button
-                          type="button"
-                          onClick={loadCalibration}
-                          disabled={loadingCalibration}
-                          className="w-full px-4 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-semibold flex items-center justify-center gap-2 hover:bg-amber-400 transition disabled:opacity-60"
-                        >
-                          {loadingCalibration ? (
-                            <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Scanning your feeds…</>
-                          ) : (
-                            <><Sparkles className="w-3.5 h-3.5" /> Scan my feeds and calibrate</>
-                          )}
-                        </button>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setShowAddSourceModal(true)}
-                            className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-300 hover:text-slate-100 transition"
-                          >
-                            Import OPML
-                          </button>
-                          <button
-                            type="button"
-                            onClick={finishSetup}
-                            className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-400 hover:text-slate-200 transition"
-                          >
-                            Skip for now
-                          </button>
-                        </div>
-                      </div>
-
-                      <p className="text-xs text-slate-500 leading-relaxed">
-                        No provider keys needed. OpenAI-compatible or Gemini embeddings are an optional upgrade in Settings.
-                      </p>
-                    </div>
-                  )}
-
-                  {setupStep === 2 && (
-                    <div className="space-y-4">
-                      <p className="text-xs text-slate-400 leading-relaxed">
-                        Say what you would read and what you would not. Titles and excerpts only — the built-in engine
-                        scores them on this app's server.
-                      </p>
-
-                      {currentCalibrationItem ? (
-                        <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-2">
-                          <div className="text-xs text-slate-500">
-                            {currentCalibrationItem.source} · {currentCalibrationItem.folder}
-                          </div>
-                          <h4 className="text-sm font-semibold text-slate-100 leading-snug">
-                            {currentCalibrationItem.title}
-                          </h4>
-                          <p className="text-xs text-slate-400 leading-relaxed line-clamp-3">
-                            {currentCalibrationItem.summary}
-                          </p>
-                          <div className="flex gap-2 pt-1">
-                            <button
-                              type="button"
-                              onClick={() => answerCalibration(currentCalibrationItem, 'like')}
-                              className="flex-1 min-h-11 px-3 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 flex items-center justify-center hover:bg-emerald-500/25 transition"
-                              title="More like this"
-                              aria-label="More like this"
-                            >
-                              <ThumbsUp className="w-4 h-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => answerCalibration(currentCalibrationItem, 'dislike')}
-                              className="flex-1 min-h-11 px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 flex items-center justify-center hover:bg-rose-500/20 transition"
-                              title="Not for me"
-                              aria-label="Not for me"
-                            >
-                              <ThumbsDown className="w-4 h-4" />
-                            </button>
-                          </div>
-                          <div className="flex items-center justify-center gap-4 text-xs font-medium text-slate-400">
-                            <span className="flex items-center gap-1">
-                              <ThumbsUp className="w-3 h-3 text-emerald-400/70" /> read it
-                            </span>
-                            <span className="flex items-center gap-1">
-                              <ThumbsDown className="w-3 h-3 text-rose-400/70" /> skip it
-                            </span>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 text-center text-xs text-slate-300">
-                          <Check className="w-5 h-5 text-emerald-400 mx-auto mb-2" />
-                          {calibrationVotes} verdict{calibrationVotes === 1 ? '' : 's'} recorded. That is enough to
-                          rank today's digest.
-                        </div>
-                      )}
-
-                      <div className="flex items-center justify-between text-xs text-slate-500">
-                        <span>
-                          {Math.min(calibrationIndex, calibrationCandidates.length)} of {calibrationCandidates.length} reviewed
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setSetupStep(3)}
-                          className="text-amber-400 font-medium hover:text-amber-300 transition"
-                        >
-                          Continue
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {setupStep === 3 && (
-                    <div className="space-y-4">
-                      <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 space-y-1.5">
-                        <div className="flex items-center gap-2 font-medium">
-                          <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                          Built-in semantic engine: on
-                        </div>
-                        <p className="text-xs text-slate-400 leading-relaxed">
-                          {calibrationVotes > 0
-                            ? `Ranking from ${calibrationVotes} calibration verdict${calibrationVotes === 1 ? '' : 's'} plus any earlier votes.`
-                            : 'Ranking from the votes you cast on digest cards.'}
-                          {' '}No key and no third-party calls. Refreshing the digest rotates in pieces you have not seen.
-                        </p>
-                      </div>
-
-                      <div className="flex flex-col gap-2">
-                        <button
-                          type="button"
-                          onClick={finishSetup}
-                          className="w-full px-4 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-semibold hover:bg-amber-400 transition"
-                        >
-                          Build my digest
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            finishSetup();
-                            setActiveTab('settings');
-                          }}
-                          className="w-full px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-300 hover:text-slate-100 transition"
-                        >
-                          Add an embeddings provider (optional)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSetupStep(2)}
-                          className="text-xs text-slate-400 hover:text-slate-200 transition"
-                        >
-                          Back to calibration
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>,
-              document.body
-            )}
-
-            {/* OPML Import Modal */}
-            {showImportModal && createPortal(
-              <div className="fixed inset-0 z-[85] bg-slate-950/85 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
-                <div className="w-full max-w-lg my-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold text-slate-100">Import Subscription List (OPML)</h3>
-                    <button type="button" onClick={() => setShowImportModal(false)} title="Close" aria-label="Close the OPML import form" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-slate-100 transition">
-                      <X className="w-5 h-5" />
-                    </button>
-                  </div>
-                  <p className="text-xs text-slate-400">
-                    Upload your reader’s <span className="text-slate-200 font-medium">.opml</span> or <span className="text-slate-200 font-medium">.xml</span> export file in one step, or paste its contents below. Folders are preserved.
-                  </p>
-
-                  {/* File Upload Dropzone */}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".opml,.xml,text/xml,application/xml,text/x-opml"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        handleOpmlFileSelected(file);
-                      }
-                      e.target.value = '';
-                    }}
-                  />
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => fileInputRef.current?.click()}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        fileInputRef.current?.click();
-                      }
-                    }}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      setIsDraggingOpml(true);
-                    }}
-                    onDragLeave={() => setIsDraggingOpml(false)}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      setIsDraggingOpml(false);
-                      const file = e.dataTransfer.files?.[0];
-                      if (file) {
-                        handleOpmlFileSelected(file);
-                      }
-                    }}
-                    className={`rounded-2xl border-2 border-dashed p-5 text-center cursor-pointer transition ${
-                      isDraggingOpml
-                        ? 'border-amber-400 bg-amber-500/10'
-                        : 'border-slate-700 bg-slate-950/60 hover:border-slate-600 hover:bg-slate-950'
-                    }`}
-                  >
-                    <FileUp className="w-6 h-6 text-amber-400 mx-auto mb-2" />
-                    <div className="text-xs font-medium text-slate-200">
-                      {importFileName ? `Selected: ${importFileName}` : 'Choose an OPML / XML file or drop it here'}
-                    </div>
-                    <div className="text-xs text-slate-400 mt-1">
-                      Supports standard exports from Feedly, NetNewsWire, Reeder, Substack, and Inoreader
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="block text-xs font-medium text-slate-400">
-                      Or paste OPML XML directly
-                    </label>
-                    <textarea 
-                      rows={5}
-                      placeholder="<?xml version='1.0' encoding='UTF-8'?><opml>...</opml>"
-                      value={importText}
-                      onChange={e => setImportText(e.target.value)}
-                      className="w-full rounded-xl bg-slate-950 border border-slate-800 p-3 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
-                    />
-                  </div>
-
-                  {importError && (
-                    <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-start gap-2">
-                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
-                      <span>{importError}</span>
-                    </div>
-                  )}
-
-                  {importResult && (
-                    <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs space-y-2">
-                      <div className="font-medium">
-                        Imported {importResult.totalImported} sources ({importResult.successCount} active, {importResult.failCount} failing).
-                      </div>
-                      {importResult.failures && importResult.failures.length > 0 && (
-                        <ul className="space-y-1 text-xs text-amber-300 border-t border-emerald-500/20 pt-2">
-                          {importResult.failures.map((f, idx) => (
-                            <li key={idx}>
-                              {f.title}: {f.reason}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="flex justify-end gap-2 pt-2">
-                    <button 
-                      type="button" 
-                      onClick={() => setShowImportModal(false)}
-                      className="px-4 py-2 text-xs font-medium text-slate-400 hover:text-slate-200"
-                    >
-                      Close
-                    </button>
-                    <button 
-                      type="button"
-                      disabled={isImportingOpml || !importText.trim()}
-                      onClick={handleImportOPML}
-                      className="px-4 py-2 text-xs font-medium rounded-xl bg-amber-500 text-slate-950 font-semibold hover:bg-amber-400 transition disabled:opacity-50"
-                    >
-                      {isImportingOpml ? 'Importing...' : 'Process Import'}
-                    </button>
-                  </div>
-                </div>
-              </div>,
-              document.body
-            )}
           </div>
         )}
 
@@ -4369,6 +4329,21 @@ Search for writers, publications, or topics. Curator checks whether each result 
               <h2 className="text-xl font-semibold tracking-tight text-slate-100">Settings</h2>
               <p className="text-xs text-slate-400 mt-0.5">Tune your digest and manage your reading preferences.</p>
             </div>
+
+            {/* Installing comes first for alpha testers: everything else is easier from the app */}
+            <details open className="rounded-3xl border border-amber-500/25 bg-amber-500/5 p-5">
+              <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-amber-200">
+                <Download className="w-4 h-4" />
+                <span>Install Curator on your iPhone</span>
+              </summary>
+              <div className="pt-3">
+                <p className="text-xs text-amber-100/80">Scan the code, open Curator in Safari, then use Share → Add to Home Screen.</p>
+                <div className="flex flex-col sm:flex-row items-center gap-6 pt-3">
+                  {typeof window !== 'undefined' && <QRCodeBox url={window.location.origin} />}
+                  <div className="text-xs text-amber-100/70">The Home Screen shortcut opens Curator like an app.</div>
+                </div>
+              </div>
+            </details>
 
             {/* Weekly Reading Activity Summary in Settings */}
             <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
@@ -4408,14 +4383,15 @@ Search for writers, publications, or topics. Curator checks whether each result 
               </div>
             </div>
 
-            {/* Server-side request tally, folded away: it is plumbing, not a reading setting */}
+            {/* Server-side request tally: plumbing, and only shown with the debug flag on */}
+            {showDiagnostics && (
             <details className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
               <summary className="flex items-start justify-between gap-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
                 <div>
                   <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
                     <Activity className="w-4 h-4 text-amber-400" />
                     <span>Server activity</span>
-                    <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                    <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
                   </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
                     Every request Curator has made, counted on the server. Kept for {usageStats?.retentionDays ?? 120} days. Open for the tally and cost estimate.
@@ -4450,7 +4426,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       <div className="text-sm font-semibold text-amber-300">
                         {bucket ? `£${formatGbp(bucket.gbp)}` : '—'}
                       </div>
-                      <div className="text-xs text-slate-500">
+                      <div className="text-xs text-slate-400">
                         {bucket ? `$${bucket.usd.toFixed(4)}` : ''}
                       </div>
                     </div>
@@ -4466,16 +4442,17 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 </p>
               )}
 
-              <p className="text-xs text-slate-500 leading-relaxed">
+              <p className="text-xs text-slate-400 leading-relaxed">
                 Estimate at ${usageStats?.rates?.inputMiss ?? 0.15}/1M input, ${usageStats?.rates?.inputHit ?? 0.003}/1M cached input
                 and ${usageStats?.rates?.output ?? 0.6}/1M output, converted at £1 = ${usageStats?.usdPerGbp ?? 1.32}.
                 {usageStats?.peakNow ? ' Peak hours now — these calls bill at 2×.' : ' Peak hours (Mon–Fri, 01:00–04:00 and 06:00–10:00 UTC) double these rates.'}
               </p>
 
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-400">
                 Counted inside the server container, so it survives app restarts but starts fresh on a redeploy.
               </p>
             </details>
+            )}
 
             {/* Read aloud: the onboard voice and pace the reader speaks with */}
             <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
@@ -4495,7 +4472,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 <select
                   value={speechVoiceUri}
                   onChange={e => setSpeechVoiceUri(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500 cursor-pointer"
                 >
                   <option value={SPEECH_VOICE_JAMIE_DEFAULT}>
                     Jamie (Premium){jamiePremiumSpeechVoice?.lang ? ` · ${jamiePremiumSpeechVoice.lang}` : ''} — default
@@ -4511,12 +4488,12 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     </option>
                   ))}
                 </select>
-                <p className="text-xs text-slate-500 mt-1">
+                <p className="text-xs text-slate-400 mt-1">
                   {speechVoiceOptions.length > 0
                     ? `${speechVoiceOptions.length} ${speechVoiceOptions.length === 1 ? 'voice' : 'voices'} available on this device. Enhanced and Premium voices sound markedly better than the compact ones.`
                     : 'This device has not reported its voices yet — start Read aloud once and they appear here.'}
                 </p>
-                <p className="text-xs text-slate-500 mt-1">
+                <p className="text-xs text-slate-400 mt-1">
                   Jamie (Premium) is the default. If this browser does not expose that voice, Read aloud
                   leaves voice selection to the device and its Spoken Content settings.
                 </p>
@@ -4537,7 +4514,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   className="w-full accent-amber-400"
                   aria-label="Read aloud speed"
                 />
-                <div className="flex justify-between text-xs text-slate-500">
+                <div className="flex justify-between text-xs text-slate-400">
                   <span>Slower</span>
                   <span>Calm default {SPEECH_RATE_DEFAULT.toFixed(2)}×</span>
                   <span>Faster</span>
@@ -4554,11 +4531,17 @@ Search for writers, publications, or topics. Curator checks whether each result 
             </div>
 
             {/* Provider-configurable AI services */}
-            <div id="provider-settings" className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-5 scroll-mt-6">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-200">Optional AI services</h3>
-                <p className="text-xs text-slate-400 mt-0.5">Curator works without an external AI service. Connect one if you want AI-assisted digest writing or richer topic matching.</p>
-              </div>
+            <details id="provider-settings" className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-5 scroll-mt-6">
+              <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+                <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                  <span>Connect an AI service (optional)</span>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Curator writes and ranks with its built-in engine. Connect a provider only if you want its
+                  writing, its deeper matching, or both. Everything below is advanced and optional.
+                </p>
+              </summary>
 
               <div
                 role={startupApiStatus === 'issue' ? 'alert' : 'status'}
@@ -4647,7 +4630,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   <select
                     value={aiProvider}
                     onChange={e => setAiProvider(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500 cursor-pointer"
                   >
                     <option value="deterministic">Built-in (no external AI)</option>
                     <option value="openai-compatible">OpenAI or compatible service</option>
@@ -4664,9 +4647,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       value={aiBaseUrl}
                       onChange={e => setAiBaseUrl(e.target.value)}
                       placeholder="https://api.openai.com/v1"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                     />
-                    <p className="text-xs text-slate-500 mt-1">Use the HTTPS API URL from your provider. OpenAI, OpenRouter, and compatible services are supported.</p>
+                    <p className="text-xs text-slate-400 mt-1">Use the HTTPS API URL from your provider. OpenAI, OpenRouter, and compatible services are supported.</p>
                   </div>
                 )}
 
@@ -4679,7 +4662,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         value={aiModel}
                         onChange={e => setAiModel(e.target.value)}
                         placeholder={aiProvider === 'openai-compatible' ? 'e.g. gpt-4o-mini or provider model ID' : aiProvider === 'anthropic' ? 'e.g. claude-3-5-sonnet-20241022' : 'e.g. gemini-2.5-flash'}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                       />
                     </div>
                     <div>
@@ -4689,9 +4672,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         value={customApiKey}
                         onChange={e => setCustomApiKey(e.target.value)}
                         placeholder="Your provider API key"
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                       />
-                      <p className="text-xs text-slate-500 mt-1">Stored in this browser, sent securely to Curator, then forwarded to your chosen provider.</p>
+                      <p className="text-xs text-slate-400 mt-1">Stored in this browser, sent securely to Curator, then forwarded to your chosen provider.</p>
                     </div>
 
                     <ProviderTestButton
@@ -4706,7 +4689,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 )}
 
                 <div className="pt-3 border-t border-slate-800">
-                  <label htmlFor="topic-matching-service" className="block text-xs font-medium text-slate-300 mb-1.5">Topic-matching service</label>
+                  <label htmlFor="topic-matching-service" className="block text-xs font-medium text-slate-300 mb-1.5">Deeper matching service</label>
                   <select
                     id="topic-matching-service"
                     value={embeddingProvider}
@@ -4720,7 +4703,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         return current;
                       });
                     }}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500 cursor-pointer"
                   >
                     <option value="openai-compatible">
                       {`OpenAI or compatible service${(embeddingApiKey.trim() || (embeddingKeyMatchesChatProvider && customApiKey.trim())) ? '' : ' (needs a key)'}`}
@@ -4730,7 +4713,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     </option>
                     <option value="none">Off — use built-in matching</option>
                   </select>
-                  <p className="text-xs text-slate-500 mt-1">Optional: helps match articles by meaning, not just shared words.</p>
+                  <p className="text-xs text-slate-400 mt-1">Optional: helps match articles by meaning, not just shared words.</p>
                   {(() => {
                     const hasEmbeddingKey = Boolean(embeddingApiKey.trim() || (embeddingKeyMatchesChatProvider && customApiKey.trim()));
                     const hasEmbeddingBase = Boolean(embeddingBaseUrl.trim() || (embeddingKeyMatchesChatProvider && aiBaseUrl.trim()));
@@ -4762,7 +4745,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         value={embeddingBaseUrl}
                         onChange={e => setEmbeddingBaseUrl(e.target.value)}
                         placeholder="https://api.openai.com/v1"
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                       />
                     </div>
                     <div>
@@ -4772,7 +4755,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         value={embeddingModel}
                         onChange={e => setEmbeddingModel(e.target.value)}
                         placeholder="text-embedding-3-small"
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                       />
                     </div>
                   </>
@@ -4786,7 +4769,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       value={embeddingModel}
                       onChange={e => setEmbeddingModel(e.target.value)}
                       placeholder="gemini-embedding-001"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                     />
                   </div>
                 )}
@@ -4799,9 +4782,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       value={embeddingApiKey}
                       onChange={e => setEmbeddingApiKey(e.target.value)}
                       placeholder="Optional — blank reuses the chat key"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                     />
-                    <p className="text-xs text-slate-500 mt-1">Stored in this browser and sent securely to Curator with matching requests. URLs must use HTTPS.</p>
+                    <p className="text-xs text-slate-400 mt-1">Stored in this browser and sent securely to Curator with matching requests. URLs must use HTTPS.</p>
                   </div>
                 )}
 
@@ -4827,7 +4810,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
               >
                 Apply providers & refresh digest
               </button>
-            </div>
+            </details>
 
             {/* Browser-local semantic reading profile */}
             <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">
@@ -4850,7 +4833,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       setPendingReset(false);
                       setSemanticFeedback([]);
                       setSignals({ moreTopics: [], lessTopics: [], moreIds: [], lessIds: [], more: [], less: [] });
-                      showToast('Semantic reading profile reset');
+                      showToast('Reading preferences reset');
                     }}
                     className={`text-xs transition shrink-0 ${
                       pendingReset
@@ -4882,10 +4865,10 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       : 'Built-in matching is active · add a service URL and key for richer topic matching'}
                 </div>
                 {semanticSummary && (
-                  <p className="text-xs text-slate-500 mt-2">
+                  <p className="text-xs text-slate-400 mt-2">
                     Last digest · {semanticSummary.feedbackExamples} vote example{semanticSummary.feedbackExamples === 1 ? '' : 's'} ·{' '}
                     {semanticSummary.providerVectors > 0
-                      ? `${semanticSummary.providerVectors} external topic vectors`
+                      ? `${semanticSummary.providerVectors} AI-matched stories`
                       : 'built-in matching only'} ·{' '}
                     {semanticSummary.deprioritized} recently seen articles down-ranked
                   </p>
@@ -4899,24 +4882,13 @@ Search for writers, publications, or topics. Curator checks whether each result 
               </div>
             </div>
 
-            {/* Declared interests: nudges for the semantic ranking, never a filter */}
+            {/* Declared interests: nudges for the ranking, never a filter */}
             <InterestsEditor
               value={interests}
               suggestions={interestSuggestions}
               onChange={setInterests}
             />
 
-            {/* Optional install instructions stay collapsed until needed */}
-            <details className="rounded-2xl bg-slate-900/40 border border-slate-900 p-4">
-              <summary className="cursor-pointer text-sm font-semibold text-slate-200">Install Curator on your iPhone</summary>
-              <div className="pt-3">
-                <p className="text-xs text-slate-400">Scan the code, open Curator in Safari, then use Share → Add to Home Screen.</p>
-                <div className="flex flex-col sm:flex-row items-center gap-6 pt-3">
-                  <QRCodeBox url={typeof window !== 'undefined' ? window.location.origin : 'https://ais-dev-szra6uvq22i3o7dvcof5go-706549575453.europe-west2.run.app'} />
-                  <div className="text-xs text-slate-400">The Home Screen shortcut opens Curator like an app.</div>
-                </div>
-              </div>
-            </details>
           </div>
         )}
 
@@ -4930,7 +4902,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 <button
                   type="button"
                   onClick={() => handleOpenFeedStream('all')}
-                  className="flex flex-col items-center gap-2 group cursor-pointer focus:outline-none"
+                  className="flex flex-col items-center gap-2 group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
                 >
                   <div className={`relative w-16 h-16 rounded-full p-0.5 transition-transform group-hover:scale-105 ${
                     !selectedFeedSource || selectedFeedSource === 'all'
@@ -4957,7 +4929,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       key={src.id}
                       type="button"
                       onClick={() => handleOpenFeedStream(src.title, src.id)}
-                      className="flex flex-col items-center gap-2 group cursor-pointer focus:outline-none"
+                      className="flex flex-col items-center gap-2 group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
                       title={isUnread ? `${src.title} (Unread)` : `${src.title} (Read)`}
                     >
                       <div className={`relative w-16 h-16 rounded-full p-0.5 transition-transform group-hover:scale-105 ${
@@ -5058,12 +5030,12 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
             {/* Article Stream */}
             {loadingFeedStream ? (
-              <div className="py-20 text-center text-slate-500 space-y-3">
+              <div className="py-20 text-center text-slate-400 space-y-3">
                 <RefreshCw className="w-6 h-6 animate-spin mx-auto text-amber-500" />
                 <p className="text-sm">Loading feed stream...</p>
               </div>
             ) : feedStreamArticles.length === 0 ? (
-              <div className="py-20 text-center text-slate-500 space-y-2">
+              <div className="py-20 text-center text-slate-400 space-y-2">
                 <p className="text-sm">No entries found for this feed.</p>
                 <button
                   type="button"
@@ -5081,6 +5053,16 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     <article
                       key={item.id}
                       onClick={() => openArticle(item)}
+                      // A card is a reading surface, not a button: a short name, and the four actions
+                      // inside it stay separately announced instead of being flattened into one label.
+                      aria-label={`${item.title} — ${item.source}`}
+                      tabIndex={0}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          openArticle(item);
+                        }
+                      }}
                       className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative ${
                         actions.hasAnyAction
                           ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
@@ -5176,21 +5158,6 @@ Search for writers, publications, or topics. Curator checks whether each result 
                           />
                           <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
                           
-                          <div className="absolute bottom-4 right-4 z-10">
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                              className={`p-2.5 min-w-11 min-h-11 flex items-center justify-center rounded-xl backdrop-blur-md border transition shadow-lg ${
-                                savedIds.includes(item.id)
-                                  ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
-                                  : 'bg-slate-950/70 border-slate-700/60 text-slate-200 hover:text-amber-400 hover:bg-slate-900/90'
-                              }`}
-                              title={savedIds.includes(item.id) ? 'Remove from saved' : 'Save for later'}
-                              aria-label={savedIds.includes(item.id) ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
-                            >
-                              <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
-                            </button>
-                          </div>
                         </div>
                       )}
 
@@ -5233,6 +5200,20 @@ Search for writers, publications, or topics. Curator checks whether each result 
                             >
                               <ExternalLink className="w-4 h-4" />
                             </a>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleSave(item); }}
+                              className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border transition ${
+                                savedIds.includes(item.id)
+                                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
+                                  : 'border-transparent text-slate-400 hover:text-amber-300'
+                              }`}
+                              title={savedIds.includes(item.id) ? 'Remove from saved' : 'Save for later'}
+                              aria-label={savedIds.includes(item.id) ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
+                              aria-pressed={savedIds.includes(item.id)}
+                            >
+                              <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
+                            </button>
                           </div>
                           <FeedbackActions
                             isMore={actions.isVotedMore}
@@ -5253,7 +5234,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
 
       {/* Bottom Dock Navigation */}
-      <nav className="fixed safe-dock left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-lg bg-slate-900/90 backdrop-blur-xl border border-slate-800/80 rounded-2xl py-2.5 px-3 shadow-2xl">
+      <nav inert={backgroundInert} className="fixed safe-dock left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-lg bg-slate-900/90 backdrop-blur-xl border border-slate-800/80 rounded-2xl py-2.5 px-3 shadow-2xl">
         <div className="flex items-center justify-around">
           <button 
             type="button"
@@ -5267,12 +5248,15 @@ Search for writers, publications, or topics. Curator checks whether each result 
           <button 
             type="button"
             onClick={() => setActiveTab('feeds')}
+            aria-label={unreadSourceCount > 0 ? `Feeds, ${unreadSourceCount} unread` : 'Feeds'}
             className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'feeds' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <div className="relative">
               <Rss className="w-5 h-5" />
-              {sources.some(s => !readSourceIds.includes(s.id)) && (
-                <div className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-orange-500 border border-slate-950" />
+              {unreadSourceCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 inline-flex h-[1.15rem] min-w-[1.15rem] items-center justify-center rounded-full bg-orange-500 px-1 text-[10px] font-bold leading-none text-slate-950">
+                  {unreadSourceCount > 9 ? '9+' : unreadSourceCount}
+                </span>
               )}
             </div>
             <span className="text-xs tracking-tight">Feeds</span>
@@ -5281,12 +5265,15 @@ Search for writers, publications, or topics. Curator checks whether each result 
           <button 
             type="button"
             onClick={() => setActiveTab('saved')}
+            aria-label={savedIds.length > 0 ? `Saved, ${savedIds.length} saved` : 'Saved'}
             className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'saved' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <div className="relative">
               <Bookmark className="w-5 h-5" />
               {savedIds.length > 0 && (
-                <div className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-orange-500 border border-slate-950" />
+                <span className="absolute -top-1.5 -right-1.5 inline-flex h-[1.15rem] min-w-[1.15rem] items-center justify-center rounded-full bg-orange-500 px-1 text-[10px] font-bold leading-none text-slate-950">
+                  {savedIds.length > 9 ? '9+' : savedIds.length}
+                </span>
               )}
             </div>
             <span className="text-xs tracking-tight">Saved</span>
@@ -5346,6 +5333,581 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 Ignore
               </button>
             </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Add Source Modal — portalled as well, so it paints above the setup wizard */}
+      {showAddSourceModal && createPortal(
+        <div className="fixed inset-0 z-[85] bg-slate-950/85 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
+          <div
+            ref={addSourceOverlayRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="add-source-title"
+            className="w-full max-w-md my-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h3 id="add-source-title" className="text-lg font-semibold text-slate-100">Add New Source</h3>
+              <button type="button" onClick={() => setShowAddSourceModal(false)} title="Close" aria-label="Close the Add Source form" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-slate-100 transition">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleAddSource} noValidate className="space-y-4">
+              <div>
+                <label htmlFor="new-source-title" className="block text-xs font-medium text-slate-400 mb-1">Source Title</label>
+                <input
+                  id="new-source-title"
+                  type="text"
+                  required
+                  placeholder="e.g. Marginal Revolution"
+                  value={newSourceTitle}
+                  onChange={e => { setNewSourceTitle(e.target.value); setNewSourceTitleError(null); }}
+                  aria-invalid={newSourceTitleError ? true : undefined}
+                  className={`w-full rounded-xl bg-slate-950 border px-3 py-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500 ${newSourceTitleError ? 'border-rose-500' : 'border-slate-800'}`}
+                />
+                {newSourceTitleError && (
+                  <p role="alert" className="text-xs text-rose-400 mt-1">{newSourceTitleError}</p>
+                )}
+              </div>
+              <div>
+                <label htmlFor="new-source-url" className="block text-xs font-medium text-slate-400 mb-1">RSS / Atom Feed URL</label>
+                <input
+                  id="new-source-url"
+                  type="url"
+                  required
+                  placeholder="https://example.com/feed.xml"
+                  value={newSourceUrl}
+                  onChange={e => { setNewSourceUrl(e.target.value); setNewSourceUrlError(null); }}
+                  aria-invalid={newSourceUrlError ? true : undefined}
+                  className={`w-full rounded-xl bg-slate-950 border px-3 py-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500 ${newSourceUrlError ? 'border-rose-500' : 'border-slate-800'}`}
+                />
+                {newSourceUrlError && (
+                  <p role="alert" className="text-xs text-rose-400 mt-1">{newSourceUrlError}</p>
+                )}
+              </div>
+              <div>
+                <label htmlFor="new-source-folder" className="block text-xs font-medium text-slate-400 mb-1">Folder</label>
+                <select
+                  id="new-source-folder"
+                  value={newSourceFolderCustom ? '__new__' : newSourceFolder}
+                  onChange={e => {
+                    if (e.target.value === '__new__') {
+                      setNewSourceFolderCustom(true);
+                      setNewSourceFolder('');
+                    } else {
+                      setNewSourceFolderCustom(false);
+                      setNewSourceFolder(e.target.value);
+                    }
+                  }}
+                  className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
+                >
+                  {sourceFolders.map(folder => <option key={folder} value={folder}>{folder}</option>)}
+                  <option value="__new__">Create a new folder…</option>
+                </select>
+                <p className="mt-1 text-xs leading-relaxed text-slate-400">{TAXONOMY_NOTE}</p>
+                {newSourceFolderCustom && (
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    aria-label="New folder name"
+                    placeholder="New folder name"
+                    value={newSourceFolder}
+                    onChange={e => setNewSourceFolder(e.target.value)}
+                    className="mt-2 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
+                  />
+                )}
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button 
+                  type="button" 
+                  onClick={() => setShowAddSourceModal(false)}
+                  className="px-4 py-2 text-xs font-medium text-slate-400 hover:text-slate-200"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="submit"
+                  className="px-4 py-2 text-xs font-medium rounded-xl bg-amber-500 text-slate-950 font-semibold hover:bg-amber-400 transition"
+                >
+                  Add Source
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* First-run semantic setup — portalled to <body> so the overlay always covers
+          the whole screen (header and dock included), whichever tab opened it */}
+      {showSetupWizard && createPortal(
+        <div className="fixed inset-0 z-[80] bg-slate-950/90 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
+          <div
+            ref={wizardOverlayRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Set up Curator"
+            className="w-full max-w-lg my-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-5 animate-fade-in"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-wider text-amber-400/90 font-semibold">
+                  Setup · step {setupStep} of 3
+                </p>
+                <h3 className="text-lg font-semibold text-slate-100 mt-1">
+                  {setupStep === 1
+                    ? 'Set up your semantic curator'
+                    : setupStep === 2
+                      ? 'Teach it in ten taps'
+                      : 'Your engine is ready'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={dismissSetupWizard}
+                className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 transition hover:text-slate-200"
+                title="Skip setup"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              {[1, 2, 3].map(step => (
+                <span
+                  key={step}
+                  className={`h-1 flex-1 rounded-full transition-colors ${step <= setupStep ? 'bg-amber-500' : 'bg-slate-800'}`}
+                />
+              ))}
+            </div>
+
+            {setupStep === 1 && (
+              <div className="space-y-4">
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Curator ranks your feeds by similarity to what you vote on. That profile comes from a few quick
+                  verdicts below and stays in this browser — no account, no key, no third-party calls.
+                </p>
+
+                <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">Feeds in your library</span>
+                    <span className="font-semibold text-slate-100">{sources.length}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">Votes already in your profile</span>
+                    <span className="font-semibold text-slate-100">{semanticFeedback.length}</span>
+                  </div>
+                </div>
+
+                {setupError && (
+                  <p className="text-xs text-rose-400 leading-relaxed">{setupError}</p>
+                )}
+
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={loadCalibration}
+                    disabled={loadingCalibration}
+                    className="w-full px-4 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-semibold flex items-center justify-center gap-2 hover:bg-amber-400 transition disabled:opacity-60"
+                  >
+                    {loadingCalibration ? (
+                      <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Scanning your feeds…</>
+                    ) : (
+                      <><Sparkles className="w-3.5 h-3.5" /> Scan my feeds and calibrate</>
+                    )}
+                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={openImportModal}
+                      className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-300 hover:text-slate-100 transition"
+                    >
+                      Import OPML
+                    </button>
+                    <button
+                      type="button"
+                      onClick={finishSetup}
+                      className="inline-flex min-h-11 flex-1 items-center justify-center rounded-xl border border-slate-800 bg-slate-900 px-3 text-xs font-medium text-slate-400 transition hover:text-slate-200"
+                    >
+                      Skip for now
+                    </button>
+                  </div>
+                </div>
+
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  No provider keys needed. Deeper matching through an OpenAI-compatible or Gemini service is an optional upgrade in Settings.
+                </p>
+              </div>
+            )}
+
+            {setupStep === 2 && (
+              <div className="space-y-4">
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Say what you would read and what you would not. Titles and excerpts only — the built-in engine
+                  scores them on this app's server.
+                </p>
+
+                {currentCalibrationItem ? (
+                  <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-2">
+                    <div className="text-xs text-slate-400">
+                      {currentCalibrationItem.source} · {currentCalibrationItem.folder}
+                    </div>
+                    <h4 className="text-sm font-semibold text-slate-100 leading-snug">
+                      {currentCalibrationItem.title}
+                    </h4>
+                    <p className="text-xs text-slate-400 leading-relaxed line-clamp-3">
+                      {currentCalibrationItem.summary}
+                    </p>
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => answerCalibration(currentCalibrationItem, 'like')}
+                        className="flex-1 min-h-11 px-3 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 flex items-center justify-center hover:bg-emerald-500/25 transition"
+                        title="More like this"
+                        aria-label="More like this"
+                      >
+                        <ThumbsUp className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => answerCalibration(currentCalibrationItem, 'dislike')}
+                        className="flex-1 min-h-11 px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 flex items-center justify-center hover:bg-rose-500/20 transition"
+                        title="Not for me"
+                        aria-label="Not for me"
+                      >
+                        <ThumbsDown className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-center gap-4 text-xs font-medium text-slate-400">
+                      <span className="flex items-center gap-1">
+                        <ThumbsUp className="w-3 h-3 text-emerald-400/70" /> read it
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <ThumbsDown className="w-3 h-3 text-rose-400/70" /> skip it
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 text-center text-xs text-slate-300">
+                    <Check className="w-5 h-5 text-emerald-400 mx-auto mb-2" />
+                    {calibrationVotes} verdict{calibrationVotes === 1 ? '' : 's'} recorded. That is enough to
+                    rank today's digest.
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span>
+                    {Math.min(calibrationIndex, calibrationCandidates.length)} of {calibrationCandidates.length} reviewed
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSetupStep(3)}
+                    className="inline-flex min-h-11 items-center px-2 -mr-2 font-medium text-amber-400 transition hover:text-amber-300"
+                  >
+                    Continue
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {setupStep === 3 && (
+              <div className="space-y-4">
+                <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 space-y-1.5">
+                  <div className="flex items-center gap-2 font-medium">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                    Built-in semantic engine: on
+                  </div>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    {calibrationVotes > 0
+                      ? `Ranking from ${calibrationVotes} calibration verdict${calibrationVotes === 1 ? '' : 's'} plus any earlier votes.`
+                      : 'Ranking from the votes you cast on digest cards.'}
+                    {' '}No key and no third-party calls. Refreshing the digest rotates in pieces you have not seen.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={finishSetup}
+                    className="w-full px-4 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-semibold hover:bg-amber-400 transition"
+                  >
+                    Build my digest
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      finishSetup();
+                      setActiveTab('settings');
+                    }}
+                    className="w-full px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-300 hover:text-slate-100 transition"
+                  >
+                    Connect an AI service for deeper matching (optional)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSetupStep(2)}
+                    className="text-xs text-slate-400 hover:text-slate-200 transition"
+                  >
+                    Back to calibration
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* OPML Import Modal */}
+      {showImportModal && createPortal(
+        <div className="fixed inset-0 z-[85] bg-slate-950/85 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
+          <div
+            ref={importOverlayRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="opml-import-title"
+            className="w-full max-w-lg my-auto rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h3 id="opml-import-title" className="text-lg font-semibold text-slate-100">Import Subscription List (OPML)</h3>
+              <button type="button" onClick={() => setShowImportModal(false)} title="Close" aria-label="Close the OPML import form" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-slate-100 transition">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-400">
+              Upload your reader’s <span className="text-slate-200 font-medium">.opml</span> or <span className="text-slate-200 font-medium">.xml</span> export file in one step, or paste its contents below. Folders are preserved, and anything you already follow is skipped — importing never replaces your list.
+            </p>
+
+            {/* File Upload Dropzone */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".opml,.xml,text/xml,application/xml,text/x-opml"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  handleOpmlFileSelected(file);
+                }
+                e.target.value = '';
+              }}
+            />
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => fileInputRef.current?.click()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  fileInputRef.current?.click();
+                }
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsDraggingOpml(true);
+              }}
+              onDragLeave={() => setIsDraggingOpml(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsDraggingOpml(false);
+                const file = e.dataTransfer.files?.[0];
+                if (file) {
+                  handleOpmlFileSelected(file);
+                }
+              }}
+              className={`rounded-2xl border-2 border-dashed p-5 text-center cursor-pointer transition ${
+                isDraggingOpml
+                  ? 'border-amber-400 bg-amber-500/10'
+                  : 'border-slate-700 bg-slate-950/60 hover:border-slate-600 hover:bg-slate-950'
+              }`}
+            >
+              <FileUp className="w-6 h-6 text-amber-400 mx-auto mb-2" />
+              <div className="text-xs font-medium text-slate-200">
+                {importFileName ? `Selected: ${importFileName}` : 'Choose an OPML / XML file or drop it here'}
+              </div>
+              <div className="text-xs text-slate-400 mt-1">
+                Supports standard exports from Feedly, NetNewsWire, Reeder, Substack, and Inoreader
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label htmlFor="opml-text" className="block text-xs font-medium text-slate-400">
+                Or paste OPML XML directly
+              </label>
+              <textarea 
+                id="opml-text"
+                rows={5}
+                placeholder="<?xml version='1.0' encoding='UTF-8'?><opml>...</opml>"
+                value={importText}
+                onChange={e => setImportText(e.target.value)}
+                className="w-full rounded-xl bg-slate-950 border border-slate-800 p-3 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
+              />
+            </div>
+
+            {pendingImportText && (
+              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-200 text-xs space-y-2.5">
+                <p className="leading-relaxed">
+                  You already follow {sources.length} {sources.length === 1 ? 'source' : 'sources'}. This adds only
+                  the feeds in the file that are not in your list yet; nothing already here is removed.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const text = pendingImportText;
+                      setPendingImportText(null);
+                      void processOpmlText(text, { skipConfirm: true });
+                    }}
+                    className="min-h-11 rounded-xl bg-amber-500 px-3 font-semibold text-slate-950 transition hover:bg-amber-400"
+                  >
+                    Add the new feeds
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingImportText(null)}
+                    className="min-h-11 rounded-xl border border-amber-500/30 px-3 font-medium text-amber-200 transition hover:bg-amber-500/10"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {importError && (
+              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                <span>{importError}</span>
+              </div>
+            )}
+
+            {importResult && (
+              <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs space-y-2">
+                <div className="font-medium">
+                  Added {importResult.totalImported} {importResult.totalImported === 1 ? 'feed' : 'feeds'}
+                  {' '}({importResult.successCount} active, {importResult.failCount} failing)
+                  {importResult.duplicates ? ` · ${importResult.duplicates} already in your list` : ''}.
+                </div>
+                {importResult.failures && importResult.failures.length > 0 && (
+                  <ul className="space-y-1 text-xs text-amber-300 border-t border-emerald-500/20 pt-2">
+                    {importResult.failures.map((f, idx) => (
+                      <li key={idx}>
+                        {f.title}: {f.reason}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button 
+                type="button" 
+                onClick={() => setShowImportModal(false)}
+                className="px-4 py-2 text-xs font-medium text-slate-400 hover:text-slate-200"
+              >
+                Close
+              </button>
+              <button 
+                type="button"
+                disabled={isImportingOpml || !importText.trim()}
+                onClick={handleImportOPML}
+                className="px-4 py-2 text-xs font-medium rounded-xl bg-amber-500 text-slate-950 font-semibold hover:bg-amber-400 transition disabled:opacity-50"
+              >
+                {isImportingOpml ? 'Importing...' : 'Process Import'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Edition settings: count, density and serendipity, out of the reading path */}
+      {showDigestSettings && createPortal(
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="digest-settings-title"
+          className="fixed inset-0 z-[90] bg-slate-950/80 backdrop-blur-md flex items-end sm:items-center justify-center"
+          onClick={() => setShowDigestSettings(false)}
+        >
+          <div
+            className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl border border-slate-800 bg-slate-900 p-5 pb-[calc(1.5rem+env(safe-area-inset-bottom))] space-y-5 shadow-2xl"
+            onClick={event => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 id="digest-settings-title" className="text-base font-semibold text-slate-100">Today&rsquo;s edition</h3>
+                <p className="text-xs text-slate-400 mt-0.5">How long it is, and how far it wanders.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDigestSettings(false)}
+                aria-label="Close edition settings"
+                className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-slate-100 transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div>
+              <span className="block text-xs font-medium text-slate-300 mb-2">Stories per edition</span>
+              <div role="group" aria-label="Stories per edition" className="grid grid-cols-5 gap-1.5">
+                {DIGEST_ITEM_COUNTS.map(num => (
+                  <button
+                    key={num}
+                    type="button"
+                    onClick={() => setItemCount(num)}
+                    aria-pressed={itemCount === num}
+                    className={`min-h-11 rounded-xl text-sm font-medium transition ${
+                      itemCount === num ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {num}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setCompactCards(value => !value)}
+              aria-pressed={compactCards}
+              className="flex w-full min-h-11 items-center justify-between gap-3 rounded-xl border border-slate-800 px-3 text-xs"
+            >
+              <span className="font-medium text-slate-200">Compact cards</span>
+              <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${compactCards ? 'bg-amber-500' : 'bg-slate-700'}`}>
+                <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-slate-950 transition-all ${compactCards ? 'left-[1.4rem]' : 'left-0.5'}`} />
+              </span>
+            </button>
+
+            <div>
+              <label htmlFor="serendipity-slider" className="flex items-baseline justify-between text-xs font-medium text-slate-300">
+                <span>Serendipity</span>
+                <span className="text-amber-300">{serendipityDial}%</span>
+              </label>
+              <input
+                id="serendipity-slider"
+                type="range"
+                min="0"
+                max="100"
+                value={serendipityDial}
+                onChange={event => setSerendipityDial(Number(event.target.value))}
+                aria-valuetext={`${serendipityDial}% outside your usual interests`}
+                className="mt-2 w-full accent-amber-500 cursor-pointer"
+              />
+              <p className="mt-1 text-xs leading-relaxed text-slate-400">of the edition comes from outside your usual interests</p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowDigestSettings(false)}
+              className="w-full min-h-11 rounded-xl bg-amber-500 text-sm font-semibold text-slate-950 transition hover:bg-amber-400"
+            >
+              Done
+            </button>
           </div>
         </div>,
         document.body

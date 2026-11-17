@@ -8,12 +8,95 @@ import https from 'https';
 import net from 'net';
 import path from 'path';
 import fs from 'fs';
+import { DEFAULT_FEEDS } from './src/defaultFeeds';
 
 dotenv.config();
 
 // Outbound fetch hardening: only public http(s) hosts, re-checked on every redirect hop
 const MAX_REDIRECTS = 4;
 const MAX_PAGE_BYTES = 8 * 1024 * 1024;
+
+// ---- Public-route protection -------------------------------------------------
+// The AI routes spend real money and this app has no accounts, so the only lever is a
+// per-client budget. Buckets live in memory: they reset on a redeploy, which is fine for
+// abuse control at this scale and costs nothing per request.
+const ALLOW_SERVER_KEY = process.env.ALLOW_SERVER_KEY === '1';
+const RATE_WINDOW_MS = 60_000;
+
+interface RateBucket {
+  used: number;
+  resetAt: number;
+}
+
+const rateBuckets = new Map<string, RateBucket>();
+
+// Cloud Run forwards the real client in X-Forwarded-For. Only believe it when the
+// deployment says the proxy is trusted — otherwise the header is client-controlled.
+function clientAddress(req: express.Request): string {
+  if (process.env.TRUST_PROXY === '1') {
+    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    if (forwarded) return forwarded;
+  }
+  return req.socket.remoteAddress || 'unknown';
+}
+
+function rateLimit(scope: string, limit: number, windowMs = RATE_WINDOW_MS) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const now = Date.now();
+    const key = `${scope}|${clientAddress(req)}`;
+    const bucket = rateBuckets.get(key);
+
+    if (!bucket || bucket.resetAt <= now) {
+      rateBuckets.set(key, { used: 1, resetAt: now + windowMs });
+      // Drop expired buckets so a busy public URL cannot grow this map without bound.
+      if (rateBuckets.size > 5000) {
+        rateBuckets.forEach((value, mapKey) => {
+          if (value.resetAt <= now) rateBuckets.delete(mapKey);
+        });
+      }
+      next();
+      return;
+    }
+
+    if (bucket.used >= limit) {
+      const retryAfter = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+      res.setHeader('Retry-After', String(retryAfter));
+      res.status(429).json({
+        error: `Too many requests from this connection. Try again in ${retryAfter} second${retryAfter === 1 ? '' : 's'}.`,
+        retryAfterSeconds: retryAfter,
+      });
+      return;
+    }
+
+    bucket.used += 1;
+    next();
+  };
+}
+
+// A route that never answers leaves the client spinning and the server still spending.
+// Slow routes get a hard budget and a retryable 503 instead of an open socket.
+function requestBudget(label: string, ms: number) {
+  return (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const timer = setTimeout(() => {
+      if (res.headersSent || res.writableEnded) return;
+      res.status(503).json({
+        error: `${label} took longer than ${Math.round(ms / 1000)}s. Please try again — the server may still be waking up.`,
+        retryable: true,
+      });
+      // The handler is still running and will try to answer; those writes must not throw
+      // on the response this timeout has just ended.
+      const noop = (() => res) as unknown;
+      res.json = noop as typeof res.json;
+      res.send = noop as typeof res.send;
+      res.end = noop as typeof res.end;
+    }, ms);
+
+    const clear = () => clearTimeout(timer);
+    res.on('finish', clear);
+    res.on('close', clear);
+    next();
+  };
+}
 
 class BlockedUrlError extends Error {}
 
@@ -855,6 +938,54 @@ async function startServer() {
   });
 
   // API Routes
+  // Source icons. The page used to load these straight from google.com, which made every card
+  // a third-party request and contradicted the local-first claim. They are fetched here instead,
+  // cached in memory, and served from our own origin.
+  const FAVICON_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+  const FAVICON_CACHE_MAX = 500;
+  const faviconCache = new Map<string, { at: number; type: string; body: Buffer }>();
+
+  app.get('/api/favicon', rateLimit('favicon', 120), async (req, res) => {
+    const domain = String(req.query.domain || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/\/.*$/, '');
+    // A real hostname: dot-separated labels and an alphabetic TLD. Rejects '..', 'localhost'
+    // and anything path-like before it can reach the upstream fetch.
+    if (!/^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/.test(domain)) {
+      res.status(400).json({ error: 'Invalid domain' });
+      return;
+    }
+    const cached = faviconCache.get(domain);
+    if (cached && Date.now() - cached.at < FAVICON_TTL_MS) {
+      res.setHeader('Content-Type', cached.type);
+      res.setHeader('Cache-Control', `public, max-age=${Math.floor(FAVICON_TTL_MS / 1000)}`);
+      res.end(cached.body);
+      return;
+    }
+    try {
+      const upstream = await fetch(
+        `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=128`,
+        { headers: { 'User-Agent': 'Curator/1.0 (favicon proxy)' }, signal: AbortSignal.timeout(6000) }
+      );
+      if (!upstream.ok) throw new Error(`upstream ${upstream.status}`);
+      const body = Buffer.from(await upstream.arrayBuffer());
+      if (!body.length || body.length > 512 * 1024) throw new Error('unusable favicon');
+      if (faviconCache.size >= FAVICON_CACHE_MAX) {
+        const oldest = faviconCache.keys().next().value;
+        if (oldest) faviconCache.delete(oldest);
+      }
+      const type = upstream.headers.get('content-type') || 'image/png';
+      faviconCache.set(domain, { at: Date.now(), type, body });
+      res.setHeader('Content-Type', type);
+      res.setHeader('Cache-Control', `public, max-age=${Math.floor(FAVICON_TTL_MS / 1000)}`);
+      res.end(body);
+    } catch {
+      res.status(502).end();
+    }
+  });
+
   app.get('/api/usage', (_req, res) => {
     const today = utcDay();
     const sumOver = (days: number): UsageBucket => {
@@ -900,7 +1031,7 @@ async function startServer() {
 
   // "Test API": one minimal request with the settings shown in the app, so a wrong key,
   // URL or model surfaces in Settings instead of silently falling back during a digest.
-  app.post('/api/test-provider', async (req, res) => {
+  app.post('/api/test-provider', rateLimit('test-provider', 10), async (req, res) => {
     const started = Date.now();
     const kind = req.body?.kind === 'embedding' ? 'embedding' : 'chat';
     const provider = String(req.body?.provider || '').trim();
@@ -999,7 +1130,7 @@ async function startServer() {
   });
 
   // OPML Parser endpoint
-  app.post('/api/parse-opml', (req, res) => {
+  app.post('/api/parse-opml', rateLimit('opml', 6), (req, res) => {
     try {
       const { opmlText } = req.body;
       if (!opmlText || typeof opmlText !== 'string' || !opmlText.trim()) {
@@ -1237,16 +1368,8 @@ async function startServer() {
     return Array.isArray(raw) ? categories : [folder || 'General'];
   };
 
-  const DEFAULT_FEEDS = [
-    { title: 'Marginal Revolution', feedUrl: 'https://marginalrevolution.com/feed', folder: 'Economics' },
-    { title: 'Dan Luu', feedUrl: 'https://danluu.com/atom.xml', folder: 'Tech & Engineering' },
-    { title: 'Simon Willison', feedUrl: 'https://simonwillison.net/atom/entries/', folder: 'Software & AI' },
-    { title: 'Ars Technica', feedUrl: 'https://feeds.arstechnica.com/arstechnica/index', folder: 'Tech & Policy' },
-    { title: 'Stratechery', feedUrl: 'https://stratechery.com/feed/', folder: 'Tech & Strategy' },
-    { title: 'A List Apart', feedUrl: 'https://alistapart.com/main/feed/', folder: 'Design & Craft' },
-    { title: 'Aeon Magazine', feedUrl: 'https://aeon.co/feed.rss', folder: 'Philosophy & Culture' },
-    { title: 'Rest of World', feedUrl: 'https://restofworld.org/feed/latest', folder: 'Global Tech' }
-  ];
+  // DEFAULT_FEEDS comes from src/defaultFeeds.ts, the same list the client seeds its library
+  // with, so a first-run digest draws on exactly what the server falls back to.
 
   // Feeds mix named and numeric XML entities; anything left undecoded renders as "&amp;#8217;"
   // style noise in the reader, so decode both, then the literal ampersand last.
@@ -1657,7 +1780,7 @@ async function startServer() {
     (await fetchFeedWithStatus(feedUrl, sourceTitle, folder, categories)).items;
 
   // Curate daily digest from live feeds using configured provider adapters or deterministic ranking
-  app.post('/api/curate', async (req, res) => {
+  app.post('/api/curate', rateLimit('curate', 30), requestBudget('Building the digest', 100_000), async (req, res) => {
     try {
       const { sources: clientSources, signals, readingStats, serendipityDial = 30, itemCount = 6 } = req.body;
       const requestedProvider = typeof req.body.provider === 'string' ? req.body.provider : 'deterministic';
@@ -2114,7 +2237,7 @@ CURATION RULES:
   });
 
   // Calibration pool for the setup wizard: a spread of recent articles to vote on
-  app.post('/api/calibrate', async (req, res) => {
+  app.post('/api/calibrate', rateLimit('calibrate', 12), async (req, res) => {
     try {
       const { sources: clientSources, excludeIds } = req.body;
       const activeSources = Array.isArray(clientSources) && clientSources.length > 0
@@ -2195,6 +2318,29 @@ CURATION RULES:
   });
 
   // Comprehensive multi-source live feed stream endpoint
+  // Adding a source now proves the URL serves a feed before the reader is told it worked.
+  app.post('/api/check-feed', rateLimit('check-feed', 30), async (req, res) => {
+    const feedUrl = String(req.body?.feedUrl || '').trim();
+    if (!feedUrl) {
+      res.status(400).json({ ok: false, error: 'No feed URL given' });
+      return;
+    }
+    try {
+      const result = await fetchFeedWithStatus(feedUrl, 'New source', 'General');
+      if (result.error) {
+        res.status(200).json({ ok: false, error: result.error });
+        return;
+      }
+      if (result.items.length === 0) {
+        res.status(200).json({ ok: false, error: 'That address answered, but it contained no readable stories' });
+        return;
+      }
+      res.json({ ok: true, itemCount: result.items.length, title: result.items[0]?.source || null });
+    } catch (error: any) {
+      res.status(200).json({ ok: false, error: error?.message || 'That address could not be read' });
+    }
+  });
+
   app.post('/api/feed-stream', async (req, res) => {
     try {
       const { sourceTitle, sources: clientSources } = req.body;
@@ -2577,7 +2723,7 @@ CURATION RULES:
   };
 
   // Google Search Grounding + RSS Feed Investigation endpoint
-  app.post('/api/discover-sources', async (req, res) => {
+  app.post('/api/discover-sources', rateLimit('discover-sources', 6), requestBudget('Source discovery', 45_000), async (req, res) => {
     try {
       const { query, apiKey: clientApiKey } = req.body;
       if (!query || typeof query !== 'string' || !query.trim()) {
@@ -2586,9 +2732,14 @@ CURATION RULES:
 
       const trimmedClientKey = typeof clientApiKey === 'string' ? clientApiKey.trim() : '';
 
+      // Only a caller-supplied key may spend on discovery: this route is public and every
+      // grounded search bills the key it runs on. The operator's key is opt-in via
+      // ALLOW_SERVER_KEY=1; without a key the curated directory answers instead.
       const discoveryAi = trimmedClientKey
         ? new GoogleGenAI({ apiKey: trimmedClientKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
-        : ai;
+        : ALLOW_SERVER_KEY
+          ? ai
+          : null;
 
       const prompt = `Use Google Search to find 5 to 6 high-quality independent publications, blogs, newsletters, or editorial websites relevant to this search topic: "${query.trim()}".
 
@@ -2719,6 +2870,8 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
 
       res.json({
         query: query.trim(),
+        // Lets the client (and a test) tell a grounded search from the built-in directory
+        aiAssisted: Boolean(discoveryAi),
         webSearchQueries,
         groundingLinks: groundingChunks.slice(0, 8),
         results: investigated,

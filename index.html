@@ -1,64 +1,33 @@
 <!doctype html>
 <html lang="en" class="bg-slate-950 text-slate-100 overflow-x-clip w-full max-w-full">
   <head>
-    <script>
-      // In AI Studio cloud iframe preview, HMR is disabled.
-      // Prevent vite-hmr from attempting unreachable WebSocket connections on port 24678.
-      (function() {
-        var NativeWebSocket = window.WebSocket;
-        if (NativeWebSocket) {
-          function DummySocket() {
-            var target = new EventTarget();
-            this.readyState = 1;
-            this.send = function() {};
-            this.close = function() {};
-            this.addEventListener = target.addEventListener.bind(target);
-            this.removeEventListener = target.removeEventListener.bind(target);
-            this.dispatchEvent = target.dispatchEvent.bind(target);
-            setTimeout(function() {
-              try { target.dispatchEvent(new Event('open')); } catch(e) {}
-            }, 0);
-          }
-          DummySocket.CONNECTING = 0;
-          DummySocket.OPEN = 1;
-          DummySocket.CLOSING = 2;
-          DummySocket.CLOSED = 3;
-
-          window.WebSocket = function(url, protocols) {
-            if (protocols === 'vite-hmr' || (typeof url === 'string' && (url.includes('24678') || url.includes('token=')))) {
-              return new DummySocket();
-            }
-            return new NativeWebSocket(url, protocols);
-          };
-          window.WebSocket.prototype = NativeWebSocket.prototype;
-          window.WebSocket.CONNECTING = 0;
-          window.WebSocket.OPEN = 1;
-          window.WebSocket.CLOSING = 2;
-          window.WebSocket.CLOSED = 3;
-        }
-
-        window.addEventListener('unhandledrejection', function(event) {
-          var reason = event && event.reason;
-          var msg = (reason && (reason.message || String(reason))) || '';
-          if (msg.includes('WebSocket') || msg.includes('vite:ws') || (reason && reason.stack && reason.stack.includes('@vite/client'))) {
-            event.preventDefault();
-            event.stopImmediatePropagation();
-          }
-        }, true);
-      })();
-    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Curator — Daily Curated Reading Digest</title>
     <meta name="description" content="A daily curated reading digest — your personal editor." />
+    <!-- Matches the #020617 the app paints, so the installed app and the tab chrome agree -->
+    <meta name="theme-color" content="#020617" />
+
+    <link rel="icon" type="image/svg+xml" href="/curator-mark.svg" />
+    <!-- iOS ignores SVG for the home-screen icon, so this must be a PNG -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Curator" />
+
     <meta property="og:title" content="Curator — Daily Curated Reading Digest" />
     <meta property="og:description" content="A daily curated reading digest — your personal editor." />
     <meta property="og:type" content="website" />
+    <meta property="og:image" content="/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="The Curator emblem — a rising sun over an open book — beside the words THE CURATOR and the line “A daily curated reading digest”." />
     <meta name="twitter:card" content="summary_large_image" />
-    <link rel="icon" type="image/svg+xml" href="/curator-mark.svg" />
-    <link rel="apple-touch-icon" href="/curator-mark.svg" />
-    <meta property="og:image" content="/curator-logo.svg" />
-    <meta name="twitter:image" content="/curator-logo.svg" />
+    <meta name="twitter:image" content="/og-image.png" />
+    <meta name="twitter:image:alt" content="The Curator emblem — a rising sun over an open book — beside the words THE CURATOR and the line “A daily curated reading digest”." />
+
     <link rel="preload" href="/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
   </head>
   <body class="bg-slate-950 text-slate-100 overflow-x-clip w-full max-w-full antialiased min-h-screen">
@@ -66,4 +35,3 @@
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-
