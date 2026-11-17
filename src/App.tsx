@@ -3047,18 +3047,18 @@ export default function App() {
       )}
 
       {/* Main Top Header Bar */}
-      <header inert={backgroundInert} className="sticky top-0 z-40 w-full safe-header bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-3 sm:px-6 pb-3 shrink-0 shadow-sm">
-        <div className="max-w-3xl w-full mx-auto flex items-center justify-between gap-3">
+      <header inert={backgroundInert} className="sticky top-0 z-40 w-full safe-header bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-4 sm:px-6 pb-3 shrink-0 shadow-sm">
+        <div className="max-w-3xl w-full mx-auto flex items-center justify-between gap-2 sm:gap-3">
           {/* Official Brand Logo & Subtitle */}
           <button 
             type="button" 
             onClick={() => setActiveTab('today')}
-            className="flex items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 group cursor-pointer"
+            className="flex min-w-0 items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 group cursor-pointer"
             title="The Curator — Home"
           >
-            <CuratorMark className="w-9 h-9 sm:w-10 sm:h-10 drop-shadow-md group-hover:scale-105 transition-transform" />
+            <CuratorMark className="w-9 h-9 sm:w-10 sm:h-10 shrink-0 drop-shadow-md group-hover:scale-105 transition-transform" />
             <div className="min-w-0">
-              <div className="flex items-baseline gap-1.5 leading-none">
+              <div className="flex items-baseline gap-1.5 leading-none whitespace-nowrap">
                 <span className="font-serif text-xs font-semibold tracking-[0.24em] text-amber-500/90">THE</span>
                 <span className="font-serif text-base font-bold tracking-[0.16em] text-slate-100">CURATOR</span>
               </div>
@@ -3066,22 +3066,23 @@ export default function App() {
             </div>
           </button>
 
-          {/* Right Action Icons: Refresh and Settings. The week lives in Settings now. */}
-          <div className="flex items-center gap-2 shrink-0">
-            <button 
-              type="button"
-              onClick={() => generateDigest({ fresh: true })}
-              disabled={loadingDigest}
-              className="w-11 h-11 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-50 cursor-pointer"
+          {/* Refresh and Settings, spread across the row on phones so the three controls sit at
+              even intervals. From sm up the spacer takes the slack and groups them on the right. */}
+          <div className="hidden sm:block flex-1" aria-hidden="true" />
+          <button
+            type="button"
+            onClick={() => generateDigest({ fresh: true })}
+            disabled={loadingDigest}
+            className="w-11 h-11 shrink-0 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-50 cursor-pointer"
               title="Refresh today's digest"
               aria-label="Refresh today's digest"
             >
-              <RefreshCw className={`w-4 h-4 ${loadingDigest ? 'animate-spin' : ''}`} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab(prev => prev === 'settings' ? 'today' : 'settings')}
-              className={`w-11 h-11 rounded-full border flex items-center justify-center transition cursor-pointer shadow-sm ${
+            <RefreshCw className={`w-4 h-4 ${loadingDigest ? 'animate-spin' : ''}`} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab(prev => prev === 'settings' ? 'today' : 'settings')}
+            className={`w-11 h-11 shrink-0 rounded-full border flex items-center justify-center transition cursor-pointer shadow-sm ${
                 activeTab === 'settings'
                   ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
                   : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-slate-100 hover:border-slate-700'
@@ -3090,9 +3091,8 @@ export default function App() {
               aria-label="Settings & Preferences"
               aria-pressed={activeTab === 'settings'}
             >
-              <Sliders className="w-4 h-4" />
-            </button>
-          </div>
+            <Sliders className="w-4 h-4" />
+          </button>
         </div>
       </header>
 
