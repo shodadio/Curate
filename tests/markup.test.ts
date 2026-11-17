@@ -121,6 +121,53 @@ test('htmlToReadableText handles an empty body', () => {
   assert.equal(htmlToReadableText(''), '');
 });
 
+test('htmlToReadableText strips a settings widget that arrives as its own labels', () => {
+  // Ars Technica's display controls, as the feed delivers them: each label its own paragraph.
+  const body = htmlToReadableText(
+    '<p>Story text</p><p>Size</p><p>Small Standard Large</p><p>Width *</p><p>Standard Wide</p><p>Links</p><p>Standard Orange</p><p>Real article text starts here.</p>',
+  );
+  assert.equal(body, 'Real article text starts here.');
+});
+
+test('htmlToReadableText drops a label run that appears mid-article too', () => {
+  const body = htmlToReadableText(
+    '<p>Real article text starts here.</p><p>Story text</p><p>Size</p><p>Small Standard Large</p><p>Standard Orange</p><p>Real article text continues.</p>',
+  );
+  assert.equal(body, 'Real article text starts here.\n\nReal article text continues.');
+});
+
+test('htmlToReadableText keeps two label-like words in a row, which can be real prose', () => {
+  const body = htmlToReadableText('<p>Links</p><p>Size</p><p>Real article text starts here.</p>');
+  assert.equal(body, 'Links\n\nSize\n\nReal article text starts here.');
+});
+
+test('htmlToReadableText drops paywall footnotes that arrive as paragraphs', () => {
+  const body = htmlToReadableText('<p>* Subscribers only</p><p>Learn more</p><p>Real article text starts here.</p>');
+  assert.equal(body, 'Real article text starts here.');
+});
+
+test('htmlToReadableText drops a byline paragraph from a teaser body', () => {
+  const body = htmlToReadableText(
+    '<p>Women in Tehran are changing society by dressing as they choose, in numbers too large to stop.</p><p>- by Parisa Khoshnami</p>',
+  );
+  assert.equal(body, 'Women in Tehran are changing society by dressing as they choose, in numbers too large to stop.');
+});
+
+test('htmlToReadableText drops byline phrasing with and without a dash', () => {
+  assert.equal(htmlToReadableText('<p>Body text here.</p><p>By Jane Doe</p>'), 'Body text here.');
+  assert.equal(htmlToReadableText('<p>Body text here.</p><p>Words by Jane van der Berg</p>').includes('Jane'), false);
+});
+
+test('htmlToReadableText keeps prose that merely begins with by', () => {
+  const body = htmlToReadableText('<p>By Tuesday, the storm had passed over the coast.</p>');
+  assert.equal(body, 'By Tuesday, the storm had passed over the coast.');
+});
+
+test('htmlToReadableText keeps a lone Links paragraph inside an article', () => {
+  const body = htmlToReadableText('<p>Some prose that opens the piece.</p><p>Links</p><p>More prose follows here.</p>');
+  assert.equal(body, 'Some prose that opens the piece.\n\nLinks\n\nMore prose follows here.');
+});
+
 // ---------------------------------------------------------------------------
 // Regression: the reported bug
 // ---------------------------------------------------------------------------

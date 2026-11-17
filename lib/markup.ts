@@ -52,6 +52,36 @@ export const cleanHtml = (str: string): string => {
     .trim();
 };
 
+// Site chrome: display-settings widgets in the publisher's page reach feeds as a run of very
+// short paragraphs (Ars Technica's "Story text / Size / Small Standard Large / Width * /
+// Standard Wide / Links / Standard Orange"), which then read as the opening of the article.
+// A single short "Links" paragraph can be genuine prose, so labels are only dropped when at
+// least three in a row match.
+const chromeLabel = /^(?:[•*·]\s*)?(?:story text|story text size|text size|font size|line height|size|small|small standard large|standard large|width\s*\*?|standard wide|wide|links?|standard (?:orange|blue|green|white|black)|dark mode|light mode|reader mode|reading mode)$/i;
+
+const dropChromeRuns = (paragraphs: string[]): string[] => {
+  const isLabel = (paragraph: string) => paragraph.length <= 30 && chromeLabel.test(paragraph);
+  const kept: string[] = [];
+
+  for (let index = 0; index < paragraphs.length; index++) {
+    if (!isLabel(paragraphs[index])) {
+      kept.push(paragraphs[index]);
+      continue;
+    }
+    let runEnd = index;
+    while (runEnd < paragraphs.length && isLabel(paragraphs[runEnd])) runEnd++;
+    if (runEnd - index < 3) kept.push(...paragraphs.slice(index, runEnd));
+    index = runEnd - 1;
+  }
+
+  return kept;
+};
+
+// Teaser feeds hand over a standfirst with its byline still attached as its own paragraph
+// ("- by Parisa Khoshnami"). A byline is "by" plus a few capitalised names and nothing else,
+// so prose that merely starts with "By Tuesday, ..." is left alone.
+const bylineParagraph = /^(?:[-–—•*]\s*)?(?:by|words by|story by|written by|text by)\s+\p{Lu}[\p{L}'’.-]*(?:\s+(?:\p{Lu}[\p{L}'’.-]*|van|von|der|de|del|della|da|di|la|le|bin|al)){0,5}\.?$/iu;
+
 // Paragraph-shaped plain text for the reader: real paragraphs, no stray lines,
 // no promo/repeated boilerplate, no unicode debris.
 export const htmlToReadableText = (html: string): string => {
@@ -75,7 +105,7 @@ export const htmlToReadableText = (html: string): string => {
   // paragraph of visible tags instead of prose with real paragraph breaks.
   const decoded = stripMarkup(decodeEntities(stripMarkup(html)));
 
-  return decoded
+  const paragraphs = decoded
     .replace(/\r\n?/g, '\n')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/\u00a0/g, ' ')
@@ -106,7 +136,11 @@ export const htmlToReadableText = (html: string): string => {
       return next;
     })
     .filter(paragraph => paragraph.length > 0 && /[\p{L}\p{N}]/u.test(paragraph))
-    .filter(paragraph => !(paragraph.length < 180 && /^(click here|subscribe|sign up|follow me|read more|share this|advertisement)\b/i.test(paragraph)))
-    .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph))
-    .join('\n\n');
+    .filter(paragraph => !(paragraph.length < 180 && /^(click here|subscribe|sign up|follow me|read more|read on|learn more|share this|advertisement)\b/i.test(paragraph)))
+    // "* Subscribers only" and its siblings are paywall footnotes, not article text.
+    .filter(paragraph => !/^\*?\s*(?:subscribers?|members?)\s*only\.?$/i.test(paragraph))
+    .filter(paragraph => !(paragraph.length <= 60 && bylineParagraph.test(paragraph)))
+    .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph));
+
+  return dropChromeRuns(paragraphs).join('\n\n');
 };
