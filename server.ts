@@ -25,6 +25,7 @@ import {
   type SemanticVoteExample,
 } from './lib/ranking';
 import { parseOpmlText } from './lib/opml';
+import { cleanHtml, htmlToReadableText } from './lib/markup';
 
 dotenv.config();
 
@@ -806,107 +807,6 @@ async function startServer() {
 
   // DEFAULT_FEEDS comes from src/defaultFeeds.ts, the same list the client seeds its library
   // with, so a first-run digest draws on exactly what the server falls back to.
-
-  // Feeds mix named and numeric XML entities; anything left undecoded renders as "&amp;#8217;"
-  // style noise in the reader, so decode both, then the literal ampersand last.
-  const decodeEntities = (str: string): string =>
-    str
-      .replace(/&#x([0-9a-f]+);/gi, (entity, hex: string) => {
-        const code = parseInt(hex, 16);
-        return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
-          ? String.fromCodePoint(code)
-          : entity;
-      })
-      .replace(/&#(\d+);/g, (entity, dec: string) => {
-        const code = parseInt(dec, 10);
-        return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
-          ? String.fromCodePoint(code)
-          : entity;
-      })
-      .replace(/&bull;/gi, '•')
-      .replace(/&middot;/gi, '·')
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/&mdash;/gi, '—')
-      .replace(/&ndash;/gi, '–')
-      .replace(/&hellip;/gi, '…')
-      .replace(/&rsquo;|&lsquo;/gi, '’')
-      .replace(/&rdquo;|&ldquo;/gi, '”')
-      .replace(/&quot;/gi, '"')
-      .replace(/&apos;|&#39;/gi, "'")
-      .replace(/&lt;/gi, '<')
-      .replace(/&gt;/gi, '>')
-      .replace(/&amp;/gi, '&');
-
-  const cleanHtml = (str: string): string => {
-    if (!str) return '';
-    return decodeEntities(
-      str
-        .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1')
-        .replace(/<style[\s\S]*?<\/style>/gi, '')
-        .replace(/<script[\s\S]*?<\/script>/gi, '')
-        .replace(/<[^>]+>/g, ' ')
-    )
-      .replace(/[\u200B-\u200D\uFEFF]/g, '')
-      .replace(/[ \t\u00a0]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  };
-
-  // Paragraph-shaped plain text for the reader: real paragraphs, no stray lines,
-  // no promo/repeated boilerplate, no unicode debris.
-  const htmlToReadableText = (html: string): string => {
-    if (!html) return '';
-
-    const stripped = html
-      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<figcaption[\s\S]*?<\/figcaption>/gi, '')
-      .replace(/<figure[\s\S]*?<\/figure>/gi, '')
-      .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/(p|div|h[1-6]|blockquote|section|article)>/gi, '\n\n')
-      .replace(/<li[^>]*>/gi, '\n• ')
-      .replace(/<\/li>/gi, '\n\n')
-      .replace(/<[^>]+>/g, ' ');
-
-    const decoded = decodeEntities(stripped);
-
-    return decoded
-      .replace(/\r\n?/g, '\n')
-      .replace(/[\u200B-\u200D\uFEFF]/g, '')
-      .replace(/\u00a0/g, ' ')
-      .replace(/[ \t]+/g, ' ')
-      .replace(/ *\n */g, '\n')
-      // Only a word that has run into the next one is repaired here. The old rule also fired
-      // inside decimals, thousands separators and dotted abbreviations ("1.79", "74,000",
-      // "U.S.", "e.g."), which then reached the reader — and the read-aloud voice — in
-      // pieces, because a stray full stop reads as the end of a sentence.
-      .replace(/([a-z])([,;:])(?=[A-Za-z])/g, '$1$2 ')
-      .replace(/([a-z])([.!?])(?=[A-Z][a-z])/g, '$1$2 ')
-      .replace(/\n{3,}/g, '\n\n')
-      .split(/\n{2,}/)
-      .map(paragraph => {
-        let next = paragraph
-          .replace(/\s*\n\s*/g, ' ')
-          .replace(/\s+([,.;:!?])/g, '$1')
-          // Inline tags were stripped to spaces, which leaves "“ defund the police ”"
-          .replace(/([“‘(])\s+/g, '$1')
-          .replace(/\s+([”’)])/g, '$1')
-          .replace(/\s{2,}/g, ' ')
-          .trim();
-        // A stripped inline link can leave a paragraph starting with the punctuation that followed it.
-        if (/^[,;:.]/.test(next)) {
-          next = next.replace(/^[,;:.]+\s*/, '');
-          next = next.charAt(0).toUpperCase() + next.slice(1);
-        }
-        return next;
-      })
-      .filter(paragraph => paragraph.length > 0 && /[\p{L}\p{N}]/u.test(paragraph))
-      .filter(paragraph => !(paragraph.length < 180 && /^(click here|subscribe|sign up|follow me|read more|share this|advertisement)\b/i.test(paragraph)))
-      .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph))
-      .join('\n\n');
-  };
 
   // Relative only while it is genuinely today; everything older carries the full date and year,
   // matching the "Built … · Nov 17, 2026" line on the digest. Hours alone were wrong: at 1am a
