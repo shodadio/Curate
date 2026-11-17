@@ -3725,13 +3725,16 @@ export default function App() {
                   </div>
                 )}
 
-                {/* The edition ends here: say what they just read, and when the next one lands */}
+                {/* The edition ends here: say what they just read, and how the next one arrives.
+                    Nothing is scheduled, so the copy must not imply a 7am delivery. */}
                 <div className="rounded-3xl border border-slate-800 bg-slate-900/40 px-5 py-6 text-center">
                   <CuratorMark className="w-8 h-8 mx-auto mb-3 opacity-90" />
                   <p className="text-sm font-semibold text-slate-100">
                     That&apos;s your edition — {editionItems.length} {editionItems.length === 1 ? 'story' : 'stories'}, ~{editionMinutes} minutes.
                   </p>
-                  <p className="mt-1 text-xs text-slate-400">Next issue tomorrow at 7am.</p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    Curator has no schedule: a fresh edition builds the next time you open it.
+                  </p>
                   <button
                     type="button"
                     onClick={() => generateDigest({ fresh: true })}
