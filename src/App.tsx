@@ -3066,20 +3066,8 @@ export default function App() {
             </div>
           </button>
 
-          {/* Right Action Icons: Weekly Review, Refresh and Settings */}
+          {/* Right Action Icons: Refresh and Settings. The week lives in Settings now. */}
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setShowWeeklyReviewModal(true)}
-              className="flex items-center justify-center gap-1.5 px-3 min-w-11 min-h-11 rounded-full bg-slate-900 border border-slate-800 hover:border-amber-500/40 text-slate-300 hover:text-amber-300 transition text-xs font-medium cursor-pointer shadow-sm group"
-              title="Open Weekly Reading Review"
-              aria-label="Open Weekly Reading Review"
-              aria-haspopup="dialog"
-            >
-              <BarChart3 className="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform" />
-              <span className="sm:hidden text-xs font-semibold">Week</span>
-              <span className="hidden sm:inline font-mono text-xs text-amber-300 font-semibold">{totalWeeklyMinutes}m week</span>
-            </button>
             <button 
               type="button"
               onClick={() => generateDigest({ fresh: true })}
