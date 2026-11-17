@@ -1472,29 +1472,21 @@ async function startServer() {
       .join('\n\n');
   };
 
+  // Relative only while it is genuinely today; everything older carries the full date and year,
+  // matching the "Built … · Nov 17, 2026" line on the digest. Hours alone were wrong: at 1am a
+  // story from 9am yesterday is 16 hours old but still says "Today".
   const formatPublishDate = (dateStr: string): string => {
     try {
       const d = new Date(dateStr);
       if (isNaN(d.getTime())) return dateStr || 'Recently';
-      const now = Date.now();
-      const diffMs = now - d.getTime();
-      const diffMins = Math.floor(diffMs / 60000);
-      const diffHours = Math.floor(diffMins / 60);
-      const diffDays = Math.floor(diffHours / 24);
-
-      if (diffMins < 60 && diffMins >= 0) {
-        return `Today · ${Math.max(1, diffMins)}m ago`;
+      const now = new Date();
+      const diffMins = Math.floor((now.getTime() - d.getTime()) / 60000);
+      if (d.toDateString() === now.toDateString() && diffMins >= 0) {
+        return diffMins < 60
+          ? `Today · ${Math.max(1, diffMins)}m ago`
+          : `Today · ${Math.floor(diffMins / 60)}h ago`;
       }
-      if (diffHours < 24 && diffHours >= 0) {
-        return `Today · ${diffHours}h ago`;
-      }
-      if (diffDays === 1) {
-        return 'Yesterday';
-      }
-      if (diffDays < 7 && diffDays > 1) {
-        return `${diffDays} days ago`;
-      }
-      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     } catch {
       return 'Recently';
     }

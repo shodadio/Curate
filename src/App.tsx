@@ -6,7 +6,6 @@ import {
   ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square,
   RotateCcw, EyeOff, BarChart3, Clock, ArrowRight, ChevronDown, Activity
 } from 'lucide-react';
-import QRCode from 'qrcode';
 import { createPortal } from 'react-dom';
 import { focusableWithin, trapTabKey } from './overlayFocus';
 import { CuratorMark } from './components/CuratorLogo';
@@ -490,27 +489,6 @@ function buildSpeechQueue(article: DigestItem): SpeechChunk[] {
   buildArticleParagraphs(article.fullText).forEach((paragraph, index) => push(paragraph, index));
 
   return chunks;
-}
-
-function QRCodeBox({ url }: { url: string }) {
-  const [svgStr, setSvgStr] = useState<string>('');
-  useEffect(() => {
-    QRCode.toString(url, { type: 'svg', width: 160, margin: 1, color: { dark: '#020617', light: '#ffffff' } }, (err, string) => {
-      if (!err && string) {
-        setSvgStr(string);
-      }
-    });
-  }, [url]);
-
-  return (
-    <div className="bg-white p-3 rounded-2xl shadow-lg border border-slate-800 shrink-0 flex items-center justify-center w-40 h-40">
-      {svgStr ? (
-        <div dangerouslySetInnerHTML={{ __html: svgStr }} className="w-full h-full flex items-center justify-center [&>svg]:w-full [&>svg]:h-full" />
-      ) : (
-        <div className="text-xs text-slate-400">Loading QR...</div>
-      )}
-    </div>
-  );
 }
 
 export default function App() {
@@ -2076,10 +2054,8 @@ export default function App() {
   const formatCuratedAt = (value: number): string => {
     if (!Number.isFinite(value) || value <= 0) return '';
     const d = new Date(value);
-    const now = new Date();
-    const dateOptions: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
-    if (d.getFullYear() !== now.getFullYear()) dateOptions.year = 'numeric';
-    const date = d.toLocaleDateString([], dateOptions);
+    // Always carry the year: an edition can be months old, and "Nov 17" on its own is a guess.
+    const date = d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
     const relative = formatSyncTime(value);
     return `${relative === 'Just now' ? 'just now' : relative} · ${date}`;
   };
@@ -2885,6 +2861,12 @@ export default function App() {
               <span>{selectedArticle.folder}</span>
               <span aria-hidden="true">·</span>
               <span>{decodeArticleEntities(selectedArticle.readTime || '')}</span>
+              {selectedArticle.publishedAt && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>{decodeArticleEntities(selectedArticle.publishedAt)}</span>
+                </>
+              )}
             </div>
 
             {showReaderSourceNote && readerSourceDescription && (
@@ -3144,7 +3126,7 @@ export default function App() {
                         ? `Built ${formatCuratedAt(digestCuratedAt)}${editionIsToday ? '' : ' — not today’s'}`
                         : digest.length > 0
                           ? 'Edition date not recorded'
-                          : `Today's digest · ${new Date().toLocaleDateString([], { month: 'short', day: 'numeric' })}`
+                          : `Today's digest · ${new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}`
                       } · ${digestSummaryLabel}${
                         semanticSummary && semanticSummary.feedbackExamples > 0
                           ? ` · ranked from ${semanticSummary.feedbackExamples} vote example${semanticSummary.feedbackExamples === 1 ? '' : 's'}`
@@ -3609,6 +3591,12 @@ export default function App() {
                               <div className="min-w-0">
                                 <div className="text-xs font-bold text-rose-200 truncate">{item.source}</div>
                                 <div className="text-xs text-rose-400/80 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
+                                  {item.publishedAt && (
+                                    <>
+                                      <span className="min-w-0">{decodeArticleEntities(item.publishedAt)}</span>
+                                      <span aria-hidden="true">·</span>
+                                    </>
+                                  )}
                                   <span className="min-w-0">{displayFolder(item.folder)}</span>
                                   <span aria-hidden="true">·</span>
                                   <span className="shrink-0 font-medium text-rose-300">{decodeArticleEntities(item.readTime || '')}</span>
@@ -3795,6 +3783,7 @@ export default function App() {
                     >
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
                         <span title={item.source} className="font-semibold text-slate-200 min-w-0 truncate">{item.source}</span>
+                        {item.publishedAt && <span>{decodeArticleEntities(item.publishedAt)}</span>}
                         <span>{item.readTime}</span>
                         <span className="text-amber-400 font-semibold inline-flex items-center gap-1">
                           <Bookmark className="w-3 h-3 fill-amber-400" /> Saved
@@ -4338,21 +4327,6 @@ Search for writers, publications, or topics. Curator checks whether each result 
               <h2 className="text-xl font-semibold tracking-tight text-slate-100">Settings</h2>
               <p className="text-xs text-slate-400 mt-0.5">Tune your digest and manage your reading preferences.</p>
             </div>
-
-            {/* Installing comes first for alpha testers: everything else is easier from the app */}
-            <details open className="rounded-3xl border border-amber-500/25 bg-amber-500/5 p-5">
-              <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-amber-200">
-                <Download className="w-4 h-4" />
-                <span>Install Curator on your iPhone</span>
-              </summary>
-              <div className="pt-3">
-                <p className="text-xs text-amber-100/80">Scan the code, open Curator in Safari, then use Share → Add to Home Screen.</p>
-                <div className="flex flex-col sm:flex-row items-center gap-6 pt-3">
-                  {typeof window !== 'undefined' && <QRCodeBox url={window.location.origin} />}
-                  <div className="text-xs text-amber-100/70">The Home Screen shortcut opens Curator like an app.</div>
-                </div>
-              </div>
-            </details>
 
             {/* Weekly Reading Activity Summary in Settings */}
             <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4">

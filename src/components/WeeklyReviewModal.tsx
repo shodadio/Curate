@@ -73,6 +73,9 @@ export function WeeklyReviewModal({
   todayStart.setHours(0, 0, 0, 0);
   const weekStart = todayStart.getTime() - 6 * dayMs;
   const priorWeekStart = weekStart - 7 * dayMs;
+  // Bars are weekday initials, which alone never say which days they were.
+  const shortDay = (at: number) => new Date(at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const weekRangeLabel = `${shortDay(weekStart)} – ${new Date(todayStart).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
 
   const recentItems = readingItems.filter(it => it.completedAt >= weekStart);
   const priorWeekItems = readingItems.filter(it => it.completedAt >= priorWeekStart && it.completedAt < weekStart);
@@ -210,7 +213,7 @@ export function WeeklyReviewModal({
           </div>
 
           <p className="text-xs sm:text-sm text-slate-400 max-w-lg">
-            A calm retrospective of your intellectual diet over the past 7 days — time spent, topic breadth, and reading discipline.
+            A calm retrospective of your intellectual diet over the past 7 days ({weekRangeLabel}) — time spent, topic breadth, and reading discipline.
           </p>
         </div>
 
