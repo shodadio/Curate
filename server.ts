@@ -9,12 +9,24 @@ import net from 'net';
 import path from 'path';
 import fs from 'fs';
 import { DEFAULT_FEEDS } from './src/defaultFeeds';
+import { MAX_PAGE_BYTES, MAX_REDIRECTS, BlockedUrlError, assertPublicHttpUrl, guardedLookup } from './lib/ssrf';
+import {
+  blendSemanticScores,
+  buildDenseCentroid,
+  buildDeterministicDigest,
+  buildExposurePenalty,
+  buildWhyLine,
+  cosineSimilarity,
+  localSemanticScores,
+  maxPerSourceFor,
+  scoreCandidates,
+  selectDiverse,
+  stableJitter,
+  type SemanticVoteExample,
+} from './lib/ranking';
+import { parseOpmlText } from './lib/opml';
 
 dotenv.config();
-
-// Outbound fetch hardening: only public http(s) hosts, re-checked on every redirect hop
-const MAX_REDIRECTS = 4;
-const MAX_PAGE_BYTES = 8 * 1024 * 1024;
 
 // ---- Public-route protection -------------------------------------------------
 // The AI routes spend real money and this app has no accounts, so the only lever is a
@@ -98,8 +110,6 @@ function requestBudget(label: string, ms: number) {
   };
 }
 
-class BlockedUrlError extends Error {}
-
 interface ProviderRequestConfig {
   apiKey: string;
   baseUrl: string;
@@ -175,276 +185,6 @@ function parseModelJson(text: string): any {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Provider-agnostic semantic engine.
-// Runs on the feed text itself with no API key, so votes always change ranking.
-// Provider embeddings, when configured, are blended on top of these scores.
-// ---------------------------------------------------------------------------
-
-interface SemanticVoteExample {
-  id: string;
-  vote: 'like' | 'dislike';
-  title: string;
-  text: string;
-  timestamp: number;
-  source?: string;
-  folder?: string;
-}
-
-interface SemanticCandidate {
-  id: string;
-  title?: string;
-  summary?: string;
-  fullText?: string;
-  folder?: string;
-  categories?: string[];
-  source?: string;
-}
-
-const SEMANTIC_STOPWORDS = new Set(
-  (`a about above after again against all also although am an and any are as at be because been before being below
-   between both but by can could did do does doing down during each either few first for from further had has have
-   having he her here hers herself him himself his how i if in into is it its itself just like made make many may me
-   might more most much must my myself new no nor not now of off often on once one only or other our ours ourselves
-   out over own same she should since so some such than that the their theirs them themselves then there these they
-   this those through thus to too under until up upon very was we were what when where whether which while who whom
-   why will with within without would you your yours yourself yourselves`).split(/\s+/)
-);
-
-const semanticTokens = (text: string): string[] => {
-  const stripped = (text || '')
-    .replace(/<[^>]*>/g, ' ')
-    .toLowerCase();
-  const raw = stripped.match(/[a-z][a-z'-]{2,}/g) || [];
-  const tokens: string[] = [];
-  for (const token of raw) {
-    if (SEMANTIC_STOPWORDS.has(token)) continue;
-    tokens.push(token.length > 4 && token.endsWith('s') ? token.slice(0, -1) : token);
-  }
-  return tokens;
-};
-
-const semanticTermCounts = (text: string): Map<string, number> => {
-  const tokens = semanticTokens(text);
-  const counts = new Map<string, number>();
-  const bump = (term: string, amount: number) => {
-    if (!term) return;
-    counts.set(term, (counts.get(term) || 0) + amount);
-  };
-  tokens.forEach((token, index) => {
-    bump(token, 1);
-    const next = tokens[index + 1];
-    if (next) bump(`${token}_${next}`, 0.5);
-  });
-  return counts;
-};
-
-const composeSemanticText = (item: SemanticCandidate): string => {
-  const title = item.title || '';
-  const folder = item.folder || '';
-  const categories = Array.isArray(item.categories) ? item.categories.join('. ') : '';
-  const summary = item.summary || '';
-  const full = String(item.fullText || '').slice(0, 1800);
-  return `${title}. ${title}. ${title}. ${folder}. ${folder}. ${categories}. ${categories}. ${summary}. ${summary}. ${full}`;
-};
-
-const buildSemanticVectors = (documents: string[]): Array<Map<string, number>> => {
-  const counts = documents.map(semanticTermCounts);
-  const documentFrequency = new Map<string, number>();
-  counts.forEach(terms => {
-    terms.forEach((_value, term) => {
-      documentFrequency.set(term, (documentFrequency.get(term) || 0) + 1);
-    });
-  });
-  const total = Math.max(1, documents.length);
-
-  return counts.map(terms => {
-    const vector = new Map<string, number>();
-    let magnitude = 0;
-    terms.forEach((value, term) => {
-      const frequency = documentFrequency.get(term) || 1;
-      const weight = value * Math.log(1 + total / frequency);
-      if (weight <= 0) return;
-      vector.set(term, weight);
-      magnitude += weight * weight;
-    });
-    const norm = Math.sqrt(magnitude);
-    if (norm > 0) {
-      vector.forEach((value, term) => vector.set(term, value / norm));
-    }
-    return vector;
-  });
-};
-
-const sparseCosine = (left: Map<string, number>, right: Map<string, number>): number => {
-  if (left.size === 0 || right.size === 0) return 0;
-  const [small, large] = left.size <= right.size ? [left, right] : [right, left];
-  let dot = 0;
-  small.forEach((value, term) => {
-    const other = large.get(term);
-    if (other) dot += value * other;
-  });
-  return dot;
-};
-
-const buildSparseCentroid = (
-  vote: 'like' | 'dislike',
-  examples: SemanticVoteExample[],
-  vectors: Array<Map<string, number> | null>,
-): Map<string, number> | null => {
-  const halfLifeMs = 60 * 24 * 60 * 60 * 1000;
-  const centroid = new Map<string, number>();
-  let totalWeight = 0;
-
-  examples.forEach((example, index) => {
-    if (example.vote !== vote) return;
-    const vector = vectors[index];
-    if (!vector) return;
-    const ageMs = Math.max(0, Date.now() - example.timestamp);
-    const weight = Math.pow(0.5, ageMs / halfLifeMs);
-    vector.forEach((value, term) => centroid.set(term, (centroid.get(term) || 0) + value * weight));
-    totalWeight += weight;
-  });
-
-  if (totalWeight === 0 || centroid.size === 0) return null;
-  let magnitude = 0;
-  centroid.forEach(value => { magnitude += value * value; });
-  if (magnitude <= 0) return null;
-  const norm = Math.sqrt(magnitude);
-  centroid.forEach((value, term) => centroid.set(term, value / norm));
-  return centroid;
-};
-
-const localSemanticScores = (
-  feedback: SemanticVoteExample[],
-  candidates: SemanticCandidate[],
-): Map<string, number> => {
-  const scores = new Map<string, number>();
-  if (feedback.length === 0 || candidates.length === 0) return scores;
-
-  const candidateTexts = candidates.map(composeSemanticText);
-  const feedbackTexts = feedback.map(entry => `${entry.title}. ${entry.title}. ${entry.title}. ${entry.text}`);
-  const vectors = buildSemanticVectors([...candidateTexts, ...feedbackTexts]);
-  const feedbackVectors = vectors.slice(candidates.length);
-
-  const positive = buildSparseCentroid('like', feedback, feedbackVectors);
-  const negative = buildSparseCentroid('dislike', feedback, feedbackVectors);
-  if (!positive && !negative) return scores;
-
-  vectors.slice(0, candidates.length).forEach((vector, index) => {
-    const candidate = candidates[index];
-    if (!candidate || !candidate.id) return;
-    const positiveSimilarity = positive ? sparseCosine(vector, positive) : 0;
-    const negativeSimilarity = negative ? sparseCosine(vector, negative) : 0;
-    const score = positive && negative
-      ? (positiveSimilarity - negativeSimilarity) / 2
-      : positive
-        ? positiveSimilarity
-        : -negativeSimilarity;
-    if (Number.isFinite(score)) scores.set(candidate.id, score);
-  });
-
-  return scores;
-};
-
-// Recency from the feed's own publication date, falling back to a neutral value.
-const recencyWeight = (item: { publishedAtMs?: number }): number => {
-  const published = Number(item?.publishedAtMs);
-  if (!Number.isFinite(published) || published <= 0) return 0.45;
-  const ageDays = Math.max(0, (Date.now() - published) / (24 * 60 * 60 * 1000));
-  return Math.exp(-ageDays / 5);
-};
-
-// How fresh an article is, in words, for the editorial "why" line.
-const recencyPhrase = (item: { publishedAtMs?: number }): string => {
-  const published = Number(item?.publishedAtMs);
-  if (!Number.isFinite(published) || published <= 0) return '';
-  const ageHours = Math.max(0, (Date.now() - published) / (60 * 60 * 1000));
-  if (ageHours <= 24) return 'today';
-  if (ageHours <= 96) return 'this week';
-  if (ageHours <= 24 * 21) return 'this month';
-  return '';
-};
-
-// A distinct, specific "why" per card: reason first, then a rotating phrasing so a digest
-// drawn from one dominant feed does not repeat the same sentence on every card.
-const buildWhyLine = (
-  item: any,
-  index: number,
-  context: { liked: boolean; interest?: string; semanticScore: number },
-): string => {
-  const source = String(item.source || 'your feeds').trim();
-  const folder = String(item.folder || '').trim();
-  const ageLabel = recencyPhrase(item);
-
-  if (context.liked) {
-    return `Selected for your reading interest in ${folder || source}.`;
-  }
-  if (context.interest) {
-    return `Selected because you asked for more of ${context.interest}.`;
-  }
-  if (context.semanticScore > 0.28) {
-    return 'A close match to the pieces you have been upvoting.';
-  }
-  if (context.semanticScore > 0.12) {
-    return 'Shares the shape of articles you liked lately.';
-  }
-
-  const variants = folder
-    ? [
-        `New ${ageLabel || 'recently'} from ${source} · ${folder}.`,
-        `${folder} from ${source}, not yet on your shelf.`,
-        `From ${source}, filed under ${folder} — new to you.`,
-        `${source} on ${folder} — a fresh corner of your library.`,
-      ]
-    : [
-        `New ${ageLabel || 'recently'} from ${source}.`,
-        `From ${source}, not yet on your shelf.`,
-        `Fresh from ${source}, outside your last digest.`,
-        `${source} — new to this digest.`,
-      ];
-
-  return variants[index % variants.length];
-};
-
-// Stable per-seed tie-breaker so a refresh reshuffles ties without shuffling mid-read.
-const stableJitter = (seed: string, id: string): number => {
-  let hash = 2166136261;
-  const input = `${seed}|${id}`;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return ((hash >>> 0) % 1000) / 1000;
-};
-
-// Greedy selection that avoids one prolific feed taking over the whole digest.
-const selectDiverse = (
-  ranked: any[],
-  count: number,
-  maxPerSource: number,
-  priority: any[] = [],
-): any[] => {
-  if (count <= 0) return [];
-  const chosen: any[] = [];
-  const usedIds = new Set<string>();
-  const perSource = new Map<string, number>();
-
-  const add = (item: any, enforceCap: boolean) => {
-    if (chosen.length >= count || !item || !item.id || usedIds.has(item.id)) return;
-    const key = item.source || 'Unknown';
-    if (enforceCap && (perSource.get(key) || 0) >= maxPerSource) return;
-    usedIds.add(item.id);
-    perSource.set(key, (perSource.get(key) || 0) + 1);
-    chosen.push(item);
-  };
-
-  priority.forEach(item => add(item, true));
-  ranked.forEach(item => add(item, true));
-  if (chosen.length < count) ranked.forEach(item => add(item, false));
-  return chosen.slice(0, count);
-};
-
 // The reply text of an OpenAI-style chat completion, whether the provider returns a
 // plain string or an array of content parts.
 const readOpenAIChatText = (data: any): string => {
@@ -509,95 +249,6 @@ async function postAnthropicMessage(
 async function callAnthropic(apiKey: string, prompt: string, model: string): Promise<any> {
   return parseModelJson(await postAnthropicMessage(apiKey, prompt, model, 4096));
 }
-
-const BLOCKED_HOSTNAMES = new Set(['localhost', 'metadata.google.internal']);
-const BLOCKED_HOST_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa'];
-
-function isBlockedIpv4(ip: string): boolean {
-  const parts = ip.split('.').map(Number);
-  if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return true;
-  const [a, b, c] = parts;
-  if (a === 0 || a === 10 || a === 127) return true;              // "this" network, private, loopback
-  if (a === 100 && b >= 64 && b <= 127) return true;               // CGNAT 100.64/10
-  if (a === 169 && b === 254) return true;                         // link-local incl. cloud metadata
-  if (a === 172 && b >= 16 && b <= 31) return true;                // private 172.16/12
-  if (a === 192 && b === 168) return true;                         // private 192.168/16
-  if (a === 192 && b === 0 && (c === 0 || c === 2)) return true;   // 192.0.0/24, TEST-NET-1
-  if (a === 198 && (b === 18 || b === 19)) return true;            // benchmarking 198.18/15
-  if (a === 198 && b === 51 && c === 100) return true;             // TEST-NET-2
-  if (a === 203 && b === 0 && c === 113) return true;              // TEST-NET-3
-  if (a >= 224) return true;                                       // multicast, reserved, broadcast
-  return false;
-}
-
-function isBlockedIpv6(ip: string): boolean {
-  const addr = ip.toLowerCase();
-  if (addr === '::' || addr === '::1') return true;
-  if (addr.startsWith('::ffff:')) {
-    const mapped = addr.slice('::ffff:'.length);
-    return net.isIPv4(mapped) ? isBlockedIpv4(mapped) : true;
-  }
-  const firstGroup = addr.split(':')[0];
-  if (firstGroup.startsWith('fc') || firstGroup.startsWith('fd')) return true; // unique-local fc00::/7
-  if (/^fe[89ab]/.test(firstGroup)) return true;                               // link-local fe80::/10
-  if (firstGroup.startsWith('ff')) return true;                                // multicast
-  return false;
-}
-
-function isBlockedAddress(ip: string): boolean {
-  if (net.isIPv4(ip)) return isBlockedIpv4(ip);
-  if (net.isIPv6(ip)) return isBlockedIpv6(ip);
-  return true;
-}
-
-async function assertPublicHttpUrl(raw: string): Promise<URL> {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new BlockedUrlError('Invalid URL');
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new BlockedUrlError('Only http and https URLs are supported');
-  }
-  if (url.username || url.password) {
-    throw new BlockedUrlError('URLs containing credentials are not supported');
-  }
-  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  if (!hostname) throw new BlockedUrlError('URL is missing a host');
-  if (BLOCKED_HOSTNAMES.has(hostname) || BLOCKED_HOST_SUFFIXES.some(suffix => hostname.endsWith(suffix))) {
-    throw new BlockedUrlError('Requests to local or internal hostnames are not allowed');
-  }
-  if (net.isIP(hostname) && isBlockedAddress(hostname)) {
-    throw new BlockedUrlError('Requests to internal network addresses are not allowed');
-  }
-  return url;
-}
-
-// Filter DNS answers at connect time so a host cannot resolve to a public IP first and an internal one later
-const guardedLookup = (
-  hostname: string,
-  options: any,
-  callback: (err: NodeJS.ErrnoException | null, address?: any, family?: number) => void,
-) => {
-  const lookupOptions = typeof options === 'number' ? { family: options } : { ...options };
-  dns.lookup(hostname, { ...lookupOptions, all: true } as dns.LookupAllOptions, (err, addresses) => {
-    if (err) {
-      callback(err);
-      return;
-    }
-    const safe = addresses.filter(entry => !isBlockedAddress(entry.address));
-    if (safe.length === 0) {
-      callback(new BlockedUrlError('Host resolves to an internal network address'));
-      return;
-    }
-    if (lookupOptions.all) {
-      callback(null, safe);
-      return;
-    }
-    callback(null, safe[0].address, safe[0].family);
-  });
-};
 
 interface PageResponse {
   ok: boolean;
@@ -830,36 +481,6 @@ async function startServer() {
       })
     : null;
   const semanticEmbeddingCache = new Map<string, number[]>();
-  const vectorSimilarity = (left: number[], right: number[]): number => {
-    if (left.length !== right.length || left.length === 0) return 0;
-    return left.reduce((sum, value, index) => sum + value * right[index], 0);
-  };
-  const buildFeedbackCentroid = (
-    vote: 'like' | 'dislike',
-    examples: Array<{ vote: 'like' | 'dislike'; timestamp: number }>,
-    embeddings: Array<number[] | null>,
-  ): number[] | null => {
-    let centroid: number[] = [];
-    let totalWeight = 0;
-    const halfLifeMs = 90 * 24 * 60 * 60 * 1000;
-
-    examples.forEach((example, index) => {
-      const vector = embeddings[index];
-      if (example.vote !== vote || !vector) return;
-      if (centroid.length === 0) centroid = Array(vector.length).fill(0);
-      if (centroid.length !== vector.length) return;
-      const ageMs = Math.max(0, Date.now() - example.timestamp);
-      const weight = Math.pow(0.5, ageMs / halfLifeMs);
-      vector.forEach((value, dimension) => {
-        centroid[dimension] += value * weight;
-      });
-      totalWeight += weight;
-    });
-
-    if (totalWeight === 0) return null;
-    const magnitude = Math.sqrt(centroid.reduce((sum, value) => sum + value * value, 0));
-    return magnitude > 0 ? centroid.map(value => value / magnitude) : null;
-  };
 
   const embedSemanticTexts = async (
     texts: string[],
@@ -1137,192 +758,7 @@ async function startServer() {
         return res.status(400).json({ error: 'No OPML content provided' });
       }
 
-      const decodeXml = (str: string) =>
-        str
-          .replace(/&#(x[0-9a-f]+|[0-9]+);/gi, (entity, value: string) => {
-            const codePoint = value[0].toLowerCase() === 'x'
-              ? parseInt(value.slice(1), 16)
-              : parseInt(value, 10);
-            return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff &&
-              !(codePoint >= 0xd800 && codePoint <= 0xdfff)
-              ? String.fromCodePoint(codePoint)
-              : entity;
-          })
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&quot;/g, '"')
-          .replace(/&apos;/g, "'")
-          .replace(/&#39;/g, "'");
-
-      const getAttr = (tag: string, attr: string): string | undefined => {
-        const regex = new RegExp(`\\b${attr}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i');
-        const match = tag.match(regex);
-        const val = match?.[1] ?? match?.[2];
-        return val !== undefined ? decodeXml(val.trim()) : undefined;
-      };
-
-      const sources: Array<{
-        id: string;
-        title: string;
-        feedUrl: string;
-        folder: string;
-        categories: string[];
-        status: 'active' | 'failing';
-        failingReason?: string;
-      }> = [];
-      const failures: Array<{ title: string; reason: string }> = [];
-      const seenUrls = new Set<string>();
-
-      // Scan outline tags without treating a '>' inside a quoted attribute as the end of a tag.
-      const outlineTags: string[] = [];
-      let cursor = 0;
-      while ((cursor = opmlText.indexOf('<', cursor)) !== -1) {
-        if (opmlText.startsWith('<!--', cursor)) {
-          const commentEnd = opmlText.indexOf('-->', cursor + 4);
-          cursor = commentEnd === -1 ? opmlText.length : commentEnd + 3;
-          continue;
-        }
-        if (opmlText.startsWith('<![CDATA[', cursor)) {
-          const cdataEnd = opmlText.indexOf(']]>', cursor + 9);
-          cursor = cdataEnd === -1 ? opmlText.length : cdataEnd + 3;
-          continue;
-        }
-        if (opmlText.startsWith('<!', cursor) || opmlText.startsWith('<?', cursor)) {
-          const declarationEnd = opmlText.indexOf('>', cursor + 2);
-          cursor = declarationEnd === -1 ? opmlText.length : declarationEnd + 1;
-          continue;
-        }
-
-        const remainder = opmlText.slice(cursor);
-        const closingTag = remainder.match(/^<\/(?:[\w.-]+:)?outline\s*>/i);
-        if (closingTag) {
-          outlineTags.push(closingTag[0]);
-          cursor += closingTag[0].length;
-          continue;
-        }
-
-        const openingTag = remainder.match(/^<(?:[\w.-]+:)?outline(?=[\s/>])/i);
-        if (!openingTag) {
-          cursor += 1;
-          continue;
-        }
-
-        let end = cursor + openingTag[0].length;
-        let quote: string | null = null;
-        for (; end < opmlText.length; end += 1) {
-          const char = opmlText[end];
-          if (quote) {
-            if (char === quote) quote = null;
-          } else if (char === '"' || char === "'") {
-            quote = char;
-          } else if (char === '>') {
-            break;
-          }
-        }
-        if (end >= opmlText.length) break;
-
-        outlineTags.push(opmlText.slice(cursor, end + 1));
-        cursor = end + 1;
-      }
-
-      const folderStack: string[] = [];
-      let foundAnyOutline = false;
-
-      for (const tag of outlineTags) {
-        foundAnyOutline = true;
-
-        if (/^<\/(?:[\w.-]+:)?outline/i.test(tag)) {
-          if (folderStack.length > 0) {
-            folderStack.pop();
-          }
-          continue;
-        }
-
-        const isSelfClosing = /\/>$/.test(tag);
-        const xmlUrl = getAttr(tag, 'xmlUrl');
-        const title = getAttr(tag, 'title') || getAttr(tag, 'text') || '';
-        const categoryAttr = getAttr(tag, 'category');
-        const curatorCategoriesAttr = getAttr(tag, 'curatorCategories');
-        let curatorCategories: string[] | undefined;
-        if (curatorCategoriesAttr !== undefined) {
-          try {
-            const parsedCategories = JSON.parse(curatorCategoriesAttr);
-            if (Array.isArray(parsedCategories)) {
-              curatorCategories = parsedCategories
-                .filter((value: any) => typeof value === 'string')
-                .map((value: string) => value.replace(/\s+/g, ' ').trim().slice(0, 40))
-                .filter((value: string, index: number, values: string[]) => value && values.findIndex(other => other.toLowerCase() === value.toLowerCase()) === index);
-            }
-          } catch {
-            // Ignore invalid Curator metadata and use the ordinary OPML category below.
-          }
-        }
-        const typeAttr = getAttr(tag, 'type');
-
-        if (xmlUrl !== undefined) {
-          const cleanTitle = title || xmlUrl;
-          const folder =
-            folderStack.length > 0
-              ? folderStack[folderStack.length - 1]
-              : categoryAttr || 'Uncategorized';
-
-          if (!xmlUrl) {
-            failures.push({ title: cleanTitle || 'Unnamed feed', reason: 'Missing feed URL' });
-            continue;
-          }
-
-          const normalizedUrl = xmlUrl.toLowerCase();
-          if (seenUrls.has(normalizedUrl)) {
-            continue; // deduplicate identical feeds silently
-          }
-          seenUrls.add(normalizedUrl);
-
-          let isValidUrl = false;
-          try {
-            const parsed = new URL(xmlUrl);
-            isValidUrl = parsed.protocol === 'http:' || parsed.protocol === 'https:';
-          } catch {
-            isValidUrl = false;
-          }
-
-          if (!isValidUrl) {
-            sources.push({
-              id: 'src_' + Math.random().toString(36).substring(2, 9),
-              title: cleanTitle,
-              feedUrl: xmlUrl,
-              folder,
-              categories: curatorCategories ?? [folder],
-              status: 'failing',
-              failingReason: 'Invalid feed URL format',
-            });
-            failures.push({ title: cleanTitle, reason: 'Invalid feed URL format' });
-          } else {
-            sources.push({
-              id: 'src_' + Math.random().toString(36).substring(2, 9),
-              title: cleanTitle,
-              feedUrl: xmlUrl,
-              folder,
-              categories: curatorCategories ?? [folder],
-              status: 'active',
-            });
-          }
-        } else if (!isSelfClosing) {
-          // Container folder outline (e.g. <outline text="Economics" title="Economics">)
-          const isRootWrapper =
-            !title ||
-            title.toLowerCase() === 'subscriptions' ||
-            title.toLowerCase() === 'feeds';
-          folderStack.push(
-            isRootWrapper
-              ? folderStack[folderStack.length - 1] || 'Uncategorized'
-              : title
-          );
-        } else if (typeAttr && typeAttr.toLowerCase() === 'rss') {
-          // Self-closing RSS outline without xmlUrl
-          failures.push({ title: title || 'Unnamed feed', reason: 'Missing xmlUrl attribute' });
-        }
-      }
+      const { sources, failures, foundAnyOutline } = parseOpmlText(opmlText);
 
       if (!foundAnyOutline || (sources.length === 0 && failures.length === 0)) {
         return res.status(400).json({
@@ -1939,16 +1375,7 @@ async function startServer() {
           ? req.body.previousDigestIds.filter((id: any) => typeof id === 'string')
           : []
       );
-      const nowMs = Date.now();
-      const exposurePenalty = new Map<string, number>();
-      const deprioritizedIds = new Set<string>();
-      recentlyShown.forEach(entry => {
-        const ageHours = Math.max(0, (nowMs - entry.shownAt) / (60 * 60 * 1000));
-        const penalty = ageHours < 18 ? 65 : ageHours < 72 ? 28 : ageHours < 336 ? 8 : 0;
-        if (penalty > 0) {
-          exposurePenalty.set(entry.id, Math.max(exposurePenalty.get(entry.id) || 0, penalty));
-        }
-      });
+      const exposurePenalty = buildExposurePenalty(recentlyShown);
 
       // A manual refresh keeps the current digest's articles out of the pool when there is room.
       if (wantsFreshDigest && previousDigestIds.size > 0) {
@@ -1980,19 +1407,19 @@ async function startServer() {
               .slice(0, 3000)
           );
           const vectors = await embedSemanticTexts([...feedbackTexts, ...candidateTexts], embeddingConfig);
-          const positiveCentroid = buildFeedbackCentroid('like', feedbackExamples, vectors);
-          const negativeCentroid = buildFeedbackCentroid('dislike', feedbackExamples, vectors);
+          const positiveCentroid = buildDenseCentroid('like', feedbackExamples, vectors);
+          const negativeCentroid = buildDenseCentroid('dislike', feedbackExamples, vectors);
           const candidateVectors = vectors.slice(feedbackExamples.length);
 
           candidateVectors.forEach((vector, index) => {
             if (!vector) return;
-            const positiveSimilarity = positiveCentroid ? vectorSimilarity(vector, positiveCentroid) : 0;
-            const negativeSimilarity = negativeCentroid ? vectorSimilarity(vector, negativeCentroid) : 0;
+            const positiveSimilarity = positiveCentroid ? cosineSimilarity(vector, positiveCentroid) : 0;
+            const negativeSimilarity = negativeCentroid ? cosineSimilarity(vector, negativeCentroid) : 0;
             const providerScore = (positiveSimilarity - negativeSimilarity) / 2;
             const itemId = semanticItems[index]?.id;
             if (!itemId) return;
             const localScore = semanticScores.get(itemId) || 0;
-            semanticScores.set(itemId, providerScore * 0.65 + localScore * 0.35);
+            semanticScores.set(itemId, blendSemanticScores(providerScore, localScore));
             providerSemanticMatches += 1;
           });
         } catch (err: any) {
@@ -2000,34 +1427,15 @@ async function startServer() {
         }
       }
 
-      const scoredPool = candidatePool
-        .map((item: any) => {
-          const semanticScore = semanticScores.get(item.id) || 0;
-          const liked = moreIds.includes(item.id);
-          const interestLabel = moreTopics.find((label: string) => matchesInterest(item, label)) || '';
-          const lessLabel = lessTopics.find((label: string) => matchesInterest(item, label)) || '';
-          const penalty = exposurePenalty.get(item.id) || 0;
-          if (penalty > 0) deprioritizedIds.add(item.id);
-
-          let score = recencyWeight(item) * 45
-            + semanticScore * 120
-            + stableJitter(seed, item.id) * 12
-            - penalty;
-          if (liked) score += 30;
-          if (interestLabel) score += 25;
-          if (lessLabel) score -= 40;
-          if (readingStats && readingStats[item.id]?.finished) score += 8;
-
-          return {
-            ...item,
-            isOutOfBubble: false,
-            _score: score,
-            _semantic: semanticScore,
-            _interest: interestLabel,
-            _less: lessLabel,
-          };
-        })
-        .sort((a, b) => b._score - a._score);
+      const { scored: scoredPool, deprioritizedIds } = scoreCandidates(candidatePool, {
+        seed,
+        semanticScores,
+        moreIds,
+        moreTopics,
+        lessTopics,
+        readingStats,
+        exposurePenalty,
+      });
 
       // Assign a distinct editorial reason per card, in final ranked order.
       scoredPool.forEach((entry: any, index: number) => {
@@ -2043,10 +1451,7 @@ async function startServer() {
       const distinctSources = new Set(
         rankedItems.map(item => item.source).filter((value): value is string => Boolean(value))
       ).size;
-      const maxPerSource = Math.max(
-        2,
-        Math.min(itemCount, Math.ceil(itemCount / Math.max(1, distinctSources)))
-      );
+      const maxPerSource = maxPerSourceFor(itemCount, distinctSources);
 
       const semanticSummary = {
         feedbackExamples: feedbackExamples.length,
@@ -2172,54 +1577,12 @@ CURATION RULES:
         }
       }
 
-      // 3. Deterministic signal-aware curation over the semantically ranked pool
-      const likedExamples = feedbackExamples.filter(entry => entry.vote === 'like');
-      const familiarSources = new Set(
-        likedExamples.map(entry => entry.source).filter((value): value is string => Boolean(value))
-      );
-      const familiarFolders = new Set(
-        likedExamples.map(entry => entry.folder).filter((value): value is string => Boolean(value))
-      );
-      if (familiarFolders.size === 0 && rankedItems.length > 0) {
-        const folderCounts = new Map<string, number>();
-        rankedItems.slice(0, 10).forEach(item => {
-          const key = item.folder || '';
-          if (!key) return;
-          folderCounts.set(key, (folderCounts.get(key) || 0) + 1);
-        });
-        const leadingFolder = [...folderCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
-        if (leadingFolder) familiarFolders.add(leadingFolder);
-      }
-
-      const stretchTarget = serendipityDial >= 50
-        ? Math.min(2, itemCount)
-        : serendipityDial >= 20
-          ? Math.min(1, itemCount)
-          : 0;
-      const stretchItems: any[] = [];
-      if (stretchTarget > 0) {
-        for (const item of rankedItems) {
-          if (stretchItems.length >= stretchTarget) break;
-          const source = item.source || '';
-          const folder = item.folder || '';
-          if (familiarSources.has(source) || familiarFolders.has(folder)) continue;
-          const publishedMs = Number(item.publishedAtMs);
-          if (Number.isFinite(publishedMs) && Date.now() - publishedMs > 45 * 24 * 60 * 60 * 1000) continue;
-          stretchItems.push({
-            ...item,
-            isOutOfBubble: true,
-            why: `Deliberate stretch: outside your usual ${familiarFolders.size > 0 ? [...familiarFolders][0] : (folder || 'reading')} routine.`
-          });
-        }
-      }
-
-      const stretchIds = new Set(stretchItems.map(item => item.id));
-      const regular = selectDiverse(
-        rankedItems.filter(item => !stretchIds.has(item.id)),
-        Math.max(0, itemCount - stretchItems.length),
-        maxPerSource
-      );
-      const digest = [...regular, ...stretchItems].slice(0, itemCount);
+      const digest = buildDeterministicDigest(rankedItems, {
+        itemCount,
+        serendipityDial,
+        maxPerSource,
+        likedFeedback: feedbackExamples,
+      });
       const enrichedDigest = await enrichSelectedArticles(digest);
 
       res.json({ digest: enrichedDigest, generatedByAI: false, semanticSummary, feedReport });
