@@ -3202,7 +3202,7 @@ export default function App() {
                     <h3 className="text-sm font-semibold text-slate-100">One feed makes a thin edition</h3>
                     <p className="mt-1 text-xs leading-relaxed text-slate-400">
                       You are following <span className="text-slate-200">{sources[0]?.title || 'a single feed'}</span>.
-                      Add a few more, or import the feeds you already follow, and tomorrow's digest is wider.
+                      Add a few more, or import the feeds you already follow, and the next edition you build is wider.
                     </p>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
