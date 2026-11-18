@@ -52,6 +52,11 @@ export const cleanHtml = (str: string): string => {
     .trim();
 };
 
+// A link reaches the cleaner as "[label](url)", but the filters below decide what a paragraph is
+// by its words: a promo line that happens to be a link ("Learn more") is still a promo line.
+export const linkLabelsOnly = (paragraph: string): string =>
+  paragraph.replace(/\[([^\]\n]*)\]\((?:[^)]*)\)/g, '$1');
+
 // Site chrome: display-settings widgets in the publisher's page reach feeds as a run of very
 // short paragraphs (Ars Technica's "Story text / Size / Small Standard Large / Width * /
 // Standard Wide / Links / Standard Orange"), which then read as the opening of the article.
@@ -82,9 +87,129 @@ const dropChromeRuns = (paragraphs: string[]): string[] => {
 // so prose that merely starts with "By Tuesday, ..." is left alone.
 const bylineParagraph = /^(?:[-–—•*]\s*)?(?:by|words by|story by|written by|text by)\s+\p{Lu}[\p{L}'’.-]*(?:\s+(?:\p{Lu}[\p{L}'’.-]*|van|von|der|de|del|della|da|di|la|le|bin|al)){0,5}\.?$/iu;
 
+// An image caption or credit outlives the picture it described: the feed keeps the line, the
+// image itself is dropped, and the reader gets a stray paragraph that names no subject
+// ("Painting: Cognitive Incline | Leroy David Nunery III - https://longview.gallery/…"). The
+// label alone is not enough — a short line is only debris when it also carries a credit's
+// separator or a link — so prose that merely opens with one of these words is left alone.
+const mediaCreditLabel = /^(?:painting|image|photo|photograph|illustration|artwork|graphic|screenshot|caption|credit|video|film still|still|thumbnail|cover art|header image|featured image|figure|fig\.|drawing|cartoon|diagram)\s*[:\-–—]/i;
+const mediaCreditBody = /https?:\/\/|\s[|·]\s|\s[-–—]\s/;
+
+/** True for a caption or picture credit that lost the picture it belonged to. */
+export const isMediaCreditParagraph = (paragraph: string): boolean => {
+  const text = linkLabelsOnly(paragraph);
+  return text.length <= 240 && mediaCreditLabel.test(text) && mediaCreditBody.test(text);
+};
+
+// Some publishers print a quotation and the attribution that follows it as two paragraphs
+// (“… more in the user,” / “said Jackson G. Lu, PhD, an associate professor…”), so the reader
+// opened a new paragraph in the middle of a sentence. A paragraph that starts in lower case
+// after one that never finished its sentence belongs to that sentence; a break after a comma
+// or dash continues it even when the next word is a name. A colon is the exception: it
+// introduces the block that follows, so that block keeps its own paragraph.
+const sentenceClosers = /["'”’)\]]+$/;
+const endsSentence = (paragraph: string): boolean => /[.!?…]$/.test(paragraph.replace(sentenceClosers, ''));
+const endsOnContinuation = /[,;–—-]["'”’)\]]*$/;
+const endsOnBlockBreak = /:["'”’)\]]*$/;
+const startsLowerCase = /^[\p{Ll}]/u;
+
+/** Rejoins a sentence that a publisher split across two paragraphs. */
+export const joinContinuedParagraphs = (paragraphs: string[]): string[] => {
+  const joined: string[] = [];
+  for (const paragraph of paragraphs) {
+    const previous = joined[joined.length - 1];
+    const continues = previous && !endsSentence(previous) &&
+      (endsOnContinuation.test(previous) ||
+        (startsLowerCase.test(paragraph) && !endsOnBlockBreak.test(previous)));
+    if (continues) {
+      joined[joined.length - 1] = `${previous} ${paragraph}`;
+      continue;
+    }
+    joined.push(paragraph);
+  }
+  return joined;
+};
+
+// Galleries arrive as a caption plus a credit for every image ("Just another day in a thrilling
+// life of crime." / "Rockstar"), so the same short line lands in the body a dozen times and the
+// reader shows a column of stray lines. A short line repeated word for word is furniture, not
+// prose — a real sentence almost never appears twice in one article.
+const REPEATED_LINE_MAX_CHARS = 120;
+
+// A feed body often ends with the publication's own furniture: the author card ("Kyle Orland"
+// over "Senior Gaming Editor") and a comment count. They are page chrome, not the article.
+const authorRoleLine = /\b(?:editor(?:-in-chief)?|reporter|correspondent|columnist|writer|producer|critic)$/i;
+const titleCapitalised = /^(?:[A-Z][\p{L}'’.-]*|of|the|and|for|in|at|de|van|von)(?:\s+(?:[A-Z][\p{L}'’.-]*|of|the|and|for|in|at|de|van|von))*$/u;
+const nameLine = /^\p{Lu}[\p{L}'’.-]*(?:\s+\p{Lu}[\p{L}'’.-]*){1,3}$/u;
+const commentCountLine = /^\d[\d,]*\s+comments?$/i;
+
+export const dropBylineFurniture = (paragraphs: string[]): string[] => {
+  const kept: string[] = [];
+  for (const paragraph of paragraphs) {
+    // A linked author name reads as just the name once the marker is set aside.
+    const text = linkLabelsOnly(paragraph);
+    if (text.length > 40) {
+      kept.push(paragraph);
+      continue;
+    }
+    if (commentCountLine.test(text)) continue;
+    // Only a capitalised title line counts: "She is a writer" is prose, not a job title.
+    if (authorRoleLine.test(text) && titleCapitalised.test(text) && !/[.!?]/.test(text)) {
+      // The name above the title belongs to the same card.
+      if (kept.length && nameLine.test(linkLabelsOnly(kept[kept.length - 1]))) kept.pop();
+      continue;
+    }
+    kept.push(paragraph);
+  }
+  return kept;
+};
+
+export const dropRepeatedShortParagraphs = (paragraphs: string[]): string[] => {
+  const counts = new Map<string, number>();
+  for (const paragraph of paragraphs) {
+    if (paragraph.length > REPEATED_LINE_MAX_CHARS || paragraph.startsWith('•')) continue;
+    const key = paragraph.toLowerCase();
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return paragraphs.filter(paragraph => {
+    if (paragraph.length > REPEATED_LINE_MAX_CHARS || paragraph.startsWith('•')) return true;
+    return (counts.get(paragraph.toLowerCase()) ?? 0) < 2;
+  });
+};
+
+// A link is a citation, so its address has to survive the trip through plain text: the cleaner
+// writes it as [label](url), the reader renders that as a real link, and read-aloud still says
+// only the label.
+const ANCHOR_TAG = /<[^>]+>/g;
+
+const markdownLinkFromAnchor = (href: string, label: string, baseUrl: string): string => {
+  const text = decodeEntities(label)
+    .replace(ANCHOR_TAG, ' ')
+    .replace(/[[\]]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  let url = decodeEntities(href).replace(/[\s\u0000-\u001f]+/g, '');
+  try {
+    if (baseUrl) url = new URL(url, baseUrl).toString();
+  } catch {
+    // A relative address with no usable base cannot be followed; its words still can be read.
+  }
+  // Only http(s) is followable, so javascript:, data: and mailto: links keep just their words.
+  if (!/^https?:\/\//i.test(url)) return text;
+  // An anchor with no words was wrapping an image; the image is gone, so nothing is left to read.
+  if (!text) return '';
+  // An anchor that only wraps a picture file is the same picture in another form.
+  if (/^https?:\/\//i.test(text) && /\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(text)) return '';
+  // Brackets close the link in the marker, so parentheses in the address are percent-encoded.
+  url = url.replace(/\(/g, '%28').replace(/\)/g, '%29');
+  // An anchor whose own text is the address needs no brackets: bare URLs are linked anyway.
+  if (/^https?:\/\//i.test(text)) return text;
+  return `[${text}](${url})`;
+};
+
 // Paragraph-shaped plain text for the reader: real paragraphs, no stray lines,
 // no promo/repeated boilerplate, no unicode debris.
-export const htmlToReadableText = (html: string): string => {
+export const htmlToReadableText = (html: string, baseUrl = ''): string => {
   if (!html) return '';
 
   const stripMarkup = (input: string): string =>
@@ -95,6 +220,9 @@ export const htmlToReadableText = (html: string): string => {
       .replace(/<figcaption[\s\S]*?<\/figcaption>/gi, '')
       .replace(/<figure[\s\S]*?<\/figure>/gi, '')
       .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
+      // Keep the address behind a link, not only its words.
+      .replace(/<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a\s*>/gi, (_match, href: string, label: string) =>
+        markdownLinkFromAnchor(href, label, baseUrl))
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/(p|div|h[1-6]|blockquote|section|article)>/gi, '\n\n')
       .replace(/<li[^>]*>/gi, '\n• ')
@@ -127,6 +255,10 @@ export const htmlToReadableText = (html: string): string => {
         .replace(/([“‘(])\s+/g, '$1')
         .replace(/\s+([”’)])/g, '$1')
         .replace(/\s{2,}/g, ' ')
+        // A stripped table cell can weld a word to the parameter that followed it ("The?install=").
+        .replace(/([a-z])(?=[?#][a-z_]+=)/gi, '$1 ')
+        // A URL broken across lines leaves its continuation marked by a bare ampersand.
+        .replace(/^&\s*(?=[a-z_]+\s*=)/i, '')
         .trim();
       // A stripped inline link can leave a paragraph starting with the punctuation that followed it.
       if (/^[,;:.]/.test(next)) {
@@ -136,13 +268,27 @@ export const htmlToReadableText = (html: string): string => {
       return next;
     })
     .filter(paragraph => paragraph.length > 0 && /[\p{L}\p{N}]/u.test(paragraph))
-    .filter(paragraph => !(paragraph.length < 180 && /^(click here|subscribe|sign up|follow me|read more|read on|learn more|share this|advertisement)\b/i.test(paragraph)))
+    .filter(paragraph => {
+      // Length is measured on the words: a link's address is not part of the line the reader sees.
+      const words = linkLabelsOnly(paragraph);
+      return !(words.length < 180 && /^(click here|subscribe|sign up|follow me|read more|read on|learn more|share this|advertisement)\b/i.test(words));
+    })
     // "* Subscribers only" and its siblings are paywall footnotes, not article text.
-    .filter(paragraph => !/^\*?\s*(?:subscribers?|members?)\s*only\.?$/i.test(paragraph))
-    .filter(paragraph => !(paragraph.length <= 60 && bylineParagraph.test(paragraph)))
-    .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph));
+    .filter(paragraph => !/^\*?\s*(?:subscribers?|members?)\s*only\.?$/i.test(linkLabelsOnly(paragraph)))
+    .filter(paragraph => {
+      const words = linkLabelsOnly(paragraph);
+      return !(words.length <= 60 && bylineParagraph.test(words));
+    })
+    .filter(paragraph => !isMediaCreditParagraph(paragraph))
+    // "[return]" and its siblings are footnote machinery, not prose.
+    .filter(paragraph => !/^\[[^\]\n]{0,80}\]$/.test(paragraph))
+    // "Watch on Aeon" is the player's call to action, left behind when the video is dropped.
+    .filter(paragraph => !/^(?:[Ww]atch|[Ll]isten|[Vv]iew|[Pp]lay|[Rr]ead|[Ss]ee)\s+(?:on|at|in|via)\s+[\p{Lu}][\p{L}\s.&’']{1,30}$/u.test(paragraph))
+    // A caption that is nothing but a hashtag ("#nofilter") is image furniture.
+    .filter(paragraph => !/^#[\p{L}\d_]{2,30}$/u.test(paragraph))
+    .filter(paragraph => !/^the post .+ appeared first on /i.test(linkLabelsOnly(paragraph)));
 
-  return dropChromeRuns(paragraphs).join('\n\n');
+  return joinContinuedParagraphs(dropBylineFurniture(dropRepeatedShortParagraphs(dropChromeRuns(paragraphs)))).join('\n\n');
 };
 
 // ---- Dense paragraphs --------------------------------------------------------

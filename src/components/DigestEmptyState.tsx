@@ -1,12 +1,10 @@
 import React from 'react';
-import { EyeOff, RefreshCw, RotateCcw, Rss } from 'lucide-react';
+import { EyeOff, RotateCcw, Rss } from 'lucide-react';
 
 interface DigestEmptyStateProps {
   /** "muted" when every story in the digest was given a thumbs-down. */
   mode: 'quiet' | 'muted';
   mutedCount: number;
-  loading: boolean;
-  onRefresh: () => void;
   onRestoreMuted: () => void;
   onManageSources: () => void;
 }
@@ -14,8 +12,6 @@ interface DigestEmptyStateProps {
 export function DigestEmptyState({
   mode,
   mutedCount,
-  loading,
-  onRefresh,
   onRestoreMuted,
   onManageSources,
 }: DigestEmptyStateProps) {
@@ -42,8 +38,8 @@ export function DigestEmptyState({
         </h3>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-slate-400">
           {isMuted
-            ? "You marked every story here \u201cLess like this\u201d, so there is nothing left to read. Restore them to pick up where you left off, or refresh for a new mix."
-            : 'Your feeds are quiet right now. Refresh to look again, or check that your sources are still reachable.'}
+            ? "You marked every story here \u201cLess like this\u201d, so there is nothing left to read. Restore them to pick up where you left off, or refresh at the top for a new mix."
+            : 'Your feeds are quiet right now. Refresh at the top to look again, or check that your sources are still reachable.'}
         </p>
       </div>
 
@@ -58,19 +54,6 @@ export function DigestEmptyState({
             <span>{restoreLabel}</span>
           </button>
         )}
-        <button
-          type="button"
-          onClick={onRefresh}
-          disabled={loading}
-          className={`inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold transition disabled:opacity-50 ${
-            isMuted
-              ? 'border border-slate-700 bg-slate-950/80 text-slate-200 hover:border-amber-500/40 hover:text-amber-300'
-              : 'border border-amber-500/40 bg-amber-500/20 text-amber-300 hover:bg-amber-500/30'
-          }`}
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          <span>{loading ? 'Refreshing…' : 'Refresh your digest'}</span>
-        </button>
       </div>
 
       <button

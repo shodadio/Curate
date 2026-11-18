@@ -82,11 +82,41 @@ test('htmlToReadableText keeps paragraph structure when the feed double-escapes 
   assert.equal(body, 'First paragraph.\n\nSecond paragraph.\n\nThird paragraph.');
 });
 
-test('htmlToReadableText keeps links as readable words and leaves no tag debris', () => {
+test('htmlToReadableText keeps a link address beside its words and leaves no tag debris', () => {
   const escaped = '&lt;p&gt;See &lt;a href=&quot;https://example.com/a&quot;&gt;the piece&lt;/a&gt; for more.&lt;/p&gt;';
   const body = htmlToReadableText(escaped);
   assert.equal(hasTag(body), false);
-  assert.equal(body, 'See the piece for more.');
+  assert.equal(body, 'See [the piece](https://example.com/a) for more.');
+});
+
+test('htmlToReadableText resolves a relative link against the article address', () => {
+  const body = htmlToReadableText('<p>See <a href="/story/2">the follow-up</a>.</p>', 'https://example.com/posts/1');
+  assert.equal(body, 'See [the follow-up](https://example.com/story/2).');
+});
+
+test('htmlToReadableText drops an anchor that only wrapped a picture', () => {
+  const body = htmlToReadableText('<p>Before <a href="https://cdn.example.com/photo.jpg"><img src="https://cdn.example.com/photo.jpg" alt=""></a> after.</p>');
+  assert.equal(body, 'Before after.');
+});
+
+test('htmlToReadableText keeps an address that is its own link text', () => {
+  const body = htmlToReadableText('<p>See <a href="https://example.com/a">https://example.com/a</a>.</p>');
+  assert.equal(body, 'See https://example.com/a.');
+});
+
+test('htmlToReadableText leaves an address-only anchor as the address', () => {
+  const body = htmlToReadableText('<p><a href="https://example.com/a">https://example.com/a</a></p>');
+  assert.equal(body, 'https://example.com/a');
+});
+
+test('htmlToReadableText keeps the words of a link it cannot follow', () => {
+  const body = htmlToReadableText('<p>Read <a href="javascript:alert(1)">the notes</a> now.</p>');
+  assert.equal(body, 'Read the notes now.');
+});
+
+test('htmlToReadableText keeps the words of a link wrapped around formatted text', () => {
+  const body = htmlToReadableText('<p>See <a href="https://example.com/x">the <em>whole</em> piece</a>.</p>');
+  assert.equal(body, 'See [the whole piece](https://example.com/x).');
 });
 
 test('htmlToReadableText survives text escaped twice over', () => {
@@ -151,6 +181,102 @@ test('htmlToReadableText drops a byline paragraph from a teaser body', () => {
     '<p>Women in Tehran are changing society by dressing as they choose, in numbers too large to stop.</p><p>- by Parisa Khoshnami</p>',
   );
   assert.equal(body, 'Women in Tehran are changing society by dressing as they choose, in numbers too large to stop.');
+});
+
+test('htmlToReadableText drops gallery captions and credits that repeat with every image', () => {
+  const body = htmlToReadableText(
+    '<p>Real article text starts here.</p><p>Just another day in a thrilling life of crime.</p><p>Rockstar</p><p>Just another day in a thrilling life of crime.</p><p>Rockstar</p><p>Real article text continues.</p>',
+  );
+  assert.equal(body, 'Real article text starts here.\n\nReal article text continues.');
+});
+
+test('htmlToReadableText keeps a short line that appears only once', () => {
+  // "Synthesis" is a section heading, not a caption; only repeats are furniture.
+  assert.equal(htmlToReadableText('<p>Body text here.</p><p>Synthesis</p>'), 'Body text here.\n\nSynthesis');
+});
+
+test('htmlToReadableText drops bracket-only footnote debris', () => {
+  assert.equal(htmlToReadableText('<p>Body text here.</p><p>[return]</p>'), 'Body text here.');
+});
+
+test('htmlToReadableText drops a player call to action', () => {
+  assert.equal(htmlToReadableText('<p>Body text here.</p><p>Watch on Aeon</p>'), 'Body text here.');
+});
+
+test('htmlToReadableText keeps a word clear of the parameter that followed it', () => {
+  assert.equal(
+    htmlToReadableText('<p>The?install=datasette-maplibre installs that plugin from PyPI.</p>'),
+    'The ?install=datasette-maplibre installs that plugin from PyPI.',
+  );
+});
+
+test('htmlToReadableText drops the author card and comment count a feed appends', () => {
+  const body = htmlToReadableText('<p>Real article text.</p><p>Kyle Orland</p><p>Senior Gaming Editor</p><p>5 Comments</p>');
+  assert.equal(body, 'Real article text.');
+});
+
+test('htmlToReadableText drops the author card when the name is a link', () => {
+  const body = htmlToReadableText(
+    '<p>Real article text.</p><p><a href="https://example.com/author/kyle">Kyle Orland</a> Senior Gaming Editor</p><p>5 Comments</p>',
+  );
+  assert.equal(body, 'Real article text.');
+});
+
+test('htmlToReadableText drops a byline whose name is a link', () => {
+  const body = htmlToReadableText('<p>By <a href="https://example.com/author/danai">Danai Nesta Kupemba</a></p><p>Real article text starts here.</p>');
+  assert.equal(body, 'Real article text starts here.');
+});
+
+test('htmlToReadableText drops a promo line that is a link', () => {
+  const body = htmlToReadableText('<p><a href="https://example.com/store">Learn more</a></p><p>Real article text.</p>');
+  assert.equal(body, 'Real article text.');
+});
+
+test('htmlToReadableText keeps prose that mentions a job title', () => {
+  assert.equal(htmlToReadableText('<p>She is a writer</p><p>Real article text.</p>'), 'She is a writer\n\nReal article text.');
+});
+
+test('htmlToReadableText drops a lone hashtag caption', () => {
+  assert.equal(htmlToReadableText('<p>Real article text.</p><p>#nofilter</p>'), 'Real article text.');
+});
+
+test('htmlToReadableText drops a picture credit whose image was stripped', () => {
+  // A caption reaches the reader as prose once its image is gone: it names no subject and
+  // sends the reader off-site from the middle of the article.
+  const body = htmlToReadableText(
+    '<p>Real article text starts here.</p><p>Painting: Cognitive Incline | Leroy David Nunery III - https://longview.gallery/products/cognitive-incline</p>',
+  );
+  assert.equal(body, 'Real article text starts here.');
+});
+
+test('htmlToReadableText keeps a sentence that merely opens with a caption word', () => {
+  const body = htmlToReadableText('<p>Painting: my grandfather built sets for the opera.</p>');
+  assert.equal(body, 'Painting: my grandfather built sets for the opera.');
+});
+
+test('htmlToReadableText rejoins a quotation whose attribution arrived as its own paragraph', () => {
+  const body = htmlToReadableText(
+    '<p>“The key issue is not whether but how AI is used. The difference lies less in the technology itself and more in the user,”</p><p>said Jackson G. Lu, PhD, an associate professor at MIT.</p>',
+  );
+  assert.equal(
+    body,
+    '“The key issue is not whether but how AI is used. The difference lies less in the technology itself and more in the user,” said Jackson G. Lu, PhD, an associate professor at MIT.',
+  );
+});
+
+test('htmlToReadableText rejoins a sentence that resumes with a name after a comma', () => {
+  const body = htmlToReadableText('<p>“We were all shocked,”</p><p>Akogo said of the result.</p>');
+  assert.equal(body, '“We were all shocked,” Akogo said of the result.');
+});
+
+test('htmlToReadableText keeps a line that introduces the block below it on its own line', () => {
+  const body = htmlToReadableText('<p>Here is the config:</p><p>worker_processes auto;</p>');
+  assert.equal(body, 'Here is the config:\n\nworker_processes auto;');
+});
+
+test('htmlToReadableText keeps a new paragraph that opens with a name spelled in lower case', () => {
+  const body = htmlToReadableText('<p>Phones got faster.</p><p>iPhone sales still fell.</p>');
+  assert.equal(body, 'Phones got faster.\n\niPhone sales still fell.');
 });
 
 test('htmlToReadableText drops byline phrasing with and without a dash', () => {

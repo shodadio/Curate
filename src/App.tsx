@@ -18,7 +18,7 @@ import { SettingsSection } from './components/SettingsSection';
 import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
 import { safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, type StorageFailure } from './storage';
 import { DEFAULT_FEEDS } from './defaultFeeds';
-import { splitDenseParagraph } from '../lib/markup';
+import { dropBylineFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph } from '../lib/markup';
 
 interface DiscoveredSource {
   title: string;
@@ -168,13 +168,17 @@ function buildArticleParagraphs(text: string): string[] {
     .replace(/([a-z])([.!?])(?=[A-Z][a-z])/g, '$1$2 ')
     .replace(/\n{3,}/g, '\n\n');
 
-  return clean
+  const paragraphs = clean
     .split(/\n{2,}/)
     .map(paragraph => {
       let next = paragraph
         .replace(/\s*\n\s*/g, ' ')
         .replace(/\s+([,.;:!?])/g, '$1')
         .replace(/\s{2,}/g, ' ')
+        // A stripped table cell can weld a word to the parameter that followed it ("The?install=").
+        .replace(/([a-z])(?=[?#][a-z_]+=)/gi, '$1 ')
+        // A URL broken across lines leaves its continuation marked by a bare ampersand.
+        .replace(/^&\s*(?=[a-z_]+\s*=)/i, '')
         .trim();
       // A stripped inline link can leave a paragraph starting with the punctuation that followed it.
       if (/^[,;:.]/.test(next)) {
@@ -184,11 +188,118 @@ function buildArticleParagraphs(text: string): string[] {
       return next;
     })
     .filter(paragraph => paragraph.length > 0 && /[\p{L}\p{N}]/u.test(paragraph))
-    .filter(paragraph => !(paragraph.length < 180 && /^(click here|subscribe|sign up|follow me|read more|share this|advertisement)\b/i.test(paragraph)))
-    .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph))
-    // A section handed over as one <p> is shown as a few shorter paragraphs; read-aloud speaks
-    // from this same list, so a spoken paragraph is still a paragraph on screen.
+    .filter(paragraph => {
+      // Length is measured on the words: a link's address is not part of the line the reader sees.
+      const words = linkLabelsOnly(paragraph);
+      return !(words.length < 180 && /^(click here|subscribe|sign up|follow me|read more|learn more|share this|advertisement)\b/i.test(words));
+    })
+    .filter(paragraph => !isMediaCreditParagraph(paragraph))
+    // "[return]" and its siblings are footnote machinery, not prose.
+    .filter(paragraph => !/^\[[^\]\n]{0,80}\]$/.test(paragraph))
+    // "Watch on Aeon" is the player's call to action, left behind when the video is dropped.
+    .filter(paragraph => !/^(?:[Ww]atch|[Ll]isten|[Vv]iew|[Pp]lay|[Rr]ead|[Ss]ee)\s+(?:on|at|in|via)\s+[\p{Lu}][\p{L}\s.&’']{1,30}$/u.test(paragraph))
+    // A caption that is nothing but a hashtag ("#nofilter") is image furniture.
+    .filter(paragraph => !/^#[\p{L}\d_]{2,30}$/u.test(paragraph))
+    .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph));
+
+  // A quotation and the attribution a publisher printed as its own paragraph are one
+  // sentence; the reader and the voice both take their paragraphs from this list.
+  // A section handed over as one <p> is shown as a few shorter paragraphs; read-aloud speaks
+  // from this same list, so a spoken paragraph is still a paragraph on screen.
+  return joinContinuedParagraphs(dropBylineFurniture(dropRepeatedShortParagraphs(paragraphs)))
     .flatMap(paragraph => splitDenseParagraph(paragraph));
+}
+
+// A feed that strips an anchor down to its text leaves a bare URL in the body, which the
+// reader showed as inert prose. Those URLs become real links; anything else stays as written.
+const INLINE_URL = /(?:https?:\/\/|www\.)[^\s<>"'`]+/gi;
+
+// A link has to lead somewhere: "https://.../demo.db" is how a feed truncates an address,
+// and making it tappable would send the reader to nowhere from the middle of a sentence.
+const REAL_URL = /^(?:https?:\/\/|www\.)[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?::\d+)?(?:[/?#]|$)/i;
+
+// Sentence punctuation after a URL belongs to the sentence, not the address; brackets are
+// only dropped when they were never opened inside the URL.
+function trimUrlTail(raw: string): string {
+  let url = raw;
+  for (;;) {
+    if (/[.,;:!?'"”’\]&]$/.test(url)) {
+      url = url.slice(0, -1);
+      continue;
+    }
+    if (url.endsWith(')')) {
+      const opened = (url.match(/\(/g) || []).length;
+      const closed = (url.match(/\)/g) || []).length;
+      if (closed > opened) {
+        url = url.slice(0, -1);
+        continue;
+      }
+    }
+    return url;
+  }
+}
+
+interface ParagraphToken {
+  text: string;
+  href?: string;
+}
+
+function linkifyBareUrls(text: string): ParagraphToken[] {
+  const tokens: ParagraphToken[] = [];
+  let cursor = 0;
+  INLINE_URL.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = INLINE_URL.exec(text)) !== null) {
+    const url = trimUrlTail(match[0]);
+    if (url.length < 9 || !REAL_URL.test(url)) continue;
+    if (match.index > cursor) tokens.push({ text: text.slice(cursor, match.index) });
+    tokens.push({ text: url, href: /^www\./i.test(url) ? `https://${url}` : url });
+    cursor = match.index + url.length;
+  }
+  if (cursor < text.length) tokens.push({ text: text.slice(cursor) });
+  return tokens;
+}
+
+// The feed cleaner keeps a link's address beside its words ("[the piece](https://…)") so the
+// citation survives; the reader turns that marker back into a link.
+const MARKDOWN_LINK = /\[([^\]\n]{1,240})\]\(([^)]+)\)/g;
+
+function linkifyParagraph(paragraph: string): ParagraphToken[] {
+  const tokens: ParagraphToken[] = [];
+  let cursor = 0;
+  MARKDOWN_LINK.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = MARKDOWN_LINK.exec(paragraph)) !== null) {
+    tokens.push(...linkifyBareUrls(paragraph.slice(cursor, match.index)));
+    // Whitespace inside the address is cleaner debris; only a followable one becomes a link.
+    const href = match[2].replace(/\s+/g, '');
+    tokens.push(REAL_URL.test(href) ? { text: match[1], href } : { text: match[0] });
+    cursor = match.index + match[0].length;
+  }
+  tokens.push(...linkifyBareUrls(paragraph.slice(cursor)));
+  return tokens;
+}
+
+// Paragraph text with its links live. The tap is kept from the paragraph underneath, so
+// following a link does not also start read-aloud from that paragraph.
+function renderParagraphText(paragraph: string) {
+  const tokens = linkifyParagraph(paragraph);
+  if (tokens.length === 1 && !tokens[0].href) return tokens[0].text;
+  return tokens.map((token, index) =>
+    token.href ? (
+      <a
+        key={index}
+        href={token.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={event => event.stopPropagation()}
+        className="reader-inline-link break-words"
+        title={`Open ${token.href}`}
+      >{token.text}</a>
+    ) : (
+      <span key={index}>{token.text}</span>
+    ),
+  );
 }
 
 // ---- Read Aloud: text preparation and the spoken queue -----------------------
@@ -314,7 +425,7 @@ function speechVoiceChoices(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoic
 
 // Feed bodies carry URLs, footnote marks and site furniture. Left alone, the voice reads
 // addresses out one character at a time, which is the quickest way to make it sound cheap.
-function normaliseForSpeech(text: string): string {
+export function normaliseForSpeech(text: string): string {
   if (!text) return '';
 
   let out = decodeArticleEntities(text)
@@ -354,6 +465,22 @@ function normaliseForSpeech(text: string): string {
     .replace(/\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/gi, ' ')
     // Recognise ordinary multi-label domains with any alphabetic TLD, not just a short allowlist.
     .replace(/\b(?:[a-z\d](?:[a-z\d-]*[a-z\d])?\.)+[a-z]{2,}(?::\d{2,5})?(?:[/?#][^\s<>{}]*)?/gi, stripUrlKeepingPunctuation);
+
+  // What a stripped address leaves behind is not words: "& url=", "sql=", "#/data/scores?_size=2".
+  // Spoken aloud that is gibberish — worse than the address it came from — so it goes as well,
+  // together with the punctuation it strands ("Demo of the bug: - click next").
+  out = out
+    .replace(/\b[a-z_][a-z0-9_]*=\S*/gi, ' ')
+    .replace(/(?:^|\s)#\/\S*/g, ' ')
+    .replace(/\b\S*(?:\/\S*){2,}/g, ' ')
+    .replace(/%[\dA-F]{2}/gi, ' ')
+    .replace(/:\s*[-–—]\s*/g, ', ')
+    // An address that ended a clause leaves its preposition dangling ("The demo lives at, and
+    // it explains…"); "a link" keeps the sentence speakable instead of a hole.
+    .replace(/\b(at|on|in|into|from|via|through|under|using)\s*(?=[,.;:!?])/gi, '$1 a link')
+    // Two addresses in a row use up the object of their verb: "See https://a and https://b for
+    // the demos" would otherwise be spoken as "See and for the demos".
+    .replace(/\b(see|visit|open|check|try|read)\s+and\s+(?=(?:for|to|in|on|at|with|from)\b)/gi, '$1 the links ');
 
   // Footnote references, superscripts, editorial bracket asides and placeholder ellipses.
   out = out
@@ -425,10 +552,18 @@ function normaliseForSpeech(text: string): string {
     .replace(/[—–]/g, ', ');
 
   return out
+    // Quotation marks are punctuation for the eye; some engines read them out as "quote",
+    // and the marks a scraper strands in the middle of a sentence only add pauses.
+    .replace(/["“”„‟]/g, '')
     .replace(/\s+/g, ' ')
+    // A stripped link can leave a run of punctuation behind; one mark says as much as four.
+    .replace(/([,.;:!?])(?:\s*[,.;:!?])+/g, '$1')
     .replace(/,\s*,/g, ',')
+    .replace(/([a-z]{2}[.!?])(?=[A-Z])/g, '$1 ')
     .replace(/\s+([,.;:!?])/g, '$1')
-    .replace(/([.!?])(?=["'(A-Z])/g, '$1 ')
+    .replace(/^[\s,;:.]+/, '')
+    // An address can take a whole clause with it, leaving "and and" where links used to be.
+    .replace(/^(?:(?:and|or)\s*)+$/i, '')
     .trim();
 }
 
@@ -482,11 +617,17 @@ function splitIntoSentences(text: string): string[] {
 // Title and byline, then the summary, then the article paragraph by paragraph. Each chunk
 // keeps the index of the paragraph it came from, which is what the progress bar, the
 // highlight and the tap-to-listen-from-here all follow.
-function buildSpeechQueue(article: DigestItem): SpeechChunk[] {
+export function buildSpeechQueue(article: DigestItem): SpeechChunk[] {
   const chunks: SpeechChunk[] = [];
 
   const push = (text: string, paragraphIndex: number) => {
+    // A link that was the whole sentence leaves only connectives once it is stripped
+    // ("and url= and metadata="). Those are noise, not something to read out.
+    const hadLink = /(?:https?:\/\/|www\.)\S/i.test(text);
     for (const sentence of splitIntoSentences(normaliseForSpeech(text))) {
+      const words = sentence.split(/\s+/).filter(word => /[\p{L}\p{N}]/u.test(word));
+      if (!words.length) continue;
+      if (hadLink && words.length < 4) continue;
       chunks.push({ text: sentence, paragraphIndex });
     }
   };
@@ -544,7 +685,7 @@ export default function App() {
   const [selectedFeedSource, setSelectedFeedSource] = useState<string | null>(null);
   const [feedStreamArticles, setFeedStreamArticles] = useState<DigestItem[]>([]);
   const [loadingFeedStream, setLoadingFeedStream] = useState<boolean>(false);
-  // Server-side request tally, read on demand from the Settings tab
+  // Server-side request tally, read whenever the Settings tab opens
   const [usageStats, setUsageStats] = useState<{
     today?: any;
     week?: any;
@@ -555,7 +696,6 @@ export default function App() {
     rates?: { inputMiss: number; inputHit: number; output: number };
     retentionDays?: number;
   } | null>(null);
-  const [loadingUsage, setLoadingUsage] = useState<boolean>(false);
   // Bumped on every stream response so the list remounts cleanly when the filter changes;
   // without it the previous filter's cards were left in place under the new header.
   const [feedStreamRenderKey, setFeedStreamRenderKey] = useState<number>(0);
@@ -583,6 +723,8 @@ export default function App() {
     }
   });
   const [refreshingSourceId, setRefreshingSourceId] = useState<string | null>(null);
+  // A whole-library refresh, offered on the Feeds bar and beside failing sources
+  const [refreshingAllFeeds, setRefreshingAllFeeds] = useState<boolean>(false);
   const sourceDescriptionRequestsRef = React.useRef(new Set<string>());
   // Which source descriptions are open — in the Sources list, and on the reader's byline
   const [expandedSourceDescriptionIds, setExpandedSourceDescriptionIds] = useState<string[]>([]);
@@ -1387,14 +1529,11 @@ export default function App() {
   }, [activeTab]);
 
   const loadUsageStats = async () => {
-    setLoadingUsage(true);
     try {
       const res = await fetch('/api/usage');
       if (res.ok) setUsageStats(await res.json());
     } catch {
       // The tally is a convenience; a failure just leaves the last reading in place
-    } finally {
-      setLoadingUsage(false);
     }
   };
 
@@ -2151,15 +2290,34 @@ export default function App() {
     showToast('Subscription list exported successfully');
   };
 
+  // A site that publishes nothing larger than a 16×16 icon has no sharper copy to fetch, so
+  // stretching it to card size is what made it look blurred. Marked here, drawn as crisp
+  // pixels by CSS.
+  const markTinyIcon = (event: React.SyntheticEvent<HTMLImageElement>) => {
+    const image = event.currentTarget;
+    if (image.naturalWidth > 0 && image.naturalWidth < 48) image.dataset.tinyIcon = 'true';
+  };
+
   const getSourceAvatar = (feedUrl?: string): string | undefined => {
     if (!feedUrl) return undefined;
+    let hostname: string | undefined;
     try {
       const url = new URL(feedUrl);
-      // Served by our own server and cached there: no third-party request per card.
-      return `/api/favicon?domain=${encodeURIComponent(url.hostname)}`;
+      hostname = url.hostname;
+      // A scraped publication is stored as our own generated-feed link, so the icon has to be
+      // asked for using the site it wraps rather than this host.
+      if (/\/api\/generated-feed$/.test(url.pathname)) {
+        const target = url.searchParams.get('url');
+        if (target) hostname = new URL(target).hostname;
+      }
     } catch (e) {
       return undefined;
     }
+    if (!hostname || !hostname.includes('.')) return undefined;
+    // Served by our own server and cached there: no third-party request per card. The version
+    // is part of the URL so a browser that cached a small icon before the server learned to
+    // look for a sharper one asks again instead of keeping the blurry copy for a week.
+    return `/api/favicon?domain=${encodeURIComponent(hostname)}&v=2`;
   };
 
   const formatSyncTime = (timestamp?: number): string => {
@@ -2229,11 +2387,12 @@ export default function App() {
   const handleRefreshSource = async (source: SourceItem) => {
     setRefreshingSourceId(source.id);
     try {
-      // The endpoint matches on sourceTitle, not feedUrl — sending only feedUrl refreshed the wrong feeds
+      // The id is exact; the title is only a fallback for older saved sources without one, and
+      // force skips the server's five-minute feed cache so this is a real re-read.
       const res = await fetch('/api/feed-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceTitle: source.title, sources })
+        body: JSON.stringify({ sourceId: source.id, sourceTitle: source.title, sources, force: true })
       });
       const data = await res.json().catch(() => ({}));
       const articles: DigestItem[] = Array.isArray(data.articles) ? data.articles : [];
@@ -2267,6 +2426,69 @@ export default function App() {
       showToast(`Could not refresh "${source.title}"`);
     } finally {
       setRefreshingSourceId(null);
+    }
+  };
+
+  const failingSourceCount = sources.filter(s => s.status === 'failing').length;
+
+  // Re-read every watched feed — and only the feeds. It never rebuilds the digest, so a refresh
+  // here cannot reshuffle what is waiting on the Today page.
+  const handleRefreshAllFeeds = async () => {
+    if (refreshingAllFeeds) return;
+    setRefreshingAllFeeds(true);
+    try {
+      const res = await fetch('/api/feed-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourceTitle: selectedFeedSource || 'all',
+          sources,
+          refreshAll: true,
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(data.error || 'Could not refresh your feeds');
+        return;
+      }
+
+      const articles: DigestItem[] = Array.isArray(data.articles) ? data.articles : [];
+      const results: Array<{ id?: string; title?: string; ok?: boolean; itemCount?: number; error?: string }> =
+        Array.isArray(data.sources) ? data.sources : [];
+
+      if (results.length > 0) {
+        // The server reports one row per feed, so a source is only marked healthy when it
+        // actually answered with articles.
+        setSources(prev => prev.map(src => {
+          const result = results.find(row =>
+            (row.id && row.id === src.id) ||
+            String(row.title || '').trim().toLowerCase() === src.title.trim().toLowerCase()
+          );
+          if (!result) return src;
+          return result.ok
+            ? { ...src, lastSyncedAt: Date.now(), status: 'active' as const, failingReason: undefined }
+            : { ...src, status: 'failing' as const, failingReason: result.error || 'This feed returned no articles.' };
+        }));
+      }
+
+      applySourceMetadata(articles);
+      setFeedStreamArticles(articles);
+      setFeedStreamRenderKey(prev => prev + 1);
+
+      if (results.length > 0) {
+        const answered = results.filter(row => row.ok).length;
+        showToast(
+          answered === results.length
+            ? `Refreshed all ${results.length} feeds`
+            : `Refreshed ${answered} of ${results.length} feeds — the rest did not answer`
+        );
+      } else {
+        showToast(`Refreshed ${articles.length} ${articles.length === 1 ? 'entry' : 'entries'}`);
+      }
+    } catch (e) {
+      showToast('Could not refresh your feeds');
+    } finally {
+      setRefreshingAllFeeds(false);
     }
   };
 
@@ -3193,7 +3415,7 @@ export default function App() {
                           ? 'cursor-pointer'
                           : ''
                     }`}
-                  >{paragraph}</p>
+                  >{renderParagraphText(paragraph)}</p>
                 );
               }) : (
                 <p className="reader-dim text-base">This feed supplied no readable body text. Use “Read original” below to open the article.</p>
@@ -3283,19 +3505,21 @@ export default function App() {
             </div>
           </button>
 
-          {/* Refresh and Settings, spread across the row on phones so the three controls sit at
-              even intervals. From sm up the spacer takes the slack and groups them on the right. */}
+          {/* One refresh in the whole app, and only where it means something: on Today it
+              rebuilds the digest. Feeds and Sources refresh their own feeds instead. */}
           <div className="hidden sm:block flex-1" aria-hidden="true" />
-          <button
-            type="button"
-            onClick={() => generateDigest({ fresh: true })}
-            disabled={loadingDigest}
-            className="w-11 h-11 shrink-0 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-50 cursor-pointer"
+          {activeTab === 'today' && (
+            <button
+              type="button"
+              onClick={() => generateDigest({ fresh: true })}
+              disabled={loadingDigest}
+              className="w-11 h-11 shrink-0 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-50 cursor-pointer"
               title="Refresh today's digest"
               aria-label="Refresh today's digest"
             >
-            <RefreshCw className={`w-4 h-4 ${loadingDigest ? 'animate-spin' : ''}`} />
-          </button>
+              <RefreshCw className={`w-4 h-4 ${loadingDigest ? 'animate-spin' : ''}`} />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setActiveTab(prev => prev === 'settings' ? 'today' : 'settings')}
@@ -3465,7 +3689,6 @@ export default function App() {
                       onClick={() => generateDigest({ fresh: true })}
                       className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-700 px-4 text-xs font-semibold text-slate-200 transition hover:border-amber-500/40 hover:text-amber-300"
                     >
-                      <RefreshCw className="w-3.5 h-3.5" />
                       <span>Start over</span>
                     </button>
                   </div>
@@ -3481,7 +3704,6 @@ export default function App() {
                   onClick={() => generateDigest({ fresh: true })}
                   className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-amber-500 px-4 text-sm font-semibold text-slate-950 transition hover:bg-amber-400"
                 >
-                  <RefreshCw className="w-4 h-4" />
                   <span>Try again</span>
                 </button>
               </div>
@@ -3489,8 +3711,6 @@ export default function App() {
               <DigestEmptyState
                 mode="muted"
                 mutedCount={mutedDigestItems.length}
-                loading={loadingDigest}
-                onRefresh={() => generateDigest({ fresh: true })}
                 onRestoreMuted={restoreAllMutedCards}
                 onManageSources={() => setActiveTab('sources')}
               />
@@ -3498,8 +3718,6 @@ export default function App() {
               <DigestEmptyState
                 mode="quiet"
                 mutedCount={0}
-                loading={loadingDigest}
-                onRefresh={() => generateDigest({ fresh: true })}
                 onRestoreMuted={restoreAllMutedCards}
                 onManageSources={() => setActiveTab('sources')}
               />
@@ -3576,8 +3794,9 @@ export default function App() {
                                 {itemAvatar ? (
                                   <img 
                                     src={itemAvatar} 
-                                    alt={item.source}
+                                    alt={item.source} loading="lazy"
                                     className="w-full h-full object-cover rounded-full"
+                                    onLoad={markTinyIcon}
                                     onError={(e) => {
                                       (e.currentTarget as HTMLElement).style.display = 'none';
                                       const fallback = e.currentTarget.parentElement?.querySelector('.card-author-initials');
@@ -3808,8 +4027,9 @@ export default function App() {
                                 {itemAvatar ? (
                                   <img 
                                     src={itemAvatar} 
-                                    alt={item.source}
+                                    alt={item.source} loading="lazy"
                                     className="w-full h-full object-cover rounded-full"
+                                    onLoad={markTinyIcon}
                                     onError={(e) => {
                                       (e.currentTarget as HTMLElement).style.display = 'none';
                                       const fallback = e.currentTarget.parentElement?.querySelector('.out-author-initials');
@@ -3964,14 +4184,6 @@ export default function App() {
                   <p className="mt-1 text-xs text-slate-400">
                     Curator has no schedule: a fresh edition builds the next time you open it.
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => generateDigest({ fresh: true })}
-                    className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-700 px-4 text-xs font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Read more now</span>
-                  </button>
                 </div>
               </div>
             )}
@@ -4108,6 +4320,34 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            {/* Failures first: a feed that stopped answering makes everything else on this page
+                moot, so it sits above discovery and offers a retry for the whole library. */}
+            {failingSourceCount > 0 && (
+              <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex flex-wrap items-start gap-3 w-full max-w-full">
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div className="min-w-0 flex-1">
+                  <span className="font-semibold block mb-0.5">
+                    {failingSourceCount === 1 ? 'One source needs attention' : `${failingSourceCount} sources need attention`}
+                  </span>
+                  <span>
+                    {failingSourceCount === 1
+                      ? 'It is not responding right now and has been left out of recent digests.'
+                      : 'They are not responding right now and have been left out of recent digests.'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleRefreshAllFeeds()}
+                  disabled={refreshingAllFeeds}
+                  className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50"
+                  title="Re-read every feed, and clear the ones that answer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${refreshingAllFeeds ? 'animate-spin' : ''}`} />
+                  <span>{refreshingAllFeeds ? 'Refreshing…' : 'Refresh all'}</span>
+                </button>
+              </div>
+            )}
 
             {/* Google Search & RSS Investigation Tool */}
             <section className="p-4 sm:p-5 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4 w-full max-w-full overflow-hidden">
@@ -4305,28 +4545,6 @@ Search for writers, publications, or topics. Curator checks whether each result 
               )}
             </section>
 
-            {sources.some(s => s.status === 'failing') && (
-              <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-start gap-3 w-full max-w-full">
-                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                <div className="min-w-0 flex-1">
-                  <span className="font-semibold block mb-0.5">
-                    {(() => {
-                      const failing = sources.filter(s => s.status === 'failing').length;
-                      return failing === 1 ? 'One source needs attention' : `${failing} sources need attention`;
-                    })()}
-                  </span>
-                  <span>
-                    {(() => {
-                      const failing = sources.filter(s => s.status === 'failing').length;
-                      return failing === 1
-                        ? 'It is not responding right now and has been left out of recent digests.'
-                        : 'They are not responding right now and have been left out of recent digests.';
-                    })()}
-                  </span>
-                </div>
-              </div>
-            )}
-
             <div className="relative">
               <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
@@ -4359,8 +4577,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
                               {avatarUrl ? (
                                 <img 
                                   src={avatarUrl} 
-                                  alt={src.title} 
+                                  alt={src.title} loading="lazy" 
                                   className="w-full h-full object-cover rounded-full"
+                                  onLoad={markTinyIcon}
                                   onError={(e) => {
                                     (e.currentTarget as HTMLElement).style.display = 'none';
                                     const fallback = e.currentTarget.parentElement?.querySelector('.src-list-initials');
@@ -4624,14 +4843,6 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     Every request Curator has made, counted on the server. Kept for {usageStats?.retentionDays ?? 120} days. Open for the tally and cost estimate.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={(e) => { e.preventDefault(); loadUsageStats(); }}
-                  className="p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border border-slate-800 text-slate-400 hover:text-amber-300 hover:border-amber-500/30 transition"
-                  title="Refresh the tally"
-                >
-                  <RefreshCw className={`w-4 h-4 ${loadingUsage ? 'animate-spin' : ''}`} />
-                </button>
               </summary>
 
               <div className="space-y-2">
@@ -5172,8 +5383,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
                           {avatarUrl ? (
                             <img 
                               src={avatarUrl} 
-                              alt={src.title} 
+                              alt={src.title} loading="lazy" 
                               className="w-full h-full object-cover rounded-full"
+                              onLoad={markTinyIcon}
                               onError={(e) => {
                                 (e.currentTarget as HTMLElement).style.display = 'none';
                                 const fallback = e.currentTarget.parentElement?.querySelector('.feed-circle-initials');
@@ -5223,7 +5435,18 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleRefreshAllFeeds()}
+                  disabled={refreshingAllFeeds}
+                  className="px-3 py-1.5 text-xs font-medium rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-amber-300 hover:border-amber-500/30 transition flex items-center gap-1.5 disabled:opacity-50"
+                  title="Re-read every feed in your library"
+                  aria-label="Refresh all feeds"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${refreshingAllFeeds ? 'animate-spin' : ''}`} />
+                  <span>{refreshingAllFeeds ? 'Refreshing…' : 'Refresh all'}</span>
+                </button>
                 {sources.some(s => !readSourceIds.includes(s.id)) ? (
                   <button
                     type="button"
@@ -5307,8 +5530,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
                                 {itemAvatar ? (
                                   <img 
                                     src={itemAvatar} 
-                                    alt={item.source}
+                                    alt={item.source} loading="lazy"
                                     className="w-full h-full object-cover rounded-full"
+                                    onLoad={markTinyIcon}
                                     onError={(e) => {
                                       (e.currentTarget as HTMLElement).style.display = 'none';
                                       const fallback = e.currentTarget.parentElement?.querySelector('.stream-card-initials');

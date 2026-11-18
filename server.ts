@@ -566,9 +566,240 @@ async function startServer() {
   // cached in memory, and served from our own origin.
   const FAVICON_TTL_MS = 1000 * 60 * 60 * 24 * 7;
   const FAVICON_CACHE_MAX = 500;
+  const FAVICON_FAIL_TTL_MS = 1000 * 60 * 10;
   const faviconCache = new Map<string, { at: number; type: string; body: Buffer }>();
+  const faviconFailures = new Map<string, number>();
 
-  app.get('/api/favicon', rateLimit('favicon', 120), async (req, res) => {
+  // Some sites only answer with an icon file rather than a scaled PNG, and Google has none at
+  // all for hosts like feeds.arstechnica.com. Try both before telling the browser there is
+  // nothing, because a failed <img> leaves the card with bare initials.
+  const fetchIconBytes = async (targetUrl: string): Promise<{ body: Buffer; type: string } | null> => {
+    let url: URL;
+    try {
+      url = await assertPublicHttpUrl(targetUrl);
+    } catch {
+      return null;
+    }
+    const isHttps = url.protocol === 'https:';
+    const requester = isHttps ? https.request : http.request;
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = (value: { body: Buffer; type: string } | null) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      const req = requester(
+        {
+          protocol: url.protocol,
+          hostname: url.hostname.replace(/^\[|\]$/g, ''),
+          port: url.port || (isHttps ? 443 : 80),
+          path: `${url.pathname}${url.search}`,
+          method: 'GET',
+          lookup: guardedLookup as unknown as net.LookupFunction,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; CuratorFavicon/1.0)',
+            'Accept': 'image/*,*/*;q=0.8',
+            'Accept-Encoding': 'identity',
+          },
+        },
+        res => {
+          const status = res.statusCode || 0;
+          const type = String(res.headers['content-type'] || '');
+          // An HTML error page is not an icon.
+          if (status < 200 || status >= 300 || /text\/html/i.test(type)) {
+            res.resume();
+            finish(null);
+            return;
+          }
+          const chunks: Buffer[] = [];
+          let size = 0;
+          res.on('data', (chunk: Buffer) => {
+            size += chunk.length;
+            if (size > 256 * 1024) {
+              res.destroy();
+              finish(null);
+              return;
+            }
+            chunks.push(chunk);
+          });
+          res.on('end', () => finish(chunks.length ? { body: Buffer.concat(chunks), type: type || 'image/x-icon' } : null));
+          res.on('error', () => finish(null));
+        },
+      );
+      req.setTimeout(6000, () => req.destroy(new Error('Request timed out')));
+      req.on('error', () => finish(null));
+      req.end();
+    });
+  };
+
+  const fetchGoogleIcon = async (domain: string): Promise<{ body: Buffer; type: string } | null> => {
+    try {
+      const upstream = await fetch(
+        `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=128`,
+        { headers: { 'User-Agent': 'Curator/1.0 (favicon proxy)' }, signal: AbortSignal.timeout(6000) }
+      );
+      if (!upstream.ok) return null;
+      const body = Buffer.from(await upstream.arrayBuffer());
+      if (!body.length || body.length > 512 * 1024) return null;
+      return { body, type: upstream.headers.get('content-type') || 'image/png' };
+    } catch {
+      return null;
+    }
+  };
+
+  // Cards draw a source icon at about 36 pixels, which is 72 device pixels on a retina screen.
+  // A 16×16 favicon has to be upscaled to get there, which is what left some cards looking
+  // blurry, so an icon is only taken as-is when it clears this edge. SVG has no fixed size and
+  // counts as sharp; a format we cannot measure (WebP, say) is kept rather than guessed at.
+  const ICON_SHARP_EDGE = 64;
+
+  const iconEdge = (body: Buffer, type: string): number => {
+    if (/svg/i.test(type)) return Number.POSITIVE_INFINITY;
+    if (body.length >= 24 && body.subarray(1, 4).toString('ascii') === 'PNG') {
+      return Math.min(body.readUInt32BE(16), body.readUInt32BE(20));
+    }
+    // An .ico is a directory of several sizes; the largest is the one a browser picks.
+    if (body.length >= 22 && body.readUInt16LE(0) === 0 && body.readUInt16LE(2) === 1) {
+      const count = body.readUInt16LE(4);
+      let largest = 0;
+      for (let index = 0; index < count && 6 + index * 16 + 2 <= body.length; index += 1) {
+        const width = body[6 + index * 16] || 256;
+        const height = body[6 + index * 16 + 1] || 256;
+        largest = Math.max(largest, Math.min(width, height));
+      }
+      return largest;
+    }
+    if (body.length >= 10 && /^GIF8[79]a$/.test(body.subarray(0, 6).toString('ascii'))) {
+      return Math.min(body.readUInt16LE(6), body.readUInt16LE(8));
+    }
+    if (body.length >= 4 && body[0] === 0xff && body[1] === 0xd8) {
+      let offset = 2;
+      while (offset + 9 < body.length) {
+        if (body[offset] !== 0xff) {
+          offset += 1;
+          continue;
+        }
+        const marker = body[offset + 1];
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+          return Math.min(body.readUInt16BE(offset + 7), body.readUInt16BE(offset + 5));
+        }
+        offset += 2 + body.readUInt16BE(offset + 2);
+      }
+    }
+    return Number.POSITIVE_INFINITY;
+  };
+
+  // A site that ships a 16×16 favicon usually still declares a bigger one — an apple-touch-icon
+  // or a 192-pixel PNG — on its own home page. Reading those declarations is what makes the
+  // card sharp without asking a third party for a logo.
+  const parseIconLinks = (html: string, baseUrl: string): string[] => {
+    const scored: Array<{ href: string; score: number }> = [];
+    for (const tag of html.match(/<link\b[^>]*>/gi) || []) {
+      const rel = (/(?:\brel\s*=\s*["']([^"']*)["'])/i.exec(tag)?.[1] || '').toLowerCase();
+      const href = /(?:\bhref\s*=\s*["']([^"']+)["'])/i.exec(tag)?.[1];
+      if (!href || !/\b(?:apple-touch-icon|icon)\b/.test(rel)) continue;
+      let resolved: URL;
+      try {
+        resolved = new URL(href.replace(/&amp;/gi, '&'), baseUrl);
+      } catch {
+        continue;
+      }
+      if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') continue;
+      const sizes = /\bsizes\s*=\s*["']([^"']*)["']/i.exec(tag)?.[1] || '';
+      let score = Math.max(0, ...[...sizes.matchAll(/(\d+)\s*[x×]\s*(\d+)/gi)].map(match => Number(match[1])));
+      if (/apple-touch-icon/.test(rel)) score = Math.max(score, /precomposed/.test(rel) ? 150 : 180);
+      if (/\.svg(?:[?#]|$)/i.test(resolved.pathname)) score = Math.max(score, 120);
+      scored.push({ href: resolved.toString(), score });
+    }
+    return scored.sort((a, b) => b.score - a.score).map(entry => entry.href);
+  };
+
+  interface WebAppManifest {
+    icons?: Array<{ src?: unknown; sizes?: unknown; type?: unknown }>;
+  }
+
+  // Plenty of sites keep their real sizes in the web app manifest, which the page only links to.
+  const parseManifestIconLinks = (manifest: WebAppManifest, baseUrl: string): string[] => {
+    if (!Array.isArray(manifest?.icons)) return [];
+    const scored: Array<{ href: string; score: number }> = [];
+    for (const icon of manifest.icons) {
+      const src = typeof icon?.src === 'string' ? icon.src : '';
+      if (!src) continue;
+      let resolved: URL;
+      try {
+        resolved = new URL(src, baseUrl);
+      } catch {
+        continue;
+      }
+      if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') continue;
+      const declared = Math.max(0, ...[...String(icon.sizes || '').matchAll(/(\d+)\s*[x×]\s*(\d+)/gi)].map(match => Number(match[1])));
+      const scalable = /svg/i.test(String(icon.type || '')) || /\.svg(?:[?#]|$)/i.test(resolved.pathname);
+      scored.push({ href: resolved.toString(), score: declared || (scalable ? 512 : 0) });
+    }
+    return scored.sort((a, b) => b.score - a.score).slice(0, 3).map(entry => entry.href);
+  };
+
+  const fetchDeclaredIcon = async (host: string): Promise<{ body: Buffer; type: string } | null> => {
+    let page;
+    try {
+      page = await fetchPublicPage(`https://${host}/`, 5000);
+    } catch {
+      return null;
+    }
+    if (!page?.ok || !page.text) return null;
+    if (page.contentType && !/(?:text\/html|application\/xhtml\+xml)/i.test(page.contentType)) return null;
+
+    const pageUrl = page.url || `https://${host}/`;
+    const hrefs = parseIconLinks(page.text, pageUrl);
+
+    const manifestTag = (page.text.match(/<link\b[^>]*>/gi) || [])
+      .find(tag => /rel\s*=\s*["'][^"']*manifest/i.test(tag));
+    const manifestHref = manifestTag ? /href\s*=\s*["']([^"']+)["']/i.exec(manifestTag)?.[1] : undefined;
+    if (manifestHref) {
+      try {
+        const manifestUrl = new URL(manifestHref.replace(/&amp;/gi, '&'), pageUrl);
+        const manifestPage = await fetchPublicPage(manifestUrl.toString(), 4000);
+        if (manifestPage?.ok && manifestPage.text) {
+          hrefs.unshift(...parseManifestIconLinks(JSON.parse(manifestPage.text), manifestUrl.toString()));
+        }
+      } catch {
+        // A manifest that is missing or is not JSON simply contributes no icons.
+      }
+    }
+
+    let best: { body: Buffer; type: string } | null = null;
+    let bestEdge = -1;
+    for (const href of hrefs.slice(0, 6)) {
+      const icon = await fetchIconBytes(href);
+      if (!icon) continue;
+      const edge = iconEdge(icon.body, icon.type);
+      if (edge > bestEdge) {
+        best = icon;
+        bestEdge = edge;
+      }
+      if (edge >= ICON_SHARP_EDGE) return icon;
+    }
+    return best;
+  };
+
+  // Older sites declare no icons at all but still answer the conventional touch-icon paths.
+  const fetchWellKnownTouchIcon = async (host: string): Promise<{ body: Buffer; type: string } | null> => {
+    for (const path of ['/apple-touch-icon.png', '/apple-touch-icon-precomposed.png']) {
+      const icon = await fetchIconBytes(`https://${host}${path}`);
+      if (icon && iconEdge(icon.body, icon.type) >= ICON_SHARP_EDGE) return icon;
+    }
+    return null;
+  };
+
+  // A feed host is usually not the publishing host — feeds.arstechnica.com carries no icon
+  // while arstechnica.com does — so each name is also tried as its parent domain.
+  const faviconCandidates = (domain: string): string[] => {
+    const labels = domain.split('.');
+    return labels.length > 2 ? [domain, labels.slice(-2).join('.')] : [domain];
+  };
+
+  app.get('/api/favicon', rateLimit('favicon', 400), async (req, res) => {
     const domain = String(req.query.domain || '')
       .trim()
       .toLowerCase()
@@ -587,24 +818,55 @@ async function startServer() {
       res.end(cached.body);
       return;
     }
+    // A domain that just failed is not retried on every render; the browser caches the
+    // failure itself for ten minutes.
+    const failedAt = faviconFailures.get(domain);
+    if (failedAt && Date.now() - failedAt < FAVICON_FAIL_TTL_MS) {
+      res.status(502).end();
+      return;
+    }
     try {
-      const upstream = await fetch(
-        `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=128`,
-        { headers: { 'User-Agent': 'Curator/1.0 (favicon proxy)' }, signal: AbortSignal.timeout(6000) }
-      );
-      if (!upstream.ok) throw new Error(`upstream ${upstream.status}`);
-      const body = Buffer.from(await upstream.arrayBuffer());
-      if (!body.length || body.length > 512 * 1024) throw new Error('unusable favicon');
+      type SourceIcon = { body: Buffer; type: string };
+      const candidates = faviconCandidates(domain);
+      // Cheapest source first, and only a sharp icon stops the search: Google's service hands
+      // back whatever size the site actually has, so a 16×16 answer is a reason to look at the
+      // site's own declared icons rather than a reason to stop.
+      const attempts: Array<() => Promise<SourceIcon | null>> = [
+        ...candidates.map(candidate => () => fetchGoogleIcon(candidate)),
+        ...candidates.map(candidate => () => fetchDeclaredIcon(candidate)),
+        ...candidates.map(candidate => () => fetchWellKnownTouchIcon(candidate)),
+        ...candidates.map(candidate => () => fetchIconBytes(`https://${candidate}/favicon.ico`)),
+      ];
+      let icon: SourceIcon | null = null;
+      let fallback: SourceIcon | null = null;
+      let fallbackEdge = -1;
+      for (const attempt of attempts) {
+        const next = await attempt();
+        if (!next) continue;
+        const edge = iconEdge(next.body, next.type);
+        if (edge > fallbackEdge) {
+          fallback = next;
+          fallbackEdge = edge;
+        }
+        if (edge >= ICON_SHARP_EDGE) {
+          icon = next;
+          break;
+        }
+      }
+      // Nothing sharp exists: a small icon still beats bare initials.
+      if (!icon) icon = fallback;
+      if (!icon) throw new Error('unusable favicon');
       if (faviconCache.size >= FAVICON_CACHE_MAX) {
         const oldest = faviconCache.keys().next().value;
         if (oldest) faviconCache.delete(oldest);
       }
-      const type = upstream.headers.get('content-type') || 'image/png';
-      faviconCache.set(domain, { at: Date.now(), type, body });
-      res.setHeader('Content-Type', type);
+      faviconCache.set(domain, { at: Date.now(), type: icon.type, body: icon.body });
+      faviconFailures.delete(domain);
+      res.setHeader('Content-Type', icon.type);
       res.setHeader('Cache-Control', `public, max-age=${Math.floor(FAVICON_TTL_MS / 1000)}`);
-      res.end(body);
+      res.end(icon.body);
     } catch {
+      faviconFailures.set(domain, Date.now());
       res.status(502).end();
     }
   });
@@ -877,7 +1139,8 @@ async function startServer() {
       const summaryMatch = block.match(/<summary[^>]*>([\s\S]*?)<\/summary>/i);
 
       const fullRaw = contentMatch ? contentMatch[1] : (descMatch ? descMatch[1] : (summaryMatch ? summaryMatch[1] : ''));
-      const cleanFull = htmlToReadableText(fullRaw);
+      // The item's own address is the base for any relative link inside its body.
+      const cleanFull = htmlToReadableText(fullRaw, link);
 
       const summaryRaw = summaryMatch ? summaryMatch[1] : (descMatch ? descMatch[1] : fullRaw);
       let summary = cleanHtml(summaryRaw);
@@ -956,7 +1219,7 @@ async function startServer() {
   const ARTICLE_TEXT_FAILURE_TTL = 10 * 60 * 1000;
   const MAX_ARTICLE_TEXT_CACHE_ENTRIES = 300;
 
-  const extractArticleBody = (html: string): string => {
+  const extractArticleBody = (html: string, baseUrl = ''): string => {
     const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
     const mainMatch = articleMatch ? null : html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
     let body = articleMatch?.[1] || mainMatch?.[1] || '';
@@ -981,7 +1244,7 @@ async function startServer() {
       if (!removed) break;
     }
 
-    const text = htmlToReadableText(body);
+    const text = htmlToReadableText(body, baseUrl);
     const paragraphs = text.split(/\n{2,}/).filter(paragraph => paragraph.trim().length > 0);
     if (text.length < 600 || paragraphs.length < 3) return '';
     if (/\b(?:subscribe|sign up|create an account)\b.{0,80}\b(?:continue|read|access)\b|\b(?:sign|log) in to\b.{0,80}\b(?:continue|read|access)\b/i.test(text)) {
@@ -1010,7 +1273,7 @@ async function startServer() {
       // Reuse the same public-host, redirect, timeout, and response-size checks as feed fetching.
       const page = await fetchPublicPage(cacheKey, 6000);
       if (page.ok && (!page.contentType || /(?:text\/html|application\/xhtml\+xml)/i.test(page.contentType))) {
-        text = extractArticleBody(page.text);
+        text = extractArticleBody(page.text, page.url || cacheKey);
       }
     } catch {
       // Preserve the feed excerpt when an article is unavailable, blocked, or fails extraction.
@@ -1052,10 +1315,11 @@ async function startServer() {
     sourceTitle: string,
     folder: string,
     categories?: unknown,
+    options: { force?: boolean } = {},
   ): Promise<{ items: any[]; error?: string }> => {
     if (!feedUrl) return { items: [], error: 'No feed URL set' };
     const itemCategories = normalizeFeedCategories(categories, folder);
-    const cached = feedCache.get(feedUrl);
+    const cached = options.force ? undefined : feedCache.get(feedUrl);
     if (cached && Date.now() - cached.timestamp < FEED_CACHE_TTL) {
       return { items: cached.items.map(item => ({ ...item, categories: itemCategories })) };
     }
@@ -1642,45 +1906,76 @@ CURATION RULES:
 
   app.post('/api/feed-stream', async (req, res) => {
     try {
-      const { sourceTitle, sources: clientSources } = req.body;
+      const { sourceTitle, sourceId, sources: clientSources, refreshAll, force } = req.body || {};
       const allSources = Array.isArray(clientSources) && clientSources.length > 0
         ? clientSources
         : DEFAULT_FEEDS;
 
-      let targetFeeds: Array<{ title: string; feedUrl: string; folder: string; categories?: string[] }> = [];
+      const requestedTitle = typeof sourceTitle === 'string' ? sourceTitle.trim() : '';
+      const wantsOneSource = Boolean(requestedTitle) && requestedTitle.toLowerCase() !== 'all';
+      // A refresh means "re-read the network", so it skips the five-minute feed cache.
+      const refreshingEverything = refreshAll === true;
+      const forceNetwork = refreshingEverything || force === true;
 
-      if (sourceTitle && sourceTitle.trim() && sourceTitle !== 'all') {
-        const queryNorm = sourceTitle.trim().toLowerCase();
+      let targetFeeds: Array<{ id?: string; title: string; feedUrl: string; folder: string; categories?: string[] }> = [];
+      // When one source is on screen, narrow the response to it even if every feed was re-read.
+      let visibleTitles: Set<string> | null = null;
+
+      if (wantsOneSource) {
+        const queryNorm = requestedTitle.toLowerCase();
         const matched = allSources.filter((s: any) =>
+          (sourceId && String(s.id || '') === String(sourceId)) ||
+          String(s.id || '') === requestedTitle ||
           String(s.title || '').toLowerCase() === queryNorm ||
           String(s.title || '').toLowerCase().includes(queryNorm) ||
-          queryNorm.includes(String(s.title || '').toLowerCase()) ||
-          String(s.id || '') === sourceTitle
+          queryNorm.includes(String(s.title || '').toLowerCase())
         );
         if (matched.length > 0) {
-          targetFeeds = matched;
+          targetFeeds = refreshingEverything ? allSources.filter((s: any) => s?.feedUrl) : matched;
+          if (refreshingEverything) {
+            visibleTitles = new Set(matched.map((s: any) => String(s.title || '').toLowerCase()));
+          }
         } else {
           const defMatch = DEFAULT_FEEDS.filter(s =>
             s.title.toLowerCase().includes(queryNorm) || queryNorm.includes(s.title.toLowerCase())
           );
-          targetFeeds = defMatch.length > 0 ? defMatch : [{ title: sourceTitle, feedUrl: '', folder: 'Custom Feed' }];
+          targetFeeds = defMatch.length > 0 ? defMatch : [{ title: requestedTitle, feedUrl: '', folder: 'Custom Feed' }];
         }
+      } else if (refreshingEverything) {
+        // Every watched feed: including the ones marked failing and any past the 24-feed slice
+        // the plain stream draws from. A refresh is meant to re-read the whole library.
+        targetFeeds = allSources.filter((s: any) => s?.feedUrl);
       } else {
         targetFeeds = allSources.filter((s: any) => s.status !== 'failing').slice(0, 24);
       }
 
       const results = await Promise.allSettled(
-        targetFeeds.map(f => fetchFeedArticles(f.feedUrl, f.title, f.folder, f.categories))
+        targetFeeds.map(f => fetchFeedWithStatus(f.feedUrl, f.title, f.folder, f.categories, { force: forceNetwork }))
       );
 
       let articles: any[] = [];
-      for (const r of results) {
-        if (r.status === 'fulfilled' && Array.isArray(r.value)) {
-          articles.push(...r.value);
-        }
-      }
+      // One row per feed, so the client can mark exactly the sources that answered.
+      const feedResults = targetFeeds.map((feed, index) => {
+        const result = results[index];
+        const items = result.status === 'fulfilled' && Array.isArray(result.value.items) ? result.value.items : [];
+        articles.push(...items);
+        const error = result.status === 'rejected'
+          ? (result.reason?.message || 'Feed could not be reached')
+          : result.value.error;
+        const ok = items.length > 0;
+        return {
+          id: feed.id,
+          title: feed.title,
+          feedUrl: feed.feedUrl,
+          ok,
+          itemCount: items.length,
+          error: ok ? undefined : (error || 'This feed returned no articles.'),
+        };
+      });
 
-      if (articles.length === 0 && targetFeeds !== DEFAULT_FEEDS) {
+      // The starter-library fallback only belongs to the "all feeds" stream: a single source
+      // with nothing to show must not be filled with other publications' articles.
+      if (articles.length === 0 && !refreshingEverything && !wantsOneSource) {
         const defResults = await Promise.allSettled(
           DEFAULT_FEEDS.slice(0, 4).map(f => fetchFeedArticles(f.feedUrl, f.title, f.folder))
         );
@@ -1689,6 +1984,10 @@ CURATION RULES:
             articles.push(...r.value);
           }
         }
+      }
+
+      if (visibleTitles) {
+        articles = articles.filter(article => visibleTitles!.has(String(article?.source || '').toLowerCase()));
       }
 
       // Feeds arrive in parallel, so the merged list would otherwise be grouped by source
@@ -1701,9 +2000,10 @@ CURATION RULES:
 
       res.json({
         success: true,
-        source: sourceTitle || 'all',
+        source: requestedTitle || 'all',
         total: articles.length,
-        articles
+        articles,
+        sources: feedResults,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to retrieve feed stream' });

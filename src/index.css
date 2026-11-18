@@ -205,6 +205,31 @@ body {
 .reader-body p { margin-bottom: 1.5em; }
 .reader-body > p:last-child { margin-bottom: 0; }
 
+/* A source icon that exists only at 16 pixels has no sharper copy to fetch, so it is drawn as
+   crisp pixels instead of a blurred upscale. */
+img[data-tiny-icon] {
+  image-rendering: pixelated;
+}
+
+/* A link that lives in the prose rather than the chrome: the sentence keeps its own ink, and
+   the accent marks only the words that leave the page. */
+.reader-inline-link {
+  color: var(--reader-accent);
+  /* An address has no spaces to break at, so it wraps mid-token rather than running off
+     the side of a phone. */
+  overflow-wrap: anywhere;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+  text-decoration-color: color-mix(in srgb, var(--reader-accent) 45%, transparent);
+}
+
+.reader-inline-link:hover,
+.reader-inline-link:focus-visible {
+  color: var(--reader-ink);
+  text-decoration-color: currentColor;
+}
+
 .reader-serif {
   font-family: 'Literata', 'Charter', 'Bitstream Charter', 'Merriweather', 'Sitka Text', Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Times New Roman', serif;
   letter-spacing: 0.005em;
