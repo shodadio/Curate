@@ -153,6 +153,11 @@ body {
 .reader-accent { color: var(--reader-accent); }
 .reader-panel { background-color: var(--reader-panel); border-color: var(--reader-line); }
 .reader-track { background-color: var(--reader-track); }
+
+/* The reader's progress line grows across the top of the page. Its track stays empty: against a
+   cream page a tinted full-width rule and a darker progressed part of the same rule read as one
+   smudge, where a plain accent rule of the reader's own width does not. */
+.reader-header-progress { background-color: transparent; }
 .reader-fill { background-color: var(--reader-accent); }
 .reader-speaking { border-color: var(--reader-accent); }
 

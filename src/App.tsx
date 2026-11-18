@@ -2904,6 +2904,7 @@ export default function App() {
     }
   };
 
+  const [readerScrollProgress, setReaderScrollProgress] = useState(0);
   const [linkRefreshProgress, setLinkRefreshProgress] = useState<{ done: number; total: number } | null>(null);
   // Stopping mid-queue aborts the request in flight and the loop that follows it; pieces already
   // written stay written, so pressing the button again picks up the rest.
@@ -3000,6 +3001,8 @@ export default function App() {
 
   const openArticle = (item: DigestItem) => {
     setSelectedArticle(item);
+    // A new piece starts at the top, so the progress line starts empty.
+    setReaderScrollProgress(0);
     // The byline's source description starts collapsed on every article, and so does the
     // appearance menu — opening a new article should never inherit an open popover.
     setShowReaderSourceNote(false);
@@ -3271,6 +3274,9 @@ export default function App() {
             const scrollHeight = target.scrollHeight - target.clientHeight;
             if (scrollHeight > 0 && selectedArticle) {
               const progress = Math.min(100, Math.round((target.scrollTop / scrollHeight) * 100));
+              // The bar follows where the reader is now; the stats below keep the furthest point
+              // they reached, which is what decides whether a piece counts as read.
+              setReaderScrollProgress(prev => (prev === progress ? prev : progress));
               const previousDepth = readingStats[selectedArticle.id]?.maxDepth || 0;
               const wasFinished = previousDepth >= READ_THROUGH_DEPTH;
               setReadingStats(prev => {
@@ -3304,13 +3310,15 @@ export default function App() {
           }}
         >
           <header className="reader-header sticky top-0 z-30 safe-reader-header backdrop-blur-md border-b px-4 sm:px-6 pb-4 flex items-center justify-between gap-2">
-            {/* Visual reading progress bar */}
-            <div className="reader-track absolute top-0 left-0 right-0 h-1 overflow-hidden">
-              <div 
-                className="reader-fill h-full transition-all duration-150 ease-out"
-                style={{ width: `${readingStats[selectedArticle.id]?.maxDepth || 0}%` }}
+            {/* How far through the piece the reader has scrolled. The line starts just below the
+                phone's safe area, because the header's top padding is where the notch sits and a
+                line drawn at the very top disappears underneath it. */}
+            <div className="reader-header-progress absolute inset-x-0 top-[env(safe-area-inset-top,0px)] h-1 overflow-hidden">
+              <div
+                className="reader-fill h-full transition-[width] duration-150 ease-out"
+                style={{ width: `${readerScrollProgress}%` }}
                 role="progressbar"
-                aria-valuenow={readingStats[selectedArticle.id]?.maxDepth || 0}
+                aria-valuenow={readerScrollProgress}
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-label="Article reading progress"
