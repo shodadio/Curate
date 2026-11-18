@@ -26,7 +26,7 @@ import {
 } from './lib/ranking';
 import { parseOpmlText } from './lib/opml';
 import { cleanHtml, htmlToReadableText } from './lib/markup';
-import { parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
+import { parseArticleAuthor, parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
 
 dotenv.config();
 
@@ -1336,6 +1336,52 @@ async function startServer() {
     return text || null;
   };
 
+  // A piece saved before the reader credited writers has no author on it. Its own page still
+  // names the writer in its metadata, so the Saved queue asks once per piece. The lookup is
+  // cached for a week: a byline never changes, and a page that named nobody is not re-read
+  // on every launch.
+  interface ArticleAuthorCacheEntry {
+    timestamp: number;
+    author: string;
+  }
+  const articleAuthorCache = new Map<string, ArticleAuthorCacheEntry>();
+  const ARTICLE_AUTHOR_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
+  const ARTICLE_AUTHOR_FAILURE_TTL = 6 * 60 * 60 * 1000;
+  const MAX_ARTICLE_AUTHOR_CACHE_ENTRIES = 500;
+
+  const fetchArticleAuthor = async (targetUrl: string, sourceTitle: string): Promise<string> => {
+    let cacheKey = '';
+    try {
+      const parsedUrl = new URL(targetUrl);
+      parsedUrl.hash = '';
+      cacheKey = parsedUrl.toString();
+    } catch {
+      return '';
+    }
+
+    const cached = articleAuthorCache.get(cacheKey);
+    const cacheTtl = cached?.author ? ARTICLE_AUTHOR_CACHE_TTL : ARTICLE_AUTHOR_FAILURE_TTL;
+    if (cached && Date.now() - cached.timestamp < cacheTtl) return cached.author;
+
+    let author = '';
+    try {
+      // Reuse the same public-host, redirect, timeout and size checks as feed fetching.
+      const page = await fetchPublicPage(cacheKey, 6000);
+      if (page.ok && (!page.contentType || /(?:text\/html|application\/xhtml\+xml)/i.test(page.contentType))) {
+        author = parseArticleAuthor(page.text, sourceTitle);
+      }
+    } catch {
+      // Unreachable, blocked or paywalled: the reader keeps the publication's own credit.
+    }
+
+    if (articleAuthorCache.size >= MAX_ARTICLE_AUTHOR_CACHE_ENTRIES) {
+      const oldestKey = articleAuthorCache.keys().next().value;
+      if (oldestKey) articleAuthorCache.delete(oldestKey);
+    }
+    articleAuthorCache.set(cacheKey, { timestamp: Date.now(), author });
+    return author;
+  };
+
   const enrichSelectedArticles = async (digest: any[]): Promise<any[]> => {
     const targets = digest
       .filter(item => item?._needsArticleFetch && typeof item.url === 'string')
@@ -1993,6 +2039,33 @@ CURATION RULES:
           // A story that cannot be read now keeps its stored body and can be retried later.
         }
         articles.push({ id, text });
+      }
+    }));
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ articles });
+  });
+
+  // The same batch shape as the citations pass: the Saved queue sends the pieces that carry no
+  // writer, four at a time through the guarded fetch, and gets back whoever the page names.
+  app.post('/api/article-authors', rateLimit('article-authors', 20), requestBudget('Finding writers', 55_000), async (req, res) => {
+    const requested = Array.isArray(req.body?.items) ? req.body.items.slice(0, 16) : [];
+    const articles: Array<{ id: string; author: string }> = [];
+    let nextIndex = 0;
+    const workerCount = Math.min(4, requested.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextIndex < requested.length) {
+        const entry = requested[nextIndex++];
+        const id = typeof entry?.id === 'string' ? entry.id.slice(0, 200) : '';
+        const target = typeof entry?.url === 'string' ? entry.url.trim().slice(0, 2000) : '';
+        const source = typeof entry?.source === 'string' ? entry.source.slice(0, 200) : '';
+        if (!id || !target) continue;
+        let author = '';
+        try {
+          author = await fetchArticleAuthor(target, source);
+        } catch {
+          // A page that cannot be read now keeps the publication's credit and may be retried.
+        }
+        articles.push({ id, author });
       }
     }));
     res.setHeader('Cache-Control', 'no-store');

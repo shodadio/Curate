@@ -126,6 +126,9 @@ interface DigestItem {
   // stored copy; `linkRefreshAt` keeps a piece with no links of its own from being fetched twice.
   linksCleaned?: boolean;
   linkRefreshAt?: number;
+  // A saved piece from before the reader credited writers asks the server for its byline once;
+  // the stamp keeps a page that names nobody from being asked again on every launch.
+  authorCheckedAt?: number;
 }
 
 interface SourceItem {
@@ -1258,6 +1261,79 @@ export default function App() {
     if (safeSetJson('curator_saved_articles', savedArticles)) return;
     safeSetJson('curator_saved_articles', savedArticles.map(({ fullText, ...rest }) => rest));
   }, [savedArticles]);
+
+  // A byline found once is kept; a page that named nobody is asked again only after a week, so
+  // an offline launch does not leave a piece unsigned for good.
+  const AUTHOR_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
+  const authorBackfillStartedRef = React.useRef(false);
+
+  // Old saves carry no author: they were written when the reader credited only the publication.
+  // Their own pages still name the writer, so the queue asks in the background, in the same
+  // batches the citations pass uses, and every screen holding the story takes the name.
+  useEffect(() => {
+    if (authorBackfillStartedRef.current) return;
+    authorBackfillStartedRef.current = true;
+
+    const needsAuthor = (entry: DigestItem): boolean => Boolean(entry?.url) && !entry.author &&
+      (!entry.authorCheckedAt || Date.now() - entry.authorCheckedAt > AUTHOR_RECHECK_MS);
+
+    const queue: DigestItem[] = [];
+    const queued = new Set<string>();
+    for (const entry of [...savedArticles, ...digest]) {
+      if (!entry?.id || queued.has(entry.id) || !needsAuthor(entry)) continue;
+      queued.add(entry.id);
+      queue.push(entry);
+    }
+    if (queue.length === 0) return;
+
+    let cancelled = false;
+    const findWriters = async () => {
+      for (let start = 0; start < queue.length; start += 16) {
+        if (cancelled) return;
+        const batch = queue.slice(start, start + 16);
+        let data: any = null;
+        try {
+          const response = await fetch('/api/article-authors', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: batch.map(({ id, url, source }) => ({ id, url, source })) }),
+          });
+          if (!response.ok) return;
+          data = await response.json().catch(() => null);
+        } catch {
+          // Offline: the unstamped pieces are asked again on the next launch.
+          return;
+        }
+        if (cancelled || !data) return;
+
+        const found = new Map<string, string>();
+        const attempted = new Set<string>();
+        for (const entry of Array.isArray(data.articles) ? data.articles : []) {
+          const id = typeof entry?.id === 'string' ? entry.id : '';
+          if (!id) continue;
+          attempted.add(id);
+          if (typeof entry?.author === 'string' && entry.author.trim()) found.set(id, entry.author.trim());
+        }
+        if (attempted.size === 0) continue;
+
+        const checkedAt = Date.now();
+        const applyBatch = (entry: DigestItem): DigestItem => {
+          if (!attempted.has(entry.id)) return entry;
+          const author = found.get(entry.id);
+          return author
+            ? { ...entry, author, authorCheckedAt: checkedAt }
+            : { ...entry, authorCheckedAt: checkedAt };
+        };
+        setSelectedArticle(prev => (prev ? applyBatch(prev) : prev));
+        setSavedArticles(prev => prev.map(applyBatch));
+        setDigest(prev => prev.map(applyBatch));
+        setFeedStreamArticles(prev => prev.map(applyBatch));
+      }
+    };
+    void findWriters();
+
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     safeSetJson('curator_sources', sources);
