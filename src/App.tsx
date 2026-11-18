@@ -19,7 +19,7 @@ import { SettingsSection } from './components/SettingsSection';
 import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
 import { safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, type StorageFailure } from './storage';
 import { DEFAULT_FEEDS } from './defaultFeeds';
-import { articleNeedsLinkRefresh, dropBylineFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph } from '../lib/markup';
+import { articleNeedsLinkRefresh, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph } from '../lib/markup';
 
 // One-click provider addresses: the popular OpenAI-compatible services, so a working setup
 // starts with a name and a key rather than a copied URL and a guessed model ID.
@@ -278,7 +278,7 @@ function buildArticleParagraphs(text: string): string[] {
   // sentence; the reader and the voice both take their paragraphs from this list.
   // A section handed over as one <p> is shown as a few shorter paragraphs; read-aloud speaks
   // from this same list, so a spoken paragraph is still a paragraph on screen.
-  return joinContinuedParagraphs(dropBylineFurniture(dropRepeatedShortParagraphs(paragraphs)))
+  return joinContinuedParagraphs(dropEndingFurniture(dropBylineFurniture(dropRepeatedShortParagraphs(paragraphs))))
     .flatMap(paragraph => splitDenseParagraph(paragraph));
 }
 

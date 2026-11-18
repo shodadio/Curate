@@ -223,6 +223,153 @@ test('htmlToReadableText drops the author card and comment count a feed appends'
   assert.equal(body, 'Real article text.');
 });
 
+test('htmlToReadableText drops the author bio a publisher appends', () => {
+  const body = htmlToReadableText(
+    '<p>Real article text.</p><p>Jacob is a copy editor at Ars Technica. He resides in Portland, Oregon, where he enjoys typical Portlander things.</p>',
+  );
+  assert.equal(body, 'Real article text.');
+});
+
+test('htmlToReadableText keeps a bio-shaped line that sits inside the piece', () => {
+  const body = htmlToReadableText(
+    '<p>Ana is a reporter at the Gazette. She filed this from the coast.</p><p>Real article text continues.</p>',
+  );
+  assert.equal(body, 'Ana is a reporter at the Gazette. She filed this from the coast.\n\nReal article text continues.');
+});
+
+test('htmlToReadableText drops a footnote backlink written as a link', () => {
+  const body = htmlToReadableText(
+    '<p>Real article text.</p><p><a href="https://danluu.com/astra-testing/#fnref:5">return</a></p>',
+  );
+  assert.equal(body, 'Real article text.');
+});
+
+test('htmlToReadableText drops a comment count printed as a list line', () => {
+  const body = htmlToReadableText(
+    '<p>Real article text.</p><p>• <a href="https://example.com/story#comments">20 Comments</a></p>',
+  );
+  assert.equal(body, 'Real article text.');
+});
+
+test('htmlToReadableText drops the comment thread controls after the article', () => {
+  const body = htmlToReadableText(
+    '<p>Real article text.</p><p>Comments</p><p>Sort by Top Sort by Recent Sort by Controversial</p><p><a href="https://example.com/story#">Hide Replies</a></p><p>Continue this thread →</p>',
+  );
+  assert.equal(body, 'Real article text.');
+});
+
+test('htmlToReadableText drops a comment template that leaked into the body', () => {
+  const body = htmlToReadableText(
+    '<p>Real article text.</p><p>0) { %&gt; is-negative "&gt;</p><p>= startingDepth &amp;&amp; model.depth</p><p>Continue this thread →</p>',
+  );
+  assert.equal(body, 'Real article text.');
+});
+
+test('htmlToReadableText strips a return link that ends a footnote paragraph', () => {
+  const body = htmlToReadableText(
+    '<p>Real article text. <a href="https://example.com/story#fnref:5">return</a></p>',
+  );
+  assert.equal(body, 'Real article text.');
+});
+
+test('htmlToReadableText drops a more-by-this-author block at the end', () => {
+  const body = htmlToReadableText([
+    '<p>First paragraph of the piece.</p>',
+    '<p>Second paragraph of the piece.</p>',
+    '<p>Third paragraph of the piece.</p>',
+    '<p>Fourth paragraph of the piece.</p>',
+    '<p>More by Ben Thompson</p>',
+    '<p>Year in Review</p>',
+    '<p><a href="https://example.com/archive">View All</a></p>',
+  ].join(''));
+  assert.equal(
+    body,
+    'First paragraph of the piece.\n\nSecond paragraph of the piece.\n\nThird paragraph of the piece.\n\nFourth paragraph of the piece.',
+  );
+});
+
+test('htmlToReadableText drops the site sidebar that repeats under a piece', () => {
+  const body = htmlToReadableText([
+    '<p>First paragraph of the piece.</p>',
+    '<p>Second paragraph of the piece.</p>',
+    '<p>Third paragraph of the piece.</p>',
+    '<p>Fourth paragraph of the piece.</p>',
+    '<p>← <a href="https://example.com/previous">Previous piece</a></p>',
+    '<p>Stratechery Plus</p>',
+    '<p><a href="https://example.com/login">Log In</a></p>',
+    '<p>Updates</p>',
+    '<p>• <a href="https://example.com/post">Some post</a></p>',
+    '<p>Tuesday, November 17, 2026</p>',
+    '<p><a href="https://example.com/all">View All</a></p>',
+  ].join(''));
+  assert.equal(
+    body,
+    'First paragraph of the piece.\n\nSecond paragraph of the piece.\n\nThird paragraph of the piece.\n\nFourth paragraph of the piece.',
+  );
+});
+
+test('htmlToReadableText stops a paywalled piece at the teaser', () => {
+  const body = htmlToReadableText([
+    '<p>The piece opens and then stops at the paywall.</p>',
+    '<p>Already subscribed?</p>',
+    '<p><a href="https://example.com/login">Log in</a></p>',
+    '<p>$15 / month or $150 / year</p>',
+    '<p>With a subscription you get access to the subscriber-only newsletter and interviews.</p>',
+  ].join(''));
+  assert.equal(body, 'The piece opens and then stops at the paywall.');
+});
+
+test('htmlToReadableText keeps the article when a sign-in prompt is not a paywall', () => {
+  const body = htmlToReadableText([
+    '<p>Already subscribed? Sign in</p>',
+    '<p>Real article text continues here.</p>',
+    '<p>And the piece ends here.</p>',
+  ].join(''));
+  assert.equal(
+    body,
+    'Already subscribed? Sign in\n\nReal article text continues here.\n\nAnd the piece ends here.',
+  );
+});
+
+test('htmlToReadableText drops a final row of cards printed on one line', () => {
+  const body = htmlToReadableText([
+    '<p>Real article text.</p>',
+    '<p>Director: Martín Benchimol</p>',
+    '<p>18 November 2026</p>',
+    '<p><a href="https://example.com/a">video One film 4 minutes</a> <a href="https://example.com/b">video Another film 3 minutes</a></p>',
+    '<p><a href="https://example.com/c">video A third film 2 minutes</a></p>',
+  ].join(''));
+  assert.equal(body, 'Real article text.\n\nDirector: Martín Benchimol');
+});
+
+test('htmlToReadableText keeps a cited-notes list at the end', () => {
+  const body = htmlToReadableText([
+    '<p>Real article text.</p>',
+    '<p>Notes</p>',
+    '<p>• <a href="https://example.com/ref1">Richards, J.C., and Rodgers, T.S. Approaches and Methods in Language Teaching.</a></p>',
+    '<p>• <a href="https://example.com/ref2">Krashen, S.D. Principles and Practice in Second Language Acquisition.</a></p>',
+    '<p>• <a href="https://example.com/ref3">Howatt, A.P.R., and Widdowson, H.G. A History of English Language Teaching.</a></p>',
+    '<p>• <a href="https://example.com/ref4">Lyu, B., Lai, C., and Guo, J. Effectiveness of Chatbots in Improving Language Learning.</a></p>',
+  ].join(''));
+  assert.ok(body.startsWith('Real article text.\n\nNotes'), body);
+  assert.ok(body.includes('Krashen'), body);
+});
+
+test('htmlToReadableText drops the share row under an article', () => {
+  const body = htmlToReadableText(
+    '<p>Real article text.</p><p>• <a href="https://example.com/story#print">print</a></p><p>• <a href="https://example.com/feed">RSS Feed</a></p>',
+  );
+  assert.equal(body, 'Real article text.');
+});
+
+test('htmlToReadableText drops a loading spinner left by the publisher', () => {
+  assert.equal(htmlToReadableText('<p>Real article text.</p><p>Like Loading…</p>'), 'Real article text.');
+});
+
+test('htmlToReadableText keeps a short last line that is prose', () => {
+  assert.equal(htmlToReadableText('<p>Body text here.</p><p>So it goes.</p>'), 'Body text here.\n\nSo it goes.');
+});
+
 test('htmlToReadableText drops the author card when the name is a link', () => {
   const body = htmlToReadableText(
     '<p>Real article text.</p><p><a href="https://example.com/author/kyle">Kyle Orland</a> Senior Gaming Editor</p><p>5 Comments</p>',
