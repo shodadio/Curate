@@ -987,6 +987,11 @@ export default function App() {
   const [embeddingApiKey, setEmbeddingApiKey] = useState<string>(() => localStorage.getItem('curator_embedding_api_key') || '');
   const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState<string>(() => localStorage.getItem('curator_embedding_base_url') || '');
   const [embeddingModel, setEmbeddingModel] = useState<string>(() => localStorage.getItem('curator_embedding_model') || '');
+  // The model names the configured provider reports, loaded on demand in Settings so a
+  // retired or mistyped name is a tap rather than a digest the provider refuses.
+  const [chatModelOptions, setChatModelOptions] = useState<string[]>([]);
+  const [chatModelLookup, setChatModelLookup] = useState<string>('');
+  const [loadingChatModels, setLoadingChatModels] = useState<boolean>(false);
   const embeddingKeyMatchesChatProvider =
     (embeddingProvider === 'gemini' && aiProvider === 'gemini') ||
     (embeddingProvider === 'openai-compatible' && aiProvider === 'openai-compatible');
@@ -1254,6 +1259,39 @@ export default function App() {
     safeSetJson('curator_semantic_feedback', semanticFeedback);
   }, [semanticFeedback]);
 
+  // Settings' "Load models": asks the provider which model names it serves, so a name the
+  // provider has retired — or one it never had — is visible before a digest is written.
+  const loadChatModels = async () => {
+    if (loadingChatModels) return;
+    setLoadingChatModels(true);
+    setChatModelLookup('');
+    try {
+      const response = await fetch('/api/provider-models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: aiProvider, apiKey: customApiKey, baseUrl: aiBaseUrl }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.ok) {
+        setChatModelOptions([]);
+        setChatModelLookup(String(data?.error || `Could not list models (HTTP ${response.status}).`).slice(0, 240));
+        return;
+      }
+      const models = Array.isArray(data.models)
+        ? data.models.filter((id: unknown): id is string => typeof id === 'string')
+        : [];
+      setChatModelOptions(models);
+      setChatModelLookup(models.length > 0
+        ? `${models.length} model${models.length === 1 ? '' : 's'} available — tap one to use it.`
+        : 'The provider returned no model names.');
+    } catch {
+      setChatModelOptions([]);
+      setChatModelLookup('Could not reach this app’s server.');
+    } finally {
+      setLoadingChatModels(false);
+    }
+  };
+
   const checkStartupServices = async () => {
     const checkId = ++startupApiCheckRef.current;
     const isCurrentCheck = () => checkId === startupApiCheckRef.current;
@@ -1364,6 +1402,12 @@ export default function App() {
       const failures = (await Promise.all(checks)).filter((message): message is string => Boolean(message));
       if (!isCurrentCheck()) return;
       if (failures.length > 0) {
+        // A refused model name is the one provider failure Settings can repair by itself:
+        // ask the provider what it serves, so the names are already on screen when the
+        // alert below opens its settings.
+        if (aiProvider === 'openai-compatible' && chatConfigured && failures.some(message => /model/i.test(message))) {
+          void loadChatModels();
+        }
         flagIssue(`A configured provider did not respond successfully: ${failures.join(' ')}`);
         return;
       }
@@ -1475,6 +1519,13 @@ export default function App() {
   useEffect(() => {
     safeSetItem('curator_ai_model', aiModel);
   }, [aiModel]);
+
+  // A list from one provider or one key says nothing about another, so editing either
+  // drops the names on screen rather than leaving a stale choice to be tapped.
+  useEffect(() => {
+    setChatModelOptions([]);
+    setChatModelLookup('');
+  }, [aiProvider, aiBaseUrl, customApiKey]);
 
   useEffect(() => {
     safeSetItem('curator_embedding_provider', embeddingProvider);
@@ -5283,7 +5334,19 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 {aiProvider !== 'deterministic' && (
                   <>
                     <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Model name</label>
+                      <div className="flex items-baseline justify-between gap-2 mb-1.5">
+                        <label className="block text-xs font-medium text-slate-300">Model name</label>
+                        {aiProvider === 'openai-compatible' && (
+                          <button
+                            type="button"
+                            onClick={() => void loadChatModels()}
+                            disabled={loadingChatModels || !customApiKey.trim() || !aiBaseUrl.trim()}
+                            className="shrink-0 text-xs font-medium text-amber-300 underline underline-offset-2 hover:text-amber-200 disabled:opacity-40 disabled:no-underline"
+                          >
+                            {loadingChatModels ? 'Loading…' : chatModelOptions.length > 0 ? 'Reload models' : 'Load models'}
+                          </button>
+                        )}
+                      </div>
                       <input
                         type="text"
                         value={aiModel}
@@ -5291,6 +5354,27 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         placeholder={aiProvider === 'openai-compatible' ? 'e.g. gpt-4o-mini or provider model ID' : aiProvider === 'anthropic' ? 'e.g. claude-3-5-sonnet-20241022' : 'e.g. gemini-2.5-flash'}
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                       />
+                      {chatModelLookup && (
+                        <p className={`text-xs mt-1 ${chatModelOptions.length > 0 ? 'text-emerald-300' : 'text-amber-300'}`}>
+                          {chatModelLookup}
+                        </p>
+                      )}
+                      {chatModelOptions.length > 0 && (
+                        <div className="mt-2 max-h-32 overflow-y-auto flex flex-wrap gap-1.5 rounded-xl border border-slate-800 bg-slate-950/60 p-2">
+                          {chatModelOptions.map(id => (
+                            <button
+                              key={id}
+                              type="button"
+                              onClick={() => setAiModel(id)}
+                              className={`px-2 py-1 rounded-lg border text-xs font-mono transition ${id === aiModel.trim()
+                                ? 'border-amber-500/50 bg-amber-500/15 text-amber-200'
+                                : 'border-slate-800 text-slate-300 hover:border-slate-700 hover:text-slate-100'}`}
+                            >
+                              {id}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-300 mb-1.5">Provider API key</label>

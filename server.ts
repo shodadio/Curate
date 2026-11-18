@@ -27,6 +27,7 @@ import {
 import { parseOpmlText } from './lib/opml';
 import { cleanHtml, htmlToReadableText } from './lib/markup';
 import { parseFeedChannelDescription, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
+import { describeProviderFailure } from './lib/providerErrors';
 
 dotenv.config();
 
@@ -127,7 +128,12 @@ function providerEndpoint(baseUrl: string, route: string): string {
   return url.toString();
 }
 
-async function postProviderJson(targetUrl: string, headers: Record<string, string>, body: unknown): Promise<any> {
+async function requestProviderJson(
+  method: 'GET' | 'POST',
+  targetUrl: string,
+  headers: Record<string, string>,
+  body?: unknown,
+): Promise<any> {
   const url = await assertPublicHttpUrl(targetUrl);
   if (url.protocol !== 'https:') throw new Error('AI provider endpoints must use HTTPS.');
 
@@ -137,7 +143,7 @@ async function postProviderJson(targetUrl: string, headers: Record<string, strin
       hostname: url.hostname.replace(/^\[|\]$/g, ''),
       port: url.port || 443,
       path: `${url.pathname}${url.search}`,
-      method: 'POST',
+      method,
       lookup: guardedLookup as unknown as net.LookupFunction,
       headers: { 'Content-Type': 'application/json', ...headers },
     }, (res) => {
@@ -155,7 +161,9 @@ async function postProviderJson(targetUrl: string, headers: Record<string, strin
       });
       res.on('end', () => {
         if (status < 200 || status >= 300) {
-          reject(new Error(`AI provider error: ${status} ${text.slice(0, 1000)}`));
+          // The provider's own reason rather than its JSON wrapper: a rejected model name
+          // belongs in front of the reader in the words the provider used.
+          reject(new Error(describeProviderFailure(status, text)));
           return;
         }
         try {
@@ -169,9 +177,15 @@ async function postProviderJson(targetUrl: string, headers: Record<string, strin
 
     req.setTimeout(30000, () => req.destroy(new Error('AI provider request timed out.')));
     req.on('error', reject);
-    req.end(JSON.stringify(body));
+    req.end(body === undefined ? undefined : JSON.stringify(body));
   });
 }
+
+const postProviderJson = (targetUrl: string, headers: Record<string, string>, body: unknown): Promise<any> =>
+  requestProviderJson('POST', targetUrl, headers, body);
+
+const getProviderJson = (targetUrl: string, headers: Record<string, string>): Promise<any> =>
+  requestProviderJson('GET', targetUrl, headers);
 
 function parseModelJson(text: string): any {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -1010,6 +1024,43 @@ async function startServer() {
         ok: false,
         error: err?.message || 'The test request failed.',
         latencyMs: Date.now() - started,
+      });
+    }
+  });
+
+  // Settings' "Load models": asks the provider which model names it actually serves, so a
+  // retired or mistyped name is a choice from a list rather than a digest the provider
+  // rejects with "the supported API model names are …".
+  app.post('/api/provider-models', rateLimit('provider-models', 20), async (req, res) => {
+    const provider = String(req.body?.provider || '').trim();
+    const apiKey = String(req.body?.apiKey || '').trim();
+    const baseUrl = String(req.body?.baseUrl || '').trim();
+
+    try {
+      if (provider !== 'openai-compatible') {
+        throw new Error('Listing models is only available for OpenAI-compatible services.');
+      }
+      if (!apiKey) throw new Error('Add an API key first.');
+      if (!baseUrl) throw new Error('Add a provider URL first.');
+
+      const data = await getProviderJson(providerEndpoint(baseUrl, 'models'), {
+        Authorization: `Bearer ${apiKey}`,
+      });
+      // OpenAI-compatible services answer with { data: [{ id }] }; a few send the ids bare.
+      const listed = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+      const models = [...new Set(
+        listed
+          .map((entry: any) => (typeof entry === 'string' ? entry : entry?.id))
+          .filter((id: any): id is string => typeof id === 'string' && Boolean(id.trim()))
+          .map((id: string) => id.trim()),
+      )].sort((a, b) => a.localeCompare(b));
+
+      if (models.length === 0) throw new Error('The provider returned no model names.');
+      return res.json({ ok: true, provider, models, count: models.length });
+    } catch (err: any) {
+      return res.json({
+        ok: false,
+        error: err?.message || 'Could not list this provider’s models.',
       });
     }
   });
