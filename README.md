@@ -8,7 +8,7 @@
 [![PWA Ready](https://img.shields.io/badge/PWA-Ready-5A0FC8?logo=pwa&logoColor=white)](https://web.dev/progressive-web-apps/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-amber.svg)](LICENSE)
 
-> **Curator** is a calm, finite morning reading editor that turns unmanageable RSS streams, Substacks, and web publications into an elegant, focused daily digest. Designed around editorial intentionality rather than algorithmic engagement loops, it selects high-signal articles each morning, balances your intellectual diet with serendipitous perspectives, and provides instant fallback safeguards for signal tuning.
+> **Curator** is a calm, finite reading editor that turns unmanageable RSS streams, Substacks, and web publications into an elegant, focused daily digest. Designed around editorial intentionality rather than algorithmic engagement loops, it selects high-signal articles each morning, balances your intellectual diet with serendipitous perspectives, and provides instant fallback safeguards for signal tuning.
 
 ---
 
@@ -31,6 +31,7 @@
   - [`POST /api/curate`](#post-apicurate)
   - [`POST /api/calibrate`](#post-apicalibrate)
   - [`POST /api/feed-stream`](#post-apifeed-stream)
+  - [`POST /api/source-descriptions`](#post-apisource-descriptions)
   - [`POST /api/check-feed`](#post-apicheck-feed)
   - [`POST /api/discover-sources`](#post-apidiscover-sources)
   - [`POST /api/parse-opml`](#post-apiparse-opml)
@@ -253,6 +254,15 @@ Retrieves chronological feed entries for a specific source ID or across all subs
   "sourceTitle": "Nicole Williams"
 }
 ```
+
+---
+
+### `POST /api/source-descriptions`
+Fetches each source’s publication description from RSS/Atom metadata, falling back to the site’s standard metadata when the feed has no blurb. The Sources screen requests descriptions in small batches and caches them with each source in browser storage.
+
+**Request Body:** `{ "sources": [{ "id": "src_0", "feedUrl": "https://example.com/feed.xml" }] }`
+
+**Response:** `{ "sources": [{ "id": "src_0", "description": "A publication about…" }] }`. A source may include an `error` when its feed or site could not be reached.
 
 ---
 
