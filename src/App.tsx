@@ -3320,7 +3320,7 @@ export default function App() {
                 line drawn at the very top disappears underneath it. */}
             <div className="reader-header-progress absolute inset-x-0 top-[env(safe-area-inset-top,0px)] h-1 overflow-hidden">
               <div
-                className="reader-fill h-full transition-[width] duration-150 ease-out"
+                className="reader-fill h-full"
                 style={{ width: `${readerScrollProgress}%` }}
                 role="progressbar"
                 aria-valuenow={readerScrollProgress}

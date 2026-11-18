@@ -154,10 +154,13 @@ body {
 .reader-panel { background-color: var(--reader-panel); border-color: var(--reader-line); }
 .reader-track { background-color: var(--reader-track); }
 
-/* The reader's progress line grows across the top of the page. Its track stays empty: against a
-   cream page a tinted full-width rule and a darker progressed part of the same rule read as one
-   smudge, where a plain accent rule of the reader's own width does not. */
-.reader-header-progress { background-color: transparent; }
+/* The reader's progress line grows across the top of the page. The unread part is a single
+   hairline rather than a tinted bar — at 4px a tinted rule reads as a smudge on a cream page —
+   but it is a line the whole way across, so the furthest-read mark sits on something instead of
+   floating in the margin as a lone speck. */
+.reader-header-progress {
+  background-image: linear-gradient(to top, var(--reader-line) 1px, transparent 1px);
+}
 .reader-fill { background-color: var(--reader-accent); }
 /* The furthest-read tick on the same line: the fill follows the scroll, the ink mark keeps the
    deepest point reached, so a piece read to the end still shows how far it got after scrolling
