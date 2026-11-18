@@ -3200,13 +3200,14 @@ export default function App() {
               )}
             </div>
 
-            {/* Typographic End-mark */}
-            <div className="reader-dim flex items-center justify-center pt-16 pb-8">
+            {/* Typographic End-mark, then a hairline that closes the article without a gap
+                the reader has to travel across to reach the buttons */}
+            <div className="reader-dim flex items-center justify-center pt-6 pb-4">
               <span className="text-sm tracking-[0.6em] select-none opacity-40 font-serif">· · ·</span>
             </div>
 
             {/* Minimalist Editorial Completion & Tuning Footer */}
-            <footer className="pt-10 pb-24">
+            <footer className="reader-border border-t pt-5 pb-24">
               {/* Primary Outbound Action & Feedback Row */}
               <div className="flex items-center justify-between gap-4">
                 <a
