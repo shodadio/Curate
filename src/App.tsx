@@ -2896,6 +2896,9 @@ export default function App() {
       setSelectedArticle(prev => (prev && prev.id === item.id ? upgrade(prev) : prev));
       setSavedArticles(prev => prev.map(upgrade));
       setDigest(prev => prev.map(upgrade));
+      // The Feeds stream holds the same story under the same id, and opening it from there within
+      // this session must not fall back to the body that predates the refresh.
+      setFeedStreamArticles(prev => prev.map(upgrade));
     } catch {
       // Offline, or the article is gone: the saved text still reads, and the next open retries.
     }
