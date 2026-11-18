@@ -1926,6 +1926,33 @@ CURATION RULES:
     }
   });
 
+  // The saved queue is upgraded in one pass, so a piece the reader never reopens still gets its
+  // citations back. Each story runs through the same extractor and cache as the single-piece
+  // route; four at a time keeps a long queue inside one request without hammering publishers.
+  app.post('/api/article-texts', rateLimit('article-texts', 20), requestBudget('Adding citations', 55_000), async (req, res) => {
+    const requested = Array.isArray(req.body?.items) ? req.body.items.slice(0, 16) : [];
+    const articles: Array<{ id: string; text: string }> = [];
+    let nextIndex = 0;
+    const workerCount = Math.min(4, requested.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextIndex < requested.length) {
+        const entry = requested[nextIndex++];
+        const id = typeof entry?.id === 'string' ? entry.id.slice(0, 200) : '';
+        const target = typeof entry?.url === 'string' ? entry.url.trim().slice(0, 2000) : '';
+        if (!id || !target) continue;
+        let text = '';
+        try {
+          text = (await fetchArticleBody(target)) || '';
+        } catch {
+          // A story that cannot be read now keeps its stored body and can be retried later.
+        }
+        articles.push({ id, text });
+      }
+    }));
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ articles });
+  });
+
   app.post('/api/feed-stream', async (req, res) => {
     try {
       const { sourceTitle, sourceId, sources: clientSources, refreshAll, force } = req.body || {};

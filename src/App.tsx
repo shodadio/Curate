@@ -2904,6 +2904,78 @@ export default function App() {
     }
   };
 
+  const [linkRefreshProgress, setLinkRefreshProgress] = useState<{ done: number; total: number } | null>(null);
+
+  // The whole queue can be upgraded at once, so a piece is not left without its citations just
+  // because it was never reopened. The server reads a batch at a time through the same cache the
+  // digest uses, and only a body long enough to be the article replaces the stored copy.
+  const refreshSavedQueueLinks = async () => {
+    if (linkRefreshProgress) return;
+    const queue = savedArticles.filter(articleNeedsLinkRefresh);
+    if (queue.length === 0) {
+      showToast('Every saved piece already carries its links');
+      return;
+    }
+    setLinkRefreshProgress({ done: 0, total: queue.length });
+    let upgraded = 0;
+    let completed = true;
+    try {
+      for (let start = 0; start < queue.length; start += 16) {
+        const batch = queue.slice(start, start + 16);
+        const response = await fetch('/api/article-texts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: batch.map(({ id, url }) => ({ id, url })) }),
+        });
+        if (!response.ok) {
+          completed = false;
+          break;
+        }
+        const data = await response.json().catch(() => ({}));
+        const accepted = new Map<string, string>();
+        const attempted = new Set<string>();
+        for (const entry of Array.isArray(data?.articles) ? data.articles : []) {
+          const id = typeof entry?.id === 'string' ? entry.id : '';
+          if (!id) continue;
+          attempted.add(id);
+          const text = typeof entry?.text === 'string' ? entry.text : '';
+          // Short text means the extractor found the page's chrome or a paywall, so the stored
+          // body stays the better read.
+          if (text.length >= 200) accepted.set(id, text);
+        }
+        upgraded += accepted.size;
+        if (attempted.size > 0) {
+          const refreshedAt = Date.now();
+          const applyBatch = (entry: DigestItem): DigestItem => {
+            if (!attempted.has(entry.id)) return entry;
+            const text = accepted.get(entry.id);
+            // A piece the server could not read (a dead page, a paywall) keeps its stored body;
+            // the stamp records that this pass asked, so the count does not sit at one forever.
+            return text
+              ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt }
+              : { ...entry, linkRefreshAt: refreshedAt };
+          };
+          setSelectedArticle(prev => (prev ? applyBatch(prev) : prev));
+          setSavedArticles(prev => prev.map(applyBatch));
+          setDigest(prev => prev.map(applyBatch));
+          setFeedStreamArticles(prev => prev.map(applyBatch));
+        }
+        setLinkRefreshProgress({ done: Math.min(start + batch.length, queue.length), total: queue.length });
+      }
+      if (!completed) {
+        showToast('The queue was only partly refreshed — try again in a moment');
+      } else if (upgraded === 0) {
+        showToast('No citations could be added just now');
+      } else {
+        showToast(`Added citations to ${upgraded} saved ${upgraded === 1 ? 'piece' : 'pieces'}`);
+      }
+    } catch {
+      showToast('Could not reach the server to add citations');
+    } finally {
+      setLinkRefreshProgress(null);
+    }
+  };
+
   const openArticle = (item: DigestItem) => {
     setSelectedArticle(item);
     // The byline's source description starts collapsed on every article, and so does the
@@ -3069,6 +3141,9 @@ export default function App() {
   const interestSuggestions = suggestionsFromFolders(sources.flatMap(src =>
     normalizeCategoryLabels(src.categories, src.folder)
   ));
+
+  // Pieces saved before the cleaner kept links, which the Saved header can upgrade in one pass.
+  const staleSavedCount = savedArticles.filter(articleNeedsLinkRefresh).length;
 
   const savedDigestItems = [
     ...savedArticles,
@@ -4241,9 +4316,29 @@ export default function App() {
         {/* TAB 2: SAVED */}
         {activeTab === 'saved' && (
           <div className="space-y-6 animate-fade-in">
-            <div className="border-b border-slate-900 pb-4">
-              <h2 className="text-xl font-semibold tracking-tight text-slate-100">Saved Items</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Your personal re-reading queue ({savedDigestItems.length})</p>
+            <div className="border-b border-slate-900 pb-4 flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold tracking-tight text-slate-100">Saved Items</h2>
+                <p className="text-xs text-slate-400 mt-0.5">Your personal re-reading queue ({savedDigestItems.length})</p>
+              </div>
+              {/* A piece saved before the cleaner kept links reads without its citations until it
+                  is refetched. This does that in one pass, for the pieces you never reopen. */}
+              {staleSavedCount > 0 && (
+                <button
+                  type="button"
+                  onClick={refreshSavedQueueLinks}
+                  disabled={Boolean(linkRefreshProgress)}
+                  className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-slate-800 px-3 text-xs font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300 disabled:opacity-60"
+                  title="Read these saved pieces again so the links they cite work in the reader"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${linkRefreshProgress ? 'animate-spin' : ''}`} />
+                  <span>
+                    {linkRefreshProgress
+                      ? `Adding ${linkRefreshProgress.done}/${linkRefreshProgress.total}`
+                      : `Add citations (${staleSavedCount})`}
+                  </span>
+                </button>
+              )}
             </div>
 
             {savedDigestItems.length === 0 ? (

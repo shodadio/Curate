@@ -33,6 +33,7 @@
   - [`POST /api/feed-stream`](#post-apifeed-stream)
   - [`POST /api/source-descriptions`](#post-apisource-descriptions)
   - [`POST /api/article-text`](#post-apiarticle-text)
+  - [`POST /api/article-texts`](#post-apiarticle-texts)
   - [`POST /api/check-feed`](#post-apicheck-feed)
   - [`POST /api/discover-sources`](#post-apidiscover-sources)
   - [`POST /api/parse-opml`](#post-apiparse-opml)
@@ -273,6 +274,15 @@ Re-extracts one article's body on demand. A piece saved before the reader kept i
 **Request Body:** `{ "url": "https://example.com/story" }`
 
 **Response:** `{ "text": "…" }`, with each citation carried as a `[label](url)` marker. An empty string means the article could not be read, and the reader keeps the copy it already had.
+
+---
+
+### `POST /api/article-texts`
+Re-extracts several saved pieces in one pass, for the “Add citations” action in Saved. It is the same extractor and 24-hour cache as `POST /api/article-text`, four stories at a time, so a long queue is not a burst of requests to its publishers.
+
+**Request Body:** `{ "items": [{ "id": "live_abc", "url": "https://example.com/story" }] }` (up to 16 per call)
+
+**Response:** `{ "articles": [{ "id": "live_abc", "text": "…" }] }`. An empty `text` means that piece could not be read and its stored copy stays as it is.
 
 ---
 
