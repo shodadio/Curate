@@ -67,6 +67,69 @@ export const parseFeedSiteUrl = (xml: string, feedUrl: string): string => {
   }
 };
 
+const AUTHOR_LIMIT = 80;
+
+// Machine accounts and placeholders are not bylines: "admin" or "Anonymous" credits nobody,
+// so the reader is better off falling back to the publication's own name.
+const NON_AUTHOR_NAMES = new Set([
+  'admin', 'administrator', 'editor', 'staff', 'webmaster', 'wordpress', 'unknown',
+  'n/a', 'na', 'anonymous', 'none',
+]);
+
+const tidyAuthor = (raw: string): string => {
+  // Atom nests the writer's name; RSS puts it straight in the tag.
+  const named = raw.match(/<name\b[^>]*>([\s\S]*?)<\/name>/i);
+  let value = cleanHtml(named ? named[1] : raw);
+  // RSS writes the writer as "address (Name)"; the bracketed part is the byline.
+  const bracketed = value.match(/\(([^)]+)\)/);
+  if (bracketed) value = bracketed[1];
+  value = value
+    .replace(/^\s*(?:by|words by|story by|written by|posted by)\s+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!value || value.length > AUTHOR_LIMIT) return '';
+  if (!/\p{L}/u.test(value)) return '';
+  // An address is not a person, whether it is an email or a site.
+  if (/@|^(?:https?:\/\/|www\.)/i.test(value)) return '';
+  if (NON_AUTHOR_NAMES.has(value.toLowerCase())) return '';
+  return value;
+};
+
+// Feeds credit the writer in one of a few places: DC's creator, iTunes' author, or the RSS/Atom
+// author block. The first tag that names someone wins, so an Atom entry's own <author> is never
+// needed to displace the writer the feed named first.
+const AUTHOR_PATTERNS = [
+  /<dc:creator\b[^>]*>([\s\S]*?)<\/dc:creator>/gi,
+  /<itunes:author\b[^>]*>([\s\S]*?)<\/itunes:author>/gi,
+  /<author\b[^>]*>([\s\S]*?)<\/author>/gi,
+];
+
+/** The writer a feed item credits, empty when it names nobody usable. */
+export const parseFeedItemAuthor = (block: string, sourceTitle = ''): string => {
+  if (!block) return '';
+  const source = cleanHtml(sourceTitle).toLowerCase();
+
+  for (const pattern of AUTHOR_PATTERNS) {
+    const names: string[] = [];
+    for (const match of block.matchAll(pattern)) {
+      const name = tidyAuthor(match[1]);
+      // Some feeds fill the creator with the publication's own name; that is the source.
+      if (!name || name.toLowerCase() === source) continue;
+      if (names.some(existing => existing.toLowerCase() === name.toLowerCase())) continue;
+      names.push(name);
+    }
+
+    if (names.length === 1) return names[0];
+    if (names.length > 1) {
+      const joined = `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+      return joined.length <= AUTHOR_LIMIT ? joined : names[0];
+    }
+  }
+
+  return '';
+};
+
 // Feeds sometimes omit their own blurb; use the publication page's standard metadata as a fallback.
 export const parseSitePageDescription = (html: string): string => {
   if (!html) return '';

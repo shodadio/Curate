@@ -104,6 +104,9 @@ interface DigestItem {
   id: string;
   title: string;
   source: string;
+  // The writer the feed credited; absent when the feed named nobody, and the reader then
+  // credits the publication alone.
+  author?: string;
   folder: string;
   categories?: string[];
   readTime: string;
@@ -704,7 +707,12 @@ export function buildSpeechQueue(article: DigestItem): SpeechChunk[] {
     }
   };
 
-  push(`${article.title}. By ${article.source}.`, -1);
+  push(
+    article.author
+      ? `${article.title}. By ${article.author}, in ${article.source}.`
+      : `${article.title}. By ${article.source}.`,
+    -1,
+  );
   if (article.summary) push(article.summary, -1);
   buildArticleParagraphs(article.fullText).forEach((paragraph, index) => push(paragraph, index));
 
@@ -3533,6 +3541,12 @@ export default function App() {
             style={{ fontSize: `${readerSize}px` }}
           >
             <div className="reader-dim font-sans text-xs mb-3 flex items-center gap-2 flex-wrap">
+              {selectedArticle.author && (
+                <>
+                  <span className="reader-ink font-medium">By {selectedArticle.author}</span>
+                  <span aria-hidden="true">·</span>
+                </>
+              )}
               {readerSourceDescription ? (
                 <button
                   type="button"

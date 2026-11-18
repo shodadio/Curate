@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseFeedChannelDescription, parseFeedSiteUrl, parseSitePageDescription } from '../lib/sourceMetadata.ts';
+import { parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from '../lib/sourceMetadata.ts';
 
 test('reads the channel description without mistaking an article description for it', () => {
   const feed = '<rss><channel><title>Example</title><description><![CDATA[<p>A journal about science and society.</p>]]></description><item><description>Article excerpt</description></item></channel></rss>';
@@ -20,6 +20,23 @@ test('prefers an alternate site link and safely falls back to the feed origin', 
   );
   assert.equal(parseFeedSiteUrl('<rss><channel></channel></rss>', 'https://example.com/feed.xml'), 'https://example.com/');
   assert.equal(parseFeedSiteUrl('<feed/>', 'javascript:alert(1)'), '');
+});
+
+test('reads the writer a feed item credits', () => {
+  assert.equal(parseFeedItemAuthor('<item><dc:creator><![CDATA[Jane Doe]]></dc:creator></item>'), 'Jane Doe');
+  assert.equal(parseFeedItemAuthor('<entry><author><name>Ada Lovelace</name><uri>https://example.com</uri></author></entry>'), 'Ada Lovelace');
+  assert.equal(parseFeedItemAuthor('<item><author>jane@example.com (Jane Doe)</author></item>'), 'Jane Doe');
+  assert.equal(
+    parseFeedItemAuthor('<item><dc:creator>Jane Doe</dc:creator><dc:creator>Sam Lee</dc:creator></item>'),
+    'Jane Doe and Sam Lee'
+  );
+});
+
+test('leaves the writer unset when the feed names no one usable', () => {
+  assert.equal(parseFeedItemAuthor('<item><dc:creator>Ars Technica</dc:creator></item>', 'Ars Technica'), '');
+  assert.equal(parseFeedItemAuthor('<item><dc:creator>admin</dc:creator></item>'), '');
+  assert.equal(parseFeedItemAuthor('<item><author>jane@example.com</author></item>'), '');
+  assert.equal(parseFeedItemAuthor('<item><title>No byline here</title></item>'), '');
 });
 
 test('reads and cleans standard site description metadata', () => {

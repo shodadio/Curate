@@ -26,7 +26,7 @@ import {
 } from './lib/ranking';
 import { parseOpmlText } from './lib/opml';
 import { cleanHtml, htmlToReadableText } from './lib/markup';
-import { parseFeedChannelDescription, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
+import { parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
 
 dotenv.config();
 
@@ -1176,6 +1176,8 @@ async function startServer() {
         : rawDate;
       const publishedAt = formatPublishDate(dated);
       const publishedAtMs = dated ? new Date(dated).getTime() : NaN;
+      // The reader credits the writer; feeds that name nobody leave the publication to speak for it.
+      const author = parseFeedItemAuthor(block, sourceTitle);
 
       const contentMatch = block.match(/<(?:content:encoded|content)[^>]*>([\s\S]*?)<\/(?:content:encoded|content)>/i);
       const descMatch = block.match(/<description[^>]*>([\s\S]*?)<\/description>/i);
@@ -1234,6 +1236,7 @@ async function startServer() {
       items.push({
         id,
         source: sourceTitle,
+        author: author || undefined,
         sourceDescription: feedDescription || undefined,
         folder: folder || 'General',
         categories,
