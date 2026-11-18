@@ -4140,6 +4140,12 @@ export default function App() {
                               <span className="truncate">{item.source}</span>
                             </div>
                             <div className="text-xs text-slate-400 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
+                              {item.author && (
+                                <>
+                                  <span className="min-w-0">By {item.author}</span>
+                                  <span aria-hidden="true">·</span>
+                                </>
+                              )}
                               <span className="min-w-0">{decodeArticleEntities(item.publishedAt || '30m')}</span>
                               <span aria-hidden="true">·</span>
                               <span className="min-w-0">{displayFolder(item.folder)}</span>
@@ -4371,6 +4377,12 @@ export default function App() {
                               <div className="min-w-0">
                                 <div className="text-xs font-bold text-rose-200 truncate">{item.source}</div>
                                 <div className="text-xs text-rose-400/80 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
+                                  {item.author && (
+                                    <>
+                                      <span className="min-w-0">By {item.author}</span>
+                                      <span aria-hidden="true">·</span>
+                                    </>
+                                  )}
                                   {item.publishedAt && (
                                     <>
                                       <span className="min-w-0">{decodeArticleEntities(item.publishedAt)}</span>
@@ -4605,6 +4617,7 @@ export default function App() {
                     >
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
                         <span title={item.source} className="font-semibold text-slate-200 min-w-0 truncate">{item.source}</span>
+                        {item.author && <span className="min-w-0 truncate">By {item.author}</span>}
                         {item.publishedAt && <span>{decodeArticleEntities(item.publishedAt)}</span>}
                         <span>{item.readTime}</span>
                         <span className="text-amber-400 font-semibold inline-flex items-center gap-1">
@@ -5953,6 +5966,12 @@ Search for writers, publications, or topics. Curator checks whether each result 
                               <span className="truncate">{item.source}</span>
                             </div>
                             <div className="text-xs text-slate-400 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
+                              {item.author && (
+                                <>
+                                  <span className="min-w-0">By {item.author}</span>
+                                  <span aria-hidden="true">·</span>
+                                </>
+                              )}
                               {item.publishedAt && (
                                 <>
                                   <span className="min-w-0">{decodeArticleEntities(item.publishedAt)}</span>
