@@ -12,13 +12,80 @@ import { CuratorMark } from './components/CuratorLogo';
 import { WeeklyReviewModal, WeeklyReadingItem } from './components/WeeklyReviewModal';
 import { InterestsEditor } from './components/InterestsEditor';
 import { ProviderTestButton } from './components/ProviderTestButton';
+import { ModelField } from './components/ModelField';
 import { FeedbackActions } from './components/FeedbackActions';
 import { DigestEmptyState } from './components/DigestEmptyState';
 import { SettingsSection } from './components/SettingsSection';
 import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
 import { safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, type StorageFailure } from './storage';
 import { DEFAULT_FEEDS } from './defaultFeeds';
-import { articleNeedsLinkRefresh, dropBylineFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph } from '../lib/markup';
+import { articleNeedsLinkRefresh, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph } from '../lib/markup';
+
+// One-click provider addresses: the popular OpenAI-compatible services, so a working setup
+// starts with a name and a key rather than a copied URL and a guessed model ID.
+interface ProviderPreset {
+  name: string;
+  url: string;
+  model: string;
+}
+
+const CHAT_PROVIDER_PRESETS: ProviderPreset[] = [
+  { name: 'OpenAI', url: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  { name: 'DeepSeek', url: 'https://api.deepseek.com', model: 'deepseek-flash' },
+  { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' },
+  { name: 'Groq', url: 'https://api.groq.com/openai/v1', model: 'openai/gpt-oss-120b' },
+  { name: 'Mistral', url: 'https://api.mistral.ai/v1', model: 'mistral-small-latest' },
+];
+
+// Matching needs a provider that serves embeddings; DeepSeek and Groq do not, so a preset
+// for them there would only ever fail the test.
+const MATCHING_PROVIDER_PRESETS: ProviderPreset[] = [
+  { name: 'OpenAI', url: 'https://api.openai.com/v1', model: 'text-embedding-3-small' },
+  { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', model: 'openai/text-embedding-3-small' },
+  { name: 'Mistral', url: 'https://api.mistral.ai/v1', model: 'mistral-embed' },
+];
+
+// A model still sitting at one preset's default follows the next preset picked; a model the
+// reader typed themselves is never overwritten.
+const PRESET_DEFAULT_MODELS = new Set(
+  [...CHAT_PROVIDER_PRESETS, ...MATCHING_PROVIDER_PRESETS].map(preset => preset.model),
+);
+
+function PresetChips({
+  presets,
+  value,
+  label,
+  onPick,
+}: {
+  presets: ProviderPreset[];
+  value: string;
+  label: string;
+  onPick: (preset: ProviderPreset) => void;
+}) {
+  const current = value.trim().replace(/\/+$/, '');
+  return (
+    <div className="flex flex-wrap gap-1.5" role="group" aria-label={label}>
+      {presets.map(preset => {
+        const selected = current === preset.url;
+        return (
+          <button
+            key={preset.name}
+            type="button"
+            aria-pressed={selected}
+            onClick={() => onPick(preset)}
+            className={`px-2.5 py-1 text-xs rounded-lg border transition ${
+              selected
+                ? 'border-amber-500/40 bg-amber-500/15 text-amber-200'
+                : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-700 hover:text-slate-100'
+            }`}
+          >
+            {preset.name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 interface DiscoveredSource {
   title: string;
@@ -211,7 +278,7 @@ function buildArticleParagraphs(text: string): string[] {
   // sentence; the reader and the voice both take their paragraphs from this list.
   // A section handed over as one <p> is shown as a few shorter paragraphs; read-aloud speaks
   // from this same list, so a spoken paragraph is still a paragraph on screen.
-  return joinContinuedParagraphs(dropBylineFurniture(dropRepeatedShortParagraphs(paragraphs)))
+  return joinContinuedParagraphs(dropEndingFurniture(dropBylineFurniture(dropRepeatedShortParagraphs(paragraphs))))
     .flatMap(paragraph => splitDenseParagraph(paragraph));
 }
 
@@ -987,11 +1054,6 @@ export default function App() {
   const [embeddingApiKey, setEmbeddingApiKey] = useState<string>(() => localStorage.getItem('curator_embedding_api_key') || '');
   const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState<string>(() => localStorage.getItem('curator_embedding_base_url') || '');
   const [embeddingModel, setEmbeddingModel] = useState<string>(() => localStorage.getItem('curator_embedding_model') || '');
-  // The model names the configured provider reports, loaded on demand in Settings so a
-  // retired or mistyped name is a tap rather than a digest the provider refuses.
-  const [chatModelOptions, setChatModelOptions] = useState<string[]>([]);
-  const [chatModelLookup, setChatModelLookup] = useState<string>('');
-  const [loadingChatModels, setLoadingChatModels] = useState<boolean>(false);
   const embeddingKeyMatchesChatProvider =
     (embeddingProvider === 'gemini' && aiProvider === 'gemini') ||
     (embeddingProvider === 'openai-compatible' && aiProvider === 'openai-compatible');
@@ -1259,39 +1321,6 @@ export default function App() {
     safeSetJson('curator_semantic_feedback', semanticFeedback);
   }, [semanticFeedback]);
 
-  // Settings' "Load models": asks the provider which model names it serves, so a name the
-  // provider has retired — or one it never had — is visible before a digest is written.
-  const loadChatModels = async () => {
-    if (loadingChatModels) return;
-    setLoadingChatModels(true);
-    setChatModelLookup('');
-    try {
-      const response = await fetch('/api/provider-models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: aiProvider, apiKey: customApiKey, baseUrl: aiBaseUrl }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.ok) {
-        setChatModelOptions([]);
-        setChatModelLookup(String(data?.error || `Could not list models (HTTP ${response.status}).`).slice(0, 240));
-        return;
-      }
-      const models = Array.isArray(data.models)
-        ? data.models.filter((id: unknown): id is string => typeof id === 'string')
-        : [];
-      setChatModelOptions(models);
-      setChatModelLookup(models.length > 0
-        ? `${models.length} model${models.length === 1 ? '' : 's'} available — tap one to use it.`
-        : 'The provider returned no model names.');
-    } catch {
-      setChatModelOptions([]);
-      setChatModelLookup('Could not reach this app’s server.');
-    } finally {
-      setLoadingChatModels(false);
-    }
-  };
-
   const checkStartupServices = async () => {
     const checkId = ++startupApiCheckRef.current;
     const isCurrentCheck = () => checkId === startupApiCheckRef.current;
@@ -1402,12 +1431,6 @@ export default function App() {
       const failures = (await Promise.all(checks)).filter((message): message is string => Boolean(message));
       if (!isCurrentCheck()) return;
       if (failures.length > 0) {
-        // A refused model name is the one provider failure Settings can repair by itself:
-        // ask the provider what it serves, so the names are already on screen when the
-        // alert below opens its settings.
-        if (aiProvider === 'openai-compatible' && chatConfigured && failures.some(message => /model/i.test(message))) {
-          void loadChatModels();
-        }
         flagIssue(`A configured provider did not respond successfully: ${failures.join(' ')}`);
         return;
       }
@@ -1519,13 +1542,6 @@ export default function App() {
   useEffect(() => {
     safeSetItem('curator_ai_model', aiModel);
   }, [aiModel]);
-
-  // A list from one provider or one key says nothing about another, so editing either
-  // drops the names on screen rather than leaving a stale choice to be tapped.
-  useEffect(() => {
-    setChatModelOptions([]);
-    setChatModelLookup('');
-  }, [aiProvider, aiBaseUrl, customApiKey]);
 
   useEffect(() => {
     safeSetItem('curator_embedding_provider', embeddingProvider);
@@ -3371,7 +3387,7 @@ export default function App() {
                 line drawn at the very top disappears underneath it. */}
             <div className="reader-header-progress absolute inset-x-0 top-[env(safe-area-inset-top,0px)] h-1 overflow-hidden">
               <div
-                className="reader-fill h-full transition-[width] duration-150 ease-out"
+                className="reader-fill h-full"
                 style={{ width: `${readerScrollProgress}%` }}
                 role="progressbar"
                 aria-valuenow={readerScrollProgress}
@@ -5327,55 +5343,35 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       placeholder="https://api.openai.com/v1"
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                     />
-                    <p className="text-xs text-slate-400 mt-1">HTTPS API URL from your provider.</p>
+                    <p className="text-xs text-slate-400 mt-1">Pick a provider below, or paste your own HTTPS API URL.</p>
+                    <div className="mt-2">
+                      <PresetChips
+                        presets={CHAT_PROVIDER_PRESETS}
+                        value={aiBaseUrl}
+                        label="Popular digest writing providers"
+                        onPick={preset => {
+                          setAiBaseUrl(preset.url);
+                          setAiModel(current => (
+                            !current.trim() || PRESET_DEFAULT_MODELS.has(current.trim()) ? preset.model : current
+                          ));
+                        }}
+                      />
+                    </div>
                   </div>
                 )}
 
                 {aiProvider !== 'deterministic' && (
                   <>
-                    <div>
-                      <div className="flex items-baseline justify-between gap-2 mb-1.5">
-                        <label className="block text-xs font-medium text-slate-300">Model name</label>
-                        {aiProvider === 'openai-compatible' && (
-                          <button
-                            type="button"
-                            onClick={() => void loadChatModels()}
-                            disabled={loadingChatModels || !customApiKey.trim() || !aiBaseUrl.trim()}
-                            className="shrink-0 text-xs font-medium text-amber-300 underline underline-offset-2 hover:text-amber-200 disabled:opacity-40 disabled:no-underline"
-                          >
-                            {loadingChatModels ? 'Loading…' : chatModelOptions.length > 0 ? 'Reload models' : 'Load models'}
-                          </button>
-                        )}
-                      </div>
-                      <input
-                        type="text"
-                        value={aiModel}
-                        onChange={e => setAiModel(e.target.value)}
-                        placeholder={aiProvider === 'openai-compatible' ? 'e.g. gpt-4o-mini or provider model ID' : aiProvider === 'anthropic' ? 'e.g. claude-3-5-sonnet-20241022' : 'e.g. gemini-2.5-flash'}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
-                      />
-                      {chatModelLookup && (
-                        <p className={`text-xs mt-1 ${chatModelOptions.length > 0 ? 'text-emerald-300' : 'text-amber-300'}`}>
-                          {chatModelLookup}
-                        </p>
-                      )}
-                      {chatModelOptions.length > 0 && (
-                        <div className="mt-2 max-h-32 overflow-y-auto flex flex-wrap gap-1.5 rounded-xl border border-slate-800 bg-slate-950/60 p-2">
-                          {chatModelOptions.map(id => (
-                            <button
-                              key={id}
-                              type="button"
-                              onClick={() => setAiModel(id)}
-                              className={`px-2 py-1 rounded-lg border text-xs font-mono transition ${id === aiModel.trim()
-                                ? 'border-amber-500/50 bg-amber-500/15 text-amber-200'
-                                : 'border-slate-800 text-slate-300 hover:border-slate-700 hover:text-slate-100'}`}
-                            >
-                              {id}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                    <ModelField
+                      label="Model name"
+                      value={aiModel}
+                      onChange={setAiModel}
+                      placeholder={aiProvider === 'openai-compatible' ? 'e.g. gpt-4o-mini or provider model ID' : aiProvider === 'anthropic' ? 'e.g. claude-3-5-sonnet-20241022' : 'e.g. gemini-2.5-flash'}
+                      provider={aiProvider}
+                      apiKey={customApiKey}
+                      baseUrl={aiBaseUrl}
+                      kind="chat"
+                    />
                     <div>
                       <label className="block text-xs font-medium text-slate-300 mb-1.5">Provider API key</label>
                       <input
@@ -5475,17 +5471,31 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         placeholder="https://api.openai.com/v1"
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                       />
+                      <p className="text-xs text-slate-400 mt-1">Pick a provider below, or paste your own HTTPS API URL.</p>
+                      <div className="mt-2">
+                        <PresetChips
+                          presets={MATCHING_PROVIDER_PRESETS}
+                          value={embeddingBaseUrl}
+                          label="Popular matching providers"
+                          onPick={preset => {
+                            setEmbeddingBaseUrl(preset.url);
+                            setEmbeddingModel(current => (
+                              !current.trim() || PRESET_DEFAULT_MODELS.has(current.trim()) ? preset.model : current
+                            ));
+                          }}
+                        />
+                      </div>
                     </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Matching model name</label>
-                      <input
-                        type="text"
-                        value={embeddingModel}
-                        onChange={e => setEmbeddingModel(e.target.value)}
-                        placeholder="text-embedding-3-small"
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
-                      />
-                    </div>
+                    <ModelField
+                      label="Matching model name"
+                      value={embeddingModel}
+                      onChange={setEmbeddingModel}
+                      placeholder="text-embedding-3-small"
+                      provider={embeddingProvider}
+                      apiKey={embeddingApiKey || (embeddingKeyMatchesChatProvider ? customApiKey : '')}
+                      baseUrl={embeddingBaseUrl || (embeddingKeyMatchesChatProvider ? aiBaseUrl : '')}
+                      kind="embedding"
+                    />
                   </>
                 )}
 

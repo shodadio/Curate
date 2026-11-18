@@ -164,6 +164,121 @@ export const dropBylineFurniture = (paragraphs: string[]): string[] => {
   return kept;
 };
 
+// The last screenful of a long page is where a publisher puts everything that is not the
+// article: the author's bio, a comment count, the comment thread's own controls, footnote
+// backlinks. Only the end is trimmed, so a line that reads like this mid-piece is left alone.
+const footnoteBacklink = /^(?:↩|↑|⤴|return|back|back to top|top)$/i;
+const punctuationOnly = /^[#→↑↩*·•\-–—]+$/;
+// A footnote's "return" link usually ends the footnote it belongs to, inside a real paragraph.
+const trailingBacklink = /\s*\[(?:return|back|back to top|top|↩|↑|⤴)\](?:\([^)]*\))?\s*$/i;
+const commentSummary = /^(?:(?:\d[\d,]*\s+)?(?:comments?|responses?|replies)(?:\s*\(\s*\d[\d,]*\s*\))?|comments?\s*\(\s*\d[\d,]*\s*\))$/i;
+const commentPrompt = /^(?:(?:leave|add|post|write|read|view|show|join|start|reply to|respond to)\s+(?:a\s+|the\s+|your\s+|this\s+)?(?:\d+\s+)?(?:comments?|replies|reply|discussion|conversation|thread)|respond|reply)$/i;
+const commentSort = /^sort by\b/i;
+const threadControl = /^(?:\[?(?:hide|show)\s+repl(?:y|ies)\]?|continue (?:this )?(?:thread|discussion)\b.*)$/i;
+const loadingLine = /^(?:like\s+)?loading…?\.?$/i;
+// A feed that spills its own template leaves lines like `= startingDepth && model.depth`.
+const templateDebris = /<[%]|%>|\{\{|\}\}|model\.[a-z_]|startingdepth|commentid|data-(?:user-vote|vote-count|vote-total|updoots|downboops)/i;
+// The share/print/RSS row a publisher prints under the article.
+const toolLink = /^(?:rss feed|print|email|e-mail|share|comments?|permalink|twitter|x|facebook|linkedin|mastodon|bluesky|whatsapp|reddit|subscribe)$/i;
+// A related-reading block opens with a heading and then runs to the end of the page.
+const relatedHeading = /^(?:more by\s+\p{Lu}[\p{L}'’.-]*(?:\s+\p{Lu}[\p{L}'’.-]*){0,3}|related(?: (?:stories|articles|posts|reading|content|coverage))?|read (?:next|more)|you (?:might|may) also like|recommended(?: for you)?)$/iu;
+
+// The site's own sidebar, which most publishers repeat under the piece: a previous-article
+// arrow, a membership block, then sections of links under headings and dates. Each line on
+// its own looks harmless, so the run is only cut when it holds a date or a "View All" link.
+// A run of links with nothing between them: one card, or several cards printed on one line.
+const isLinkRun = (paragraph: string): boolean =>
+  paragraph.replace(/\[[^\]\n]*\]\([^)\n]*\)/g, ' ').replace(/[•*·←\s]/g, '').length === 0;
+const sidebarHeading = /^\p{Lu}[\p{L}\p{N}\s&'’.\-]{0,39}$/u;
+const dateLine = /^(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|January|February|March|April|May|June|July|August|September|October|November|December)\b[^\n]{0,30}\d{4}|\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})$/;
+const sidebarAction = /^\[(?:view all|view more|log in|sign in|sign up|subscribe|see all)\]\([^)\n]*\)$/i;
+
+// A paywalled piece stops early and spends the rest of the page selling the subscription; the
+// marker is the pitch's opening line, so everything from there on is not the article.
+const paywallLine = /^(?:already (?:a )?(?:subscriber|subscribed)\?|(?:log|sign) in to (?:continue|keep) reading|subscribe to (?:continue|keep) reading|this (?:article|story|post|content) is (?:for|available to) (?:subscribers|members)|you(?:'ve| have) reached (?:your|the) (?:free )?(?:article )?limit\.?)$/i;
+// A sign-in prompt on its own is not a paywall — plenty of sites print one above a full
+// article — so the pitch only counts when the subscription offer follows it.
+const pitchLine = /[$£€]\s?\d+(?:\.\d+)?\s*(?:\/|per)\s*(?:month|mo|year|yr|week|wk)\b|\bget access to\b|\bsubscriber-only\b|\bsubscribe now\b|\bstart your (?:free )?trial\b|\bbecome a (?:member|subscriber)\b/i;
+
+// "Jacob is a copy editor at Ars Technica. He resides in Portland…" is a bio, not the last
+// paragraph of the piece: a name, a newsroom job, and the publication or a personal detail.
+const authorBioOpening = /^\p{Lu}[\p{L}'’.-]+(?:\s+\p{Lu}[\p{L}'’.-]+){0,2}\s+(?:is|was)\s+/u;
+const authorBioRole = /\b(?:editor|reporter|correspondent|columnist|writer|producer|critic|journalist|contributor|anchor|host)\b/i;
+const authorBioTrace = /@[\w.-]+\.\w+|https?:\/\/|can be reached|follow (?:him|her|them)|\b(?:he|she|they|his|her|their)\b/i;
+const authorBioPublication = /\b(?:at|for|with)\s+\p{Lu}/u;
+
+const isAuthorBio = (paragraph: string): boolean => {
+  const text = linkLabelsOnly(paragraph).trim();
+  if (text.length > 600) return false;
+  return authorBioOpening.test(text) && authorBioRole.test(text) &&
+    (authorBioTrace.test(text) || authorBioPublication.test(text));
+};
+
+/** Trims the furniture a page prints after its last sentence. */
+export const dropEndingFurniture = (paragraphs: string[]): string[] => {
+  // A list line's bullet is punctuation the page added, not part of the words being judged.
+  const wordsOf = (paragraph: string): string => linkLabelsOnly(paragraph).trim().replace(/^[•*·]\s*/, '');
+
+  const kept = paragraphs
+    .map(paragraph => paragraph.replace(trailingBacklink, '').trim())
+    .filter(paragraph => {
+      const text = wordsOf(paragraph);
+      // A spinner or an unrendered template line is never prose, wherever it sits.
+      if (!text || loadingLine.test(text) || templateDebris.test(paragraph)) return false;
+      return !(text.length <= 40 && (footnoteBacklink.test(text) || punctuationOnly.test(text)));
+    });
+
+  const isFurniture = (paragraph: string): boolean => {
+    const text = wordsOf(paragraph);
+    return templateDebris.test(paragraph) ||
+      commentSummary.test(text) || commentPrompt.test(text) || commentSort.test(text) ||
+      threadControl.test(text) || loadingLine.test(text) || toolLink.test(text);
+  };
+
+  // A related-reading heading ends the article; only the last one counts, and only when it
+  // sits in the back half, so a section heading mid-piece cannot swallow the rest.
+  let end = kept.length;
+  for (let index = kept.length - 1; index >= Math.floor(kept.length / 2); index--) {
+    const text = wordsOf(kept[index]);
+    if (text.length <= 80 && relatedHeading.test(text)) {
+      end = index;
+      break;
+    }
+  }
+
+  const isSidebarLine = (paragraph: string): boolean => {
+    const text = wordsOf(paragraph);
+    return isLinkRun(paragraph) || sidebarAction.test(paragraph.trim()) ||
+      dateLine.test(text) ||
+      (text.length <= 40 && !/[.!?:;]$/.test(text) && sidebarHeading.test(text));
+  };
+  let sidebarStart = Math.min(end, kept.length);
+  while (sidebarStart > 0 && isSidebarLine(kept[sidebarStart - 1])) sidebarStart--;
+  const sidebarRun = kept.slice(sidebarStart, end);
+  const sidebarIsNav = sidebarRun.length >= 3 &&
+    sidebarRun.some(paragraph => sidebarAction.test(paragraph.trim()) || dateLine.test(wordsOf(paragraph)));
+  if (sidebarIsNav) end = sidebarStart;
+
+  const paywallIndex = kept.slice(0, end).findIndex(paragraph => paywallLine.test(wordsOf(paragraph)));
+  if (paywallIndex > 0 && end - paywallIndex >= 2 &&
+    pitchLine.test(kept.slice(paywallIndex, paywallIndex + 6).join(' '))) {
+    end = paywallIndex;
+  }
+
+  for (let changed = true; changed && end > 0;) {
+    changed = false;
+    while (end > 0 && isFurniture(kept[end - 1])) {
+      end--;
+      changed = true;
+    }
+    if (end > 0 && isAuthorBio(kept[end - 1])) {
+      end--;
+      changed = true;
+    }
+  }
+  return kept.slice(0, end);
+};
+
 export const dropRepeatedShortParagraphs = (paragraphs: string[]): string[] => {
   const counts = new Map<string, number>();
   for (const paragraph of paragraphs) {
@@ -288,7 +403,7 @@ export const htmlToReadableText = (html: string, baseUrl = ''): string => {
     .filter(paragraph => !/^#[\p{L}\d_]{2,30}$/u.test(paragraph))
     .filter(paragraph => !/^the post .+ appeared first on /i.test(linkLabelsOnly(paragraph)));
 
-  return joinContinuedParagraphs(dropBylineFurniture(dropRepeatedShortParagraphs(dropChromeRuns(paragraphs)))).join('\n\n');
+  return joinContinuedParagraphs(dropEndingFurniture(dropBylineFurniture(dropRepeatedShortParagraphs(dropChromeRuns(paragraphs))))).join('\n\n');
 };
 
 // ---- Dense paragraphs --------------------------------------------------------

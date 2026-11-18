@@ -145,7 +145,7 @@ async function requestProviderJson(
       path: `${url.pathname}${url.search}`,
       method,
       lookup: guardedLookup as unknown as net.LookupFunction,
-      headers: { 'Content-Type': 'application/json', ...headers },
+      headers: method === 'POST' ? { 'Content-Type': 'application/json', ...headers } : headers,
     }, (res) => {
       const status = res.statusCode || 0;
       let text = '';
@@ -181,10 +181,10 @@ async function requestProviderJson(
   });
 }
 
-const postProviderJson = (targetUrl: string, headers: Record<string, string>, body: unknown): Promise<any> =>
+const postProviderJson = (targetUrl: string, headers: Record<string, string>, body: unknown) =>
   requestProviderJson('POST', targetUrl, headers, body);
 
-const getProviderJson = (targetUrl: string, headers: Record<string, string>): Promise<any> =>
+const getProviderJson = (targetUrl: string, headers: Record<string, string>) =>
   requestProviderJson('GET', targetUrl, headers);
 
 function parseModelJson(text: string): any {
@@ -1028,40 +1028,35 @@ async function startServer() {
     }
   });
 
-  // Settings' "Load models": asks the provider which model names it actually serves, so a
-  // retired or mistyped name is a choice from a list rather than a digest the provider
-  // rejects with "the supported API model names are …".
-  app.post('/api/provider-models', rateLimit('provider-models', 20), async (req, res) => {
+  // "Fetch models": the provider's own catalogue, so the model box can offer real IDs
+  // instead of asking the reader to copy one out of a documentation page.
+  app.post('/api/list-models', rateLimit('list-models', 15), async (req, res) => {
     const provider = String(req.body?.provider || '').trim();
     const apiKey = String(req.body?.apiKey || '').trim();
     const baseUrl = String(req.body?.baseUrl || '').trim();
 
     try {
       if (provider !== 'openai-compatible') {
-        throw new Error('Listing models is only available for OpenAI-compatible services.');
+        throw new Error('Model lists come from OpenAI-compatible services.');
       }
-      if (!apiKey) throw new Error('Add an API key first.');
+      if (!apiKey) throw new Error('Add a provider API key first.');
       if (!baseUrl) throw new Error('Add a provider URL first.');
 
       const data = await getProviderJson(providerEndpoint(baseUrl, 'models'), {
         Authorization: `Bearer ${apiKey}`,
       });
-      // OpenAI-compatible services answer with { data: [{ id }] }; a few send the ids bare.
-      const listed = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-      const models = [...new Set(
-        listed
-          .map((entry: any) => (typeof entry === 'string' ? entry : entry?.id))
-          .filter((id: any): id is string => typeof id === 'string' && Boolean(id.trim()))
-          .map((id: string) => id.trim()),
-      )].sort((a, b) => a.localeCompare(b));
+      const entries = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
+      const models = Array.from(new Set<string>(entries
+        .map((entry: any) => (typeof entry === 'string' ? entry : typeof entry?.id === 'string' ? entry.id : ''))
+        .map((id: string) => id.trim())
+        .filter(Boolean)))
+        .sort((a, b) => a.localeCompare(b))
+        .slice(0, 500);
+      if (models.length === 0) throw new Error('The provider returned no models.');
 
-      if (models.length === 0) throw new Error('The provider returned no model names.');
-      return res.json({ ok: true, provider, models, count: models.length });
+      return res.json({ ok: true, models });
     } catch (err: any) {
-      return res.json({
-        ok: false,
-        error: err?.message || 'Could not list this provider’s models.',
-      });
+      return res.json({ ok: false, error: err?.message || 'Could not fetch the model list.' });
     }
   });
 
