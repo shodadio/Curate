@@ -100,6 +100,9 @@ body {
   background-color: var(--reader-bg);
   color: var(--reader-ink);
   color-scheme: light;
+  /* The page behind the reader is dark, so scrolling must not chain out to it and show a
+     slate band above a cream page. */
+  overscroll-behavior: contain;
 }
 
 .reader-surface[data-reader-theme="dark"] {
@@ -129,6 +132,14 @@ body {
 .reader-surface ::selection {
   background-color: color-mix(in srgb, var(--reader-accent) 24%, transparent);
   color: var(--reader-ink);
+}
+
+/* The reader focuses its back button when an article opens, so the browser's default focus
+   outline would paint a hard black box on a cream page. Keep the outline — it is how a
+   keyboard reader finds their place — and give it the theme's accent. */
+.reader-surface :focus-visible {
+  outline: 2px solid var(--reader-accent);
+  outline-offset: 2px;
 }
 
 .reader-header {
@@ -193,11 +204,18 @@ body {
   background-color: var(--reader-track);
 }
 
-/* 60 characters is the top of the comfortable range for continuous prose; the paragraph
-   rule gives each thought its own block without the eye losing the previous one. */
-.reader-body {
-  max-width: 60ch;
+/* The article is one column: byline, title, prose, end mark and footer all share a single
+   60-character measure, so nothing sits indented from the text it belongs to. `ch` is
+   measured in the column's own face and size, which is why the column carries both — the
+   3rem is the 24px of side padding inside the column's border box. */
+.reader-column {
+  max-width: calc(60ch + 3rem);
+  margin-inline: auto;
   font-size: 1.125rem;
+}
+
+/* The paragraph rule gives each thought its own block without the eye losing the previous one. */
+.reader-body {
   line-height: 1.6;
   color: var(--reader-ink);
 }
