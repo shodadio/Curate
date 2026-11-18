@@ -26,6 +26,7 @@ import {
 } from './lib/ranking';
 import { parseOpmlText } from './lib/opml';
 import { cleanHtml, htmlToReadableText } from './lib/markup';
+import { parseFeedChannelDescription, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
 
 dotenv.config();
 
@@ -828,34 +829,6 @@ async function startServer() {
     }
   };
 
-  // The publication's own blurb, taken from the feed metadata that is already being
-  // downloaded: RSS <description> inside <channel>, or Atom's feed-level <subtitle>.
-  // Caching it on the source means showing a description costs no extra request.
-  const parseFeedChannelDescription = (xml: string): string => {
-    if (!xml) return '';
-    // Feed metadata sits before the first item, so a post's own <description> can never
-    // be mistaken for the publication's.
-    const beforeFirstItem = xml.split(/<(?:item|entry)\b/i)[0] || '';
-    const candidates = [
-      beforeFirstItem.match(/<description[^>]*>([\s\S]*?)<\/description>/i),
-      beforeFirstItem.match(/<subtitle[^>]*>([\s\S]*?)<\/subtitle>/i),
-      beforeFirstItem.match(/<itunes:summary[^>]*>([\s\S]*?)<\/itunes:summary>/i),
-    ];
-
-    let description = '';
-    for (const match of candidates) {
-      const text = match ? cleanHtml(match[1]) : '';
-      if (text) {
-        description = text;
-        break;
-      }
-    }
-    if (!description) return '';
-    return description.length > 300
-      ? `${description.slice(0, 297).replace(/\s+\S*$/, '')}…`
-      : description;
-  };
-
   const parseFeedItems = (xml: string, sourceTitle: string, folder: string, baseUrl: string, categories: string[]): any[] => {
     const items: any[] = [];
     const feedDescription = parseFeedChannelDescription(xml);
@@ -1106,6 +1079,77 @@ async function startServer() {
 
   const fetchFeedArticles = async (feedUrl: string, sourceTitle: string, folder: string, categories?: unknown): Promise<any[]> =>
     (await fetchFeedWithStatus(feedUrl, sourceTitle, folder, categories)).items;
+
+  interface SourceDescriptionCacheEntry {
+    timestamp: number;
+    description: string;
+    error?: string;
+  }
+  const sourceDescriptionCache = new Map<string, SourceDescriptionCacheEntry>();
+  const SOURCE_DESCRIPTION_CACHE_TTL = 12 * 60 * 60 * 1000;
+  const SOURCE_DESCRIPTION_FAILURE_TTL = 5 * 60 * 1000;
+
+  const fetchSourceDescription = async (feedUrl: string): Promise<{ description: string; error?: string }> => {
+    const cached = sourceDescriptionCache.get(feedUrl);
+    const cacheTtl = cached?.error ? SOURCE_DESCRIPTION_FAILURE_TTL : SOURCE_DESCRIPTION_CACHE_TTL;
+    if (cached && Date.now() - cached.timestamp < cacheTtl) {
+      return { description: cached.description, error: cached.error };
+    }
+
+    let description = '';
+    let error: string | undefined;
+    try {
+      usageDelta({ feedFetches: 1 });
+      const feedPage = await fetchPublicPage(feedUrl, 6000);
+      if (!feedPage.ok || !feedPage.text) throw new Error(`Feed responded with ${feedPage.status || 'no content'}`);
+      description = parseFeedChannelDescription(feedPage.text);
+
+      if (!description) {
+        const siteUrl = parseFeedSiteUrl(feedPage.text, feedUrl);
+        const sitePage = siteUrl ? await fetchPublicPage(siteUrl, 4500) : null;
+        if (sitePage?.ok && (!sitePage.contentType || /(?:text\/html|application\/xhtml\+xml)/i.test(sitePage.contentType))) {
+          description = parseSitePageDescription(sitePage.text);
+        }
+      }
+    } catch (err: any) {
+      error = err?.message || 'Site description could not be loaded';
+    }
+
+    if (sourceDescriptionCache.size >= 500) {
+      const oldestKey = sourceDescriptionCache.keys().next().value;
+      if (oldestKey) sourceDescriptionCache.delete(oldestKey);
+    }
+    sourceDescriptionCache.set(feedUrl, { timestamp: Date.now(), description, error });
+    return { description, error };
+  };
+
+  app.post('/api/source-descriptions', rateLimit('source-descriptions', 18), requestBudget('Loading source descriptions', 55_000), async (req, res) => {
+    if (!Array.isArray(req.body?.sources)) {
+      res.status(400).json({ error: 'A sources array is required' });
+      return;
+    }
+
+    const requested = req.body.sources.slice(0, 24);
+    const results: Array<{ id: string; description: string; error?: string }> = Array(requested.length);
+    let nextIndex = 0;
+    const workerCount = Math.min(6, requested.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextIndex < requested.length) {
+        const index = nextIndex++;
+        const source = requested[index];
+        const id = typeof source?.id === 'string' ? source.id.slice(0, 200) : '';
+        const feedUrl = typeof source?.feedUrl === 'string' ? source.feedUrl.trim() : '';
+        if (!id || !feedUrl || feedUrl.length > 2048) {
+          results[index] = { id, description: '', error: 'A valid source ID and feed URL are required' };
+          continue;
+        }
+        const metadata = await fetchSourceDescription(feedUrl);
+        results[index] = { id, ...metadata };
+      }
+    }));
+
+    res.json({ sources: results });
+  });
 
   // Curate daily digest from live feeds using configured provider adapters or deterministic ranking
   app.post('/api/curate', rateLimit('curate', 30), requestBudget('Building the digest', 100_000), async (req, res) => {

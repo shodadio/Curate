@@ -31,6 +31,7 @@
   - [`POST /api/curate`](#post-apicurate)
   - [`POST /api/calibrate`](#post-apicalibrate)
   - [`POST /api/feed-stream`](#post-apifeed-stream)
+  - [`POST /api/source-descriptions`](#post-apisource-descriptions)
   - [`POST /api/check-feed`](#post-apicheck-feed)
   - [`POST /api/discover-sources`](#post-apidiscover-sources)
   - [`POST /api/parse-opml`](#post-apiparse-opml)
@@ -253,6 +254,15 @@ Retrieves chronological feed entries for a specific source ID or across all subs
   "sourceTitle": "Nicole Williams"
 }
 ```
+
+---
+
+### `POST /api/source-descriptions`
+Fetches each source’s publication description from RSS/Atom metadata, falling back to the site’s standard metadata when the feed has no blurb. The Sources screen requests descriptions in small batches and caches them with each source in browser storage.
+
+**Request Body:** `{ "sources": [{ "id": "src_0", "feedUrl": "https://example.com/feed.xml" }] }`
+
+**Response:** `{ "sources": [{ "id": "src_0", "description": "A publication about…" }] }`. A source may include an `error` when its feed or site could not be reached.
 
 ---
 

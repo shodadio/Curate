@@ -62,8 +62,10 @@ interface SourceItem {
   failingReason?: string;
   lastSyncedAt?: number;
   avatar?: string;
-  // The feed's channel description, cached from the last successful fetch
+  // A concise publication blurb, fetched from the feed or the site's metadata.
   description?: string;
+  descriptionCheckedAt?: number;
+  descriptionFetchFailed?: boolean;
 }
 
 interface SemanticFeedbackItem {
@@ -538,6 +540,7 @@ export default function App() {
     }
   });
   const [refreshingSourceId, setRefreshingSourceId] = useState<string | null>(null);
+  const sourceDescriptionRequestsRef = React.useRef(new Set<string>());
   // Which source descriptions are open — in the Sources list, and on the reader's byline
   const [expandedSourceDescriptionIds, setExpandedSourceDescriptionIds] = useState<string[]>([]);
   const [showReaderSourceNote, setShowReaderSourceNote] = useState<boolean>(false);
@@ -991,6 +994,60 @@ export default function App() {
   }, [sources]);
 
   useEffect(() => {
+    if (activeTab !== 'sources') {
+      sources.forEach(source => {
+        if (source.descriptionFetchFailed && !source.descriptionCheckedAt) {
+          sourceDescriptionRequestsRef.current.delete(source.id);
+        }
+      });
+      return;
+    }
+
+    const batch = sources
+      .filter(source => !source.description?.trim() && !source.descriptionCheckedAt && !sourceDescriptionRequestsRef.current.has(source.id))
+      .slice(0, 20);
+    if (batch.length === 0) return;
+
+    const requestedIds = new Set(batch.map(source => source.id));
+    requestedIds.forEach(id => sourceDescriptionRequestsRef.current.add(id));
+
+    const loadDescriptions = async () => {
+      try {
+        const response = await fetch('/api/source-descriptions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sources: batch.map(({ id, feedUrl }) => ({ id, feedUrl })) }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !Array.isArray(data.sources)) throw new Error('Could not load source descriptions.');
+
+        const descriptions = new Map<string, { description?: string; error?: string }>(
+          data.sources.map((entry: { id?: string; description?: string; error?: string }) => [String(entry.id || ''), entry] as const)
+        );
+        const checkedAt = Date.now();
+        setSources(prev => prev.map(source => {
+          if (!requestedIds.has(source.id)) return source;
+          const result = descriptions.get(source.id);
+          const description = typeof result?.description === 'string' ? result.description.trim() : '';
+          const failed = !result || Boolean(result.error);
+          return {
+            ...source,
+            description: description || source.description,
+            descriptionCheckedAt: failed ? source.descriptionCheckedAt : checkedAt,
+            descriptionFetchFailed: failed && !source.description && !description,
+          };
+        }));
+      } catch {
+        setSources(prev => prev.map(source => requestedIds.has(source.id)
+          ? { ...source, descriptionFetchFailed: !source.description }
+          : source));
+      }
+    };
+
+    void loadDescriptions();
+  }, [activeTab, sources]);
+
+  useEffect(() => {
     safeSetJson('curator_saved_ids', savedIds);
   }, [savedIds]);
 
@@ -1367,7 +1424,14 @@ export default function App() {
           typeof src.lastSyncedAt === 'number' && syncedAt - src.lastSyncedAt < 60 * 1000;
         if (alreadyFresh) return src;
         changed = true;
-        return { ...src, description, lastSyncedAt: syncedAt, status: 'active' as const, failingReason: undefined };
+        return {
+          ...src,
+          description,
+          descriptionFetchFailed: description ? false : src.descriptionFetchFailed,
+          lastSyncedAt: syncedAt,
+          status: 'active' as const,
+          failingReason: undefined,
+        };
       });
       return changed ? next : prev;
     });
@@ -4116,11 +4180,12 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       const avatarUrl = getSourceAvatar(src.feedUrl);
                       const isRefreshing = refreshingSourceId === src.id;
                       const descriptionOpen = expandedSourceDescriptionIds.includes(src.id);
+                      const categoryLabels = normalizeCategoryLabels(src.categories, src.folder);
                       return (
-                        <div key={src.id} className="rounded-2xl bg-slate-900/40 border border-slate-900 w-full max-w-full overflow-hidden">
-                          <div className="p-3.5 sm:p-4 flex items-start justify-between gap-3 sm:gap-4">
-                            <div className="flex items-start gap-3 min-w-0 flex-1">
-                            <div className="w-10 h-10 rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden shrink-0 relative">
+                        <div key={src.id} className="rounded-xl bg-slate-900/30 border border-slate-900/80 w-full max-w-full overflow-hidden">
+                          <div className="p-3 sm:p-3.5 flex items-start justify-between gap-2 sm:gap-3">
+                            <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                            <div className="w-9 h-9 rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden shrink-0 relative">
                               {avatarUrl ? (
                                 <img 
                                   src={avatarUrl} 
@@ -4139,12 +4204,61 @@ Search for writers, publications, or topics. Curator checks whether each result 
                             </div>
 
                             <div className="min-w-0 flex-1">
-                              <span className="block text-sm font-medium text-slate-200 truncate">{src.title}</span>
-                              <span title={src.feedUrl} className="text-xs text-slate-400 break-words block mt-0.5">{formatFeedUrlForDisplay(src.feedUrl)}</span>
-                              <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                                {normalizeCategoryLabels(src.categories, src.folder).map(category => (
-                                  <span key={category} className="rounded-full bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-xs text-amber-200">
-                                    {category}
+                              <span className="block text-sm font-medium text-slate-100 truncate leading-snug">{src.title}</span>
+                              <span title={src.feedUrl} className="block text-xs text-slate-500 truncate mt-0.5">{formatFeedUrlForDisplay(src.feedUrl)}</span>
+                              {src.description?.trim() ? (
+                                <div className="mt-1.5">
+                                  <p className={`text-xs text-slate-400 leading-relaxed ${descriptionOpen ? '' : 'line-clamp-2'}`}>
+                                    {src.description}
+                                  </p>
+                                  {src.description.length > 90 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setExpandedSourceDescriptionIds(prev =>
+                                        prev.includes(src.id) ? prev.filter(id => id !== src.id) : [...prev, src.id]
+                                      )}
+                                      className="mt-1 inline-flex items-center gap-0.5 text-[11px] font-medium text-slate-500 hover:text-amber-300 transition cursor-pointer"
+                                      aria-expanded={descriptionOpen}
+                                      title={descriptionOpen ? 'Show less of this site description' : `Show more about ${src.title}`}
+                                    >
+                                      <span>{descriptionOpen ? 'Less' : 'More'}</span>
+                                      <ChevronDown className={`w-3 h-3 transition-transform ${descriptionOpen ? 'rotate-180' : ''}`} />
+                                    </button>
+                                  )}
+                                </div>
+                              ) : (
+                                <p className={`text-xs mt-1.5 ${src.descriptionFetchFailed ? 'text-rose-400' : 'text-slate-600'}`}>
+                                  {src.descriptionFetchFailed
+                                    ? 'Could not load this site description.'
+                                    : src.descriptionCheckedAt
+                                      ? 'This site has not provided a description.'
+                                      : 'Loading site description…'}
+                                </p>
+                              )}
+                              <div className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-slate-500">
+                                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${src.status === 'failing' ? 'bg-rose-400' : src.lastSyncedAt ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                                <span className={src.status === 'failing' ? 'text-rose-400' : undefined}>
+                                  <span className="sr-only">{src.status === 'failing' ? 'Failing. ' : 'Active. '}</span>
+                                  {src.status === 'failing'
+                                    ? 'Failing'
+                                    : src.lastSyncedAt
+                                      ? formatSyncTime(src.lastSyncedAt)
+                                      : 'Not synced yet'}
+                                </span>
+                                {categoryLabels.map(category => (
+                                  <span key={category} className="flex items-center gap-x-1.5">
+                                    <span className="text-slate-700">·</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setCategoryDraft('');
+                                        setCategoryEditorSourceId(src.id);
+                                      }}
+                                      title={`Edit categories for ${src.title}`}
+                                      className="text-amber-300/70 hover:text-amber-200 transition"
+                                    >
+                                      {category}
+                                    </button>
                                   </span>
                                 ))}
                                 <button
@@ -4154,53 +4268,16 @@ Search for writers, publications, or topics. Curator checks whether each result 
                                     setCategoryEditorSourceId(categoryEditorSourceId === src.id ? null : src.id);
                                   }}
                                   aria-expanded={categoryEditorSourceId === src.id}
-                                  className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition ${
-                                    categoryEditorSourceId === src.id
-                                      ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
-                                      : 'border-slate-800 text-slate-400 hover:text-amber-300 hover:border-amber-500/30'
+                                  aria-label={`Edit categories for ${src.title}`}
+                                  title="Edit categories"
+                                  className={`inline-flex items-center gap-1 transition ${
+                                    categoryEditorSourceId === src.id ? 'text-amber-300' : 'text-slate-600 hover:text-amber-300'
                                   }`}
                                 >
-                                  <Sliders className="w-3 h-3 shrink-0" />
-                                  <span>{categoryEditorSourceId === src.id ? 'Done' : 'Edit categories'}</span>
+                                  <Sliders className="h-3 w-3 shrink-0" />
+                                  {categoryLabels.length === 0 && <span>Categories</span>}
                                 </button>
                               </div>
-                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs text-slate-400 mt-1.5">
-                                {src.status === 'failing' ? (
-                                  <span className="text-xs bg-rose-500/10 text-rose-400 border border-rose-500/20 px-1.5 py-0.5 rounded">Failing</span>
-                                ) : (
-                                  <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded">Active</span>
-                                )}
-                                {src.lastSyncedAt ? (
-                                  <>
-                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                                    <span>Synced · {formatSyncTime(src.lastSyncedAt)}</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-600 shrink-0" />
-                                    <span>Not synced yet</span>
-                                  </>
-                                )}
-                              </div>
-                              {src.description && (
-                                <div className="mt-1">
-                                  <button
-                                    type="button"
-                                    onClick={() => setExpandedSourceDescriptionIds(prev =>
-                                      prev.includes(src.id) ? prev.filter(id => id !== src.id) : [...prev, src.id]
-                                    )}
-                                    className="inline-flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-amber-300 transition cursor-pointer"
-                                    aria-expanded={descriptionOpen}
-                                    title={descriptionOpen ? 'Hide this feed’s description' : `About ${src.title}`}
-                                  >
-                                    <ChevronDown className={`w-3 h-3 transition-transform ${descriptionOpen ? 'rotate-180' : ''}`} />
-                                    <span>{descriptionOpen ? 'Hide description' : 'About this feed'}</span>
-                                  </button>
-                                  {descriptionOpen && (
-                                    <p className="text-xs text-slate-400 leading-relaxed mt-1 line-clamp-3">{src.description}</p>
-                                  )}
-                                </div>
-                              )}
                               {src.failingReason && (
                                 <span className="text-xs text-rose-400 block mt-1 break-words">{src.failingReason}</span>
                               )}
