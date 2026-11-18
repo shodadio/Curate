@@ -2938,7 +2938,7 @@ export default function App() {
             }
           }}
         >
-          <header className="reader-header sticky top-0 z-30 safe-reader-header backdrop-blur-md border-b px-6 pb-4 flex items-center justify-between">
+          <header className="reader-header sticky top-0 z-30 safe-reader-header backdrop-blur-md border-b px-4 sm:px-6 pb-4 flex items-center justify-between gap-2">
             {/* Visual reading progress bar */}
             <div className="reader-track absolute top-0 left-0 right-0 h-1 overflow-hidden">
               <div 
@@ -2956,7 +2956,7 @@ export default function App() {
               type="button"
               ref={readerCloseButtonRef}
               onClick={closeArticle}
-              className="reader-dim-button flex items-center gap-2 min-h-10 px-1 text-sm font-medium transition-colors"
+              className="reader-dim-button flex items-center gap-2 min-h-10 px-1 text-sm font-medium whitespace-nowrap transition-colors"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>{readerBackLabel}</span>
@@ -2966,17 +2966,22 @@ export default function App() {
                 type="button"
                 onClick={() => handleToggleReadAloud(selectedArticle)}
                 aria-pressed={readAloudActive}
-                className={`reader-button px-3 py-2 min-h-11 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${speechPlaying ? 'is-on' : ''}`}
+                className={`reader-button px-3 py-2 min-h-11 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${readAloudActive ? 'is-on' : ''}`}
                 title={readAloudActive
                   ? (speechPaused ? 'Resume reading aloud' : 'Pause reading aloud')
                   : `Read aloud with ${speechVoiceLabel}`}
+                aria-label={readAloudActive
+                  ? (speechPaused ? 'Resume reading aloud' : 'Pause reading aloud')
+                  : 'Read aloud'}
               >
                 {speechPlaying ? (
                   speechPaused ? <Play className="w-3.5 h-3.5 fill-current" /> : <Pause className="w-3.5 h-3.5 fill-current" />
                 ) : (
                   <Volume2 className="reader-accent w-3.5 h-3.5" />
                 )}
-                <span>{speechPlaying ? (speechPaused ? 'Resume' : 'Pause') : 'Read aloud'}</span>
+                {/* Below 380px the label would wrap the whole bar onto two lines, so the
+                    button keeps its icon and its aria-label instead. */}
+                <span className="whitespace-nowrap max-[380px]:hidden">{speechPlaying ? (speechPaused ? 'Resume' : 'Pause') : 'Read aloud'}</span>
               </button>
               <button 
                 onClick={() => handleSave(selectedArticle)}
@@ -3071,8 +3076,11 @@ export default function App() {
             </div>
           </header>
 
-          <main className="max-w-3xl mx-auto w-full px-6 py-10 flex-1">
-            <div className="reader-dim text-xs mb-3 flex items-center gap-2 flex-wrap">
+          <main
+            className={`reader-column mx-auto w-full px-6 py-10 flex-1 ${readerFace === 'serif' ? 'reader-serif' : 'reader-sans'}`}
+            style={{ fontSize: `${readerSize}px` }}
+          >
+            <div className="reader-dim font-sans text-xs mb-3 flex items-center gap-2 flex-wrap">
               {readerSourceDescription ? (
                 <button
                   type="button"
@@ -3100,24 +3108,24 @@ export default function App() {
             </div>
 
             {showReaderSourceNote && readerSourceDescription && (
-              <p className="reader-dim reader-border text-xs leading-relaxed mb-4 border-l pl-3">
+              <p className="reader-dim reader-border font-sans text-xs leading-relaxed mb-4 border-l pl-3">
                 {readerSourceDescription}
               </p>
             )}
 
-            <h1 className="reader-ink text-2xl md:text-3xl font-semibold tracking-tight mb-6 leading-snug">
+            <h1 className="reader-ink font-sans text-2xl md:text-3xl font-semibold tracking-tight mb-6 leading-snug">
               {selectedArticle.title}
             </h1>
 
             {/* Clear editorial context note */}
-            <div className="reader-dim reader-border mb-8 pb-5 border-b text-xs">
+            <div className="reader-dim reader-border font-sans mb-8 pb-5 border-b text-xs">
               <div className="reader-accent font-medium mb-1">Curator's Note</div>
               <p className="reader-ink opacity-90 italic leading-relaxed">{selectedArticle.why}</p>
             </div>
 
             {/* Read Aloud: what is being spoken, and how far through it is */}
             {readAloudActive && (
-              <div className="reader-panel mb-8 p-3 rounded-xl border animate-fade-in shadow-md">
+              <div className="reader-panel font-sans mb-8 p-3 rounded-xl border animate-fade-in shadow-md">
                 <div className="flex items-center justify-between gap-3 text-xs">
                   <div className="flex items-center gap-2.5 min-w-0">
                     <button
@@ -3174,10 +3182,7 @@ export default function App() {
               </div>
             )}
 
-            <div
-              className={`reader-body mx-auto ${readerFace === 'serif' ? 'reader-serif' : 'reader-sans'}`}
-              style={{ fontSize: `${readerSize}px` }}
-            >
+            <div className="reader-body">
               {articleParagraphs.length > 0 ? articleParagraphs.map((paragraph, idx) => {
                 const isSpeakingHere = readAloudActive && speechProgress.paragraph === idx;
                 return (
@@ -3207,7 +3212,7 @@ export default function App() {
             </div>
 
             {/* Minimalist Editorial Completion & Tuning Footer */}
-            <footer className="reader-border border-t pt-5 pb-24">
+            <footer className="reader-border font-sans border-t pt-5 pb-24">
               {/* Primary Outbound Action & Feedback Row */}
               <div className="flex items-center justify-between gap-4">
                 <a
