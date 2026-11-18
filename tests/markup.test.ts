@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { cleanHtml, decodeEntities, htmlToReadableText } from '../lib/markup.ts';
+import { cleanHtml, decodeEntities, htmlToReadableText, splitDenseParagraph, splitSentences } from '../lib/markup.ts';
 
 const hasTag = (text: string) => /<[a-z/!][^>]*>/i.test(text);
 
@@ -166,6 +166,146 @@ test('htmlToReadableText keeps prose that merely begins with by', () => {
 test('htmlToReadableText keeps a lone Links paragraph inside an article', () => {
   const body = htmlToReadableText('<p>Some prose that opens the piece.</p><p>Links</p><p>More prose follows here.</p>');
   assert.equal(body, 'Some prose that opens the piece.\n\nLinks\n\nMore prose follows here.');
+});
+
+// ---------------------------------------------------------------------------
+// Dense paragraphs — splitting the reader body at real sentence ends
+// ---------------------------------------------------------------------------
+
+test('splitDenseParagraph leaves a paragraph of six sentences alone', () => {
+  const paragraph =
+    'Ships left the harbour at dawn. The tide was already turning. Nobody on the pier spoke. ' +
+    'Gulls circled the mastheads. A bell rang twice. Then the fog took them.';
+  assert.deepEqual(splitDenseParagraph(paragraph), [paragraph]);
+});
+
+test('splitDenseParagraph spreads nine sentences over two even paragraphs without changing a word', () => {
+  const sentences = [
+    'The first sensor logged a spike at noon, right as the backup generator kicked in.',
+    'Engineers assumed it was noise from the new cabling in the west corridor.',
+    'A second reading matched it within a minute, down to the last decimal place.',
+    'They walked the whole cable run in the rain, torch in hand, saying very little.',
+    'The fault turned out to be a loose connector that had never been fully seated.',
+    'It had been fitted in a hurry during the autumn maintenance window.',
+    'A replacement arrived the next morning and took ten minutes to install.',
+    'The spike did not return, and the logs stayed flat for a fortnight afterwards.',
+    'The report went out on Friday to a mailing list nobody had read in years.',
+  ];
+  const paragraph = sentences.join(' ');
+  const chunks = splitDenseParagraph(paragraph);
+
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks.join(' '), paragraph, 'splitting must not add, drop or reorder words');
+  assert.equal(chunks[0].split(/(?<=[.!?])\s+/).length, 5);
+  assert.equal(chunks[1].split(/(?<=[.!?])\s+/).length, 4);
+});
+
+test('splitDenseParagraph never breaks after an abbreviation or an initial', () => {
+  const paragraph =
+    'The work was led by Dr. Smith and Prof. Adeyemi, who ran the trial from a small office in Leeds. ' +
+    'It ran for three years and cost rather more than the funders had expected at the outset. ' +
+    'Participants included J. K. Rowling and H. G. Wells, e.g. the early cohort recruited in 2019. ' +
+    'Results appeared in Sept. 2024 in the Journal of Small Things, alongside a long methods section. ' +
+    'A follow-up is planned for the spring, with a larger and more varied sample. ' +
+    'Nobody expected the size of the effect, least of all the two authors of the original paper. ' +
+    'The funders were surprised too, and said so in a short statement released that afternoon. ' +
+    'A second round of grants follows next year, subject to the usual committee review. ' +
+    'That is all, for now.';
+  const chunks = splitDenseParagraph(paragraph);
+
+  assert.equal(chunks.join(' '), paragraph, 'abbreviations must survive in place');
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks.some(chunk => /(?:Dr|Prof|Sept|e\.g)\.$/.test(chunk)), false,
+    `a chunk ended on an abbreviation: ${JSON.stringify(chunks)}`);
+  assert.equal(chunks.some(chunk => /^(?:Smith|Adeyemi|Rowling|Wells|K\.|G\.|2024)/.test(chunk)), false,
+    `a chunk began mid-sentence: ${JSON.stringify(chunks)}`);
+});
+
+test('splitSentences keeps a decimal and a version number inside one sentence', () => {
+  assert.deepEqual(
+    splitSentences('Version 3.11 shipped in 2024. Then 3.12 followed.'),
+    ['Version 3.11 shipped in 2024.', 'Then 3.12 followed.'],
+  );
+  assert.deepEqual(
+    splitSentences('The rate is 4.5 percent, up from 3.75. Nobody argued about it.'),
+    ['The rate is 4.5 percent, up from 3.75.', 'Nobody argued about it.'],
+  );
+});
+
+test('splitSentences does not split inside quoted speech', () => {
+  assert.deepEqual(
+    splitSentences('"I never said that." She turned to the window.'),
+    ['"I never said that."', 'She turned to the window.'],
+  );
+  // The full stop inside the quotation is not a sentence end, and the lowercase attribution
+  // after the closing quote is not the start of a new one.
+  assert.deepEqual(
+    splitSentences('He paused. "Stop. Now!" she said. The room went quiet.'),
+    ['He paused.', '"Stop. Now!" she said.', 'The room went quiet.'],
+  );
+  assert.deepEqual(
+    splitSentences('“First she left. Then she returned.” He shrugged.'),
+    ['“First she left. Then she returned.”', 'He shrugged.'],
+  );
+});
+
+test('splitSentences treats an ellipsis as trailing off, not as a sentence end', () => {
+  assert.deepEqual(
+    splitSentences('Well... I suppose so. That is that.'),
+    ['Well... I suppose so.', 'That is that.'],
+  );
+  assert.deepEqual(splitSentences('And then… nothing. The end.'), ['And then… nothing.', 'The end.']);
+});
+
+test('splitDenseParagraph leaves a short paragraph with many short sentences whole', () => {
+  const paragraph =
+    'He was angry. He was always angry. Nobody liked it. It got worse. It got better. ' +
+    'Then it got worse again. That was the pattern.';
+  assert.ok(paragraph.length < 400, 'the fixture is meant to be a short paragraph');
+  assert.deepEqual(splitDenseParagraph(paragraph), [paragraph]);
+});
+
+test('splitDenseParagraph keeps a paragraph whole rather than leaving a stub piece', () => {
+  // One long sentence and six short ones: four-and-three would leave a 90-character tail, so
+  // the paragraph is better left whole.
+  const paragraph = [
+    'The report argued, at considerable length and with a great many footnotes, that the decline in local manufacturing had less to do with trade policy than with the cost of moving goods between three counties.',
+    'Nobody disagreed.',
+    'Nobody agreed either.',
+    'The meeting ended.',
+    'People went home.',
+    'The room was cleared.',
+    'Nothing changed.',
+  ].join(' ');
+  assert.deepEqual(splitDenseParagraph(paragraph), [paragraph]);
+});
+
+test('splitDenseParagraph splits a long run of dialogue without tearing a quotation or leaving a stub', () => {
+  const paragraph = [
+    '“We were all shocked,” Darlington Akogo, founder of the lab, told Rest of World in an interview.',
+    '“Nobody here had seen a model that could do this a year ago, and now it is routine.”',
+    'He said the team had spent the previous winter collecting data from three hospitals.',
+    '“That is the part people miss,” he added. “The data was the hard part, not the model.”',
+    'The lab has since published a short paper describing the method and the results.',
+    '“We are not trying to compete with the big labs,” Akogo said.',
+    '“We are trying to make sure the questions get asked here, by people who live here.”',
+    'That framing has won the team attention from regulators in Accra and elsewhere.',
+    'It has also brought scrutiny, including questions about where the training data came from.',
+  ].join(' ');
+  const pieces = splitDenseParagraph(paragraph);
+
+  assert.ok(pieces.length >= 2, `a long dialogue paragraph should still split: ${pieces.length}`);
+  assert.equal(pieces.join(' '), paragraph);
+  for (const piece of pieces) {
+    assert.ok(piece.length >= 150, `stub piece: ${JSON.stringify(piece)}`);
+    assert.equal((piece.match(/“/g) || []).length, (piece.match(/”/g) || []).length, `torn quotation: ${piece}`);
+    assert.match(piece, /^[\p{Lu}“]/u, `piece starts mid-sentence: ${piece}`);
+  }
+});
+
+test('splitDenseParagraph keeps a paragraph with no terminal punctuation whole', () => {
+  const paragraph = 'a headline that never turned into a sentence';
+  assert.deepEqual(splitDenseParagraph(paragraph), [paragraph]);
 });
 
 // ---------------------------------------------------------------------------

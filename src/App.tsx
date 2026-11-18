@@ -18,6 +18,7 @@ import { SettingsSection } from './components/SettingsSection';
 import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
 import { safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, type StorageFailure } from './storage';
 import { DEFAULT_FEEDS } from './defaultFeeds';
+import { splitDenseParagraph } from '../lib/markup';
 
 interface DiscoveredSource {
   title: string;
@@ -182,7 +183,10 @@ function buildArticleParagraphs(text: string): string[] {
     })
     .filter(paragraph => paragraph.length > 0 && /[\p{L}\p{N}]/u.test(paragraph))
     .filter(paragraph => !(paragraph.length < 180 && /^(click here|subscribe|sign up|follow me|read more|share this|advertisement)\b/i.test(paragraph)))
-    .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph));
+    .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph))
+    // A section handed over as one <p> is shown as a few shorter paragraphs; read-aloud speaks
+    // from this same list, so a spoken paragraph is still a paragraph on screen.
+    .flatMap(paragraph => splitDenseParagraph(paragraph));
 }
 
 // ---- Read Aloud: text preparation and the spoken queue -----------------------
@@ -492,6 +496,45 @@ function buildSpeechQueue(article: DigestItem): SpeechChunk[] {
   return chunks;
 }
 
+// ---- Reader appearance ------------------------------------------------------
+// The reader is the one screen that is read for minutes at a time, so it carries its own
+// appearance: a low-glare theme, a serif or sans body, and a size the reader picks. The
+// choice is per device and applies to the reader only — the rest of the app keeps its chrome.
+
+type ReaderThemeId = 'paper' | 'dark' | 'sepia';
+type ReaderFaceId = 'serif' | 'sans';
+
+const READER_THEME_STORAGE_KEY = 'curator_reader_theme';
+const READER_FACE_STORAGE_KEY = 'curator_reader_face';
+const READER_SIZE_STORAGE_KEY = 'curator_reader_size';
+
+// Paper is the default: warm cream behind soft charcoal, the quietest of the three.
+const READER_THEMES: { id: ReaderThemeId; label: string; swatch: string; ink: string }[] = [
+  { id: 'paper', label: 'Paper', swatch: '#f7f3ea', ink: '#242320' },
+  { id: 'dark', label: 'Soft dark', swatch: '#1a1d24', ink: '#d8d6d0' },
+  { id: 'sepia', label: 'Sepia', swatch: '#efe4ce', ink: '#362d24' },
+];
+
+const READER_SIZES = [16, 18, 20, 22] as const;
+const READER_THEME_DEFAULT: ReaderThemeId = 'paper';
+const READER_FACE_DEFAULT: ReaderFaceId = 'serif';
+// 18px is the size a phone reader should get without touching anything.
+const READER_SIZE_DEFAULT = 18;
+
+function storedReaderTheme(): ReaderThemeId {
+  const saved = localStorage.getItem(READER_THEME_STORAGE_KEY);
+  return READER_THEMES.some(theme => theme.id === saved) ? (saved as ReaderThemeId) : READER_THEME_DEFAULT;
+}
+
+function storedReaderFace(): ReaderFaceId {
+  return localStorage.getItem(READER_FACE_STORAGE_KEY) === 'sans' ? 'sans' : READER_FACE_DEFAULT;
+}
+
+function storedReaderSize(): number {
+  const saved = Number(localStorage.getItem(READER_SIZE_STORAGE_KEY));
+  return (READER_SIZES as readonly number[]).includes(saved) ? saved : READER_SIZE_DEFAULT;
+}
+
 export default function App() {
   // Navigation & View state
   const [activeTab, setActiveTab] = useState<'today' | 'saved' | 'sources' | 'settings' | 'feeds'>('today');
@@ -541,6 +584,11 @@ export default function App() {
   // Which source descriptions are open — in the Sources list, and on the reader's byline
   const [expandedSourceDescriptionIds, setExpandedSourceDescriptionIds] = useState<string[]>([]);
   const [showReaderSourceNote, setShowReaderSourceNote] = useState<boolean>(false);
+  // Reader appearance: theme, face, body size and whether the Aa menu is open
+  const [readerTheme, setReaderTheme] = useState<ReaderThemeId>(storedReaderTheme);
+  const [readerFace, setReaderFace] = useState<ReaderFaceId>(storedReaderFace);
+  const [readerSize, setReaderSize] = useState<number>(storedReaderSize);
+  const [showReaderAppearance, setShowReaderAppearance] = useState<boolean>(false);
 
   // App data state with localStorage persistence
   const [sources, setSources] = useState<SourceItem[]>(() => {
@@ -1251,6 +1299,18 @@ export default function App() {
   useEffect(() => {
     safeSetJson('curator_reading_stats', readingStats);
   }, [readingStats]);
+
+  useEffect(() => {
+    safeSetItem(READER_THEME_STORAGE_KEY, readerTheme);
+  }, [readerTheme]);
+
+  useEffect(() => {
+    safeSetItem(READER_FACE_STORAGE_KEY, readerFace);
+  }, [readerFace]);
+
+  useEffect(() => {
+    safeSetItem(READER_SIZE_STORAGE_KEY, String(readerSize));
+  }, [readerSize]);
 
   useEffect(() => {
     // While setup is open, calibration votes accumulate first and one digest is built at the end.
@@ -2514,11 +2574,15 @@ export default function App() {
   const readerHistoryDepthRef = React.useRef(0);
   const readerCloseButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const readerReturnFocusRef = React.useRef<HTMLElement | null>(null);
+  const readerAppearanceRef = React.useRef<HTMLDivElement | null>(null);
+  const readerAppearanceButtonRef = React.useRef<HTMLButtonElement | null>(null);
 
   const openArticle = (item: DigestItem) => {
     setSelectedArticle(item);
-    // The byline's source description starts collapsed on every article
+    // The byline's source description starts collapsed on every article, and so does the
+    // appearance menu — opening a new article should never inherit an open popover.
     setShowReaderSourceNote(false);
+    setShowReaderAppearance(false);
 
     // Mark article as read / clicked
     setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
@@ -2594,6 +2658,27 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown);
     };
   });
+
+  // The Aa menu is a small popover inside the reading header: a tap anywhere else or Escape
+  // closes it, and Escape must close the menu rather than the article underneath.
+  React.useEffect(() => {
+    if (!showReaderAppearance) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!readerAppearanceRef.current?.contains(event.target as Node)) setShowReaderAppearance(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      setShowReaderAppearance(false);
+      readerAppearanceButtonRef.current?.focus();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [showReaderAppearance]);
 
   React.useEffect(() => {
     if (selectedArticle) {
@@ -2750,7 +2835,8 @@ export default function App() {
           role="dialog"
           aria-modal="true"
           aria-label={selectedArticle.title}
-          className="fixed inset-0 z-50 bg-slate-950 overflow-y-auto flex flex-col animate-fade-in"
+          data-reader-theme={readerTheme}
+          className="reader-surface fixed inset-0 z-50 overflow-y-auto flex flex-col animate-fade-in"
           onScroll={(e) => {
             const target = e.currentTarget;
             const scrollHeight = target.scrollHeight - target.clientHeight;
@@ -2788,11 +2874,11 @@ export default function App() {
             }
           }}
         >
-          <header className="sticky top-0 z-20 safe-reader-header bg-slate-950/95 backdrop-blur-md border-b border-slate-800/80 px-6 pb-4 flex items-center justify-between">
+          <header className="reader-header sticky top-0 z-30 safe-reader-header backdrop-blur-md border-b px-6 pb-4 flex items-center justify-between">
             {/* Visual reading progress bar */}
-            <div className="absolute top-0 left-0 right-0 h-1 bg-slate-900 overflow-hidden">
+            <div className="reader-track absolute top-0 left-0 right-0 h-1 overflow-hidden">
               <div 
-                className="h-full bg-amber-400 transition-all duration-150 ease-out"
+                className="reader-fill h-full transition-all duration-150 ease-out"
                 style={{ width: `${readingStats[selectedArticle.id]?.maxDepth || 0}%` }}
                 role="progressbar"
                 aria-valuenow={readingStats[selectedArticle.id]?.maxDepth || 0}
@@ -2806,7 +2892,7 @@ export default function App() {
               type="button"
               ref={readerCloseButtonRef}
               onClick={closeArticle}
-              className="flex items-center gap-2 min-h-10 px-1 text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors"
+              className="reader-dim-button flex items-center gap-2 min-h-10 px-1 text-sm font-medium transition-colors"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>{readerBackLabel}</span>
@@ -2815,11 +2901,8 @@ export default function App() {
               <button 
                 type="button"
                 onClick={() => handleToggleReadAloud(selectedArticle)}
-                className={`px-3 py-2 min-h-11 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${
-                  speechPlaying
-                    ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 ring-2 ring-amber-500/30'
-                    : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-amber-400 hover:border-slate-700'
-                }`}
+                aria-pressed={readAloudActive}
+                className={`reader-button px-3 py-2 min-h-11 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${speechPlaying ? 'is-on' : ''}`}
                 title={readAloudActive
                   ? (speechPaused ? 'Resume reading aloud' : 'Pause reading aloud')
                   : `Read aloud with ${speechVoiceLabel}`}
@@ -2827,36 +2910,118 @@ export default function App() {
                 {speechPlaying ? (
                   speechPaused ? <Play className="w-3.5 h-3.5 fill-current" /> : <Pause className="w-3.5 h-3.5 fill-current" />
                 ) : (
-                  <Volume2 className="w-3.5 h-3.5 text-amber-400" />
+                  <Volume2 className="reader-accent w-3.5 h-3.5" />
                 )}
                 <span>{speechPlaying ? (speechPaused ? 'Resume' : 'Pause') : 'Read aloud'}</span>
               </button>
               <button 
                 onClick={() => handleSave(selectedArticle)}
-                className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition-colors ${savedIds.includes(selectedArticle.id) ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'border-slate-800 text-slate-400 hover:text-slate-100'}`}
+                aria-pressed={savedIds.includes(selectedArticle.id)}
+                className="reader-button p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition-colors"
                 title={savedIds.includes(selectedArticle.id) ? 'Remove from saved' : 'Save for later'}
                 aria-label={savedIds.includes(selectedArticle.id) ? `Remove "${selectedArticle.title}" from saved` : `Save "${selectedArticle.title}" for later`}
               >
                 <Bookmark className="w-4 h-4" />
               </button>
+
+              {/* Reading appearance: theme, face and size, one tap from the article */}
+              <div className="relative" ref={readerAppearanceRef}>
+                <button
+                  type="button"
+                  ref={readerAppearanceButtonRef}
+                  onClick={() => setShowReaderAppearance(open => !open)}
+                  aria-expanded={showReaderAppearance}
+                  aria-controls="reader-appearance-menu"
+                  className={`reader-button p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition-colors ${showReaderAppearance ? 'is-on' : ''}`}
+                  title="Reading appearance — theme, typeface, text size"
+                  aria-label="Reading appearance"
+                >
+                  <span aria-hidden="true" className="reader-serif text-[0.95rem] font-medium leading-none">Aa</span>
+                </button>
+
+                {showReaderAppearance && (
+                  <div
+                    id="reader-appearance-menu"
+                    role="group"
+                    aria-label="Reading appearance"
+                    className="reader-panel absolute right-0 top-full z-40 mt-2 w-[min(17.5rem,calc(100vw-3rem))] rounded-2xl border p-3 shadow-2xl animate-fade-in"
+                  >
+                    <p className="reader-dim text-[0.6875rem] font-semibold uppercase tracking-[0.14em] mb-2">Theme</p>
+                    <div className="grid grid-cols-3 gap-2">
+                      {READER_THEMES.map(theme => (
+                        <button
+                          key={theme.id}
+                          type="button"
+                          onClick={() => setReaderTheme(theme.id)}
+                          aria-pressed={readerTheme === theme.id}
+                          className="reader-button flex flex-col items-center gap-1.5 rounded-xl border px-2 py-2.5 text-[0.6875rem] font-medium transition"
+                        >
+                          <span
+                            aria-hidden="true"
+                            className="h-6 w-6 rounded-full border"
+                            style={{ backgroundColor: theme.swatch, borderColor: `${theme.ink}33` }}
+                          />
+                          <span>{theme.label}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    <p className="reader-dim text-[0.6875rem] font-semibold uppercase tracking-[0.14em] mt-3 mb-2">Typeface</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setReaderFace('serif')}
+                        aria-pressed={readerFace === 'serif'}
+                        className="reader-serif reader-button rounded-xl border px-2 py-2.5 text-sm transition"
+                      >
+                        Serif
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setReaderFace('sans')}
+                        aria-pressed={readerFace === 'sans'}
+                        className="reader-sans reader-button rounded-xl border px-2 py-2.5 text-sm transition"
+                      >
+                        Sans-serif
+                      </button>
+                    </div>
+
+                    <p className="reader-dim text-[0.6875rem] font-semibold uppercase tracking-[0.14em] mt-3 mb-2">Text size</p>
+                    <div className="grid grid-cols-4 gap-2">
+                      {READER_SIZES.map(size => (
+                        <button
+                          key={size}
+                          type="button"
+                          onClick={() => setReaderSize(size)}
+                          aria-pressed={readerSize === size}
+                          className="reader-button rounded-xl border px-1 py-2 text-xs font-semibold tabular-nums transition"
+                          aria-label={`Text size ${size} pixels`}
+                        >
+                          {size}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </header>
 
-          <main className="max-w-2xl mx-auto w-full px-6 py-10 flex-1">
-            <div className="text-xs text-slate-400 mb-3 flex items-center gap-2 flex-wrap">
+          <main className="max-w-3xl mx-auto w-full px-6 py-10 flex-1">
+            <div className="reader-dim text-xs mb-3 flex items-center gap-2 flex-wrap">
               {readerSourceDescription ? (
                 <button
                   type="button"
                   onClick={() => setShowReaderSourceNote(prev => !prev)}
-                  className="inline-flex items-center gap-1 font-medium text-slate-300 hover:text-amber-300 transition cursor-pointer"
+                  className="reader-strong inline-flex items-center gap-1 font-medium transition cursor-pointer"
                   aria-expanded={showReaderSourceNote}
                   title={showReaderSourceNote ? 'Hide the source description' : `About ${selectedArticle.source}`}
                 >
                   <span>{selectedArticle.source}</span>
-                  <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform ${showReaderSourceNote ? 'rotate-180' : ''}`} />
+                  <ChevronDown className={`w-3 h-3 transition-transform ${showReaderSourceNote ? 'rotate-180' : ''}`} />
                 </button>
               ) : (
-                <span className="font-medium text-slate-300">{selectedArticle.source}</span>
+                <span className="reader-ink font-medium">{selectedArticle.source}</span>
               )}
               <span aria-hidden="true">·</span>
               <span>{selectedArticle.folder}</span>
@@ -2871,36 +3036,36 @@ export default function App() {
             </div>
 
             {showReaderSourceNote && readerSourceDescription && (
-              <p className="text-xs text-slate-400 leading-relaxed mb-4 border-l border-slate-800 pl-3">
+              <p className="reader-dim reader-border text-xs leading-relaxed mb-4 border-l pl-3">
                 {readerSourceDescription}
               </p>
             )}
 
-            <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-slate-100 mb-6 leading-snug">
+            <h1 className="reader-ink text-2xl md:text-3xl font-semibold tracking-tight mb-6 leading-snug">
               {selectedArticle.title}
             </h1>
 
             {/* Clear editorial context note */}
-            <div className="mb-8 pb-5 border-b border-slate-900 text-xs text-slate-400">
-              <div className="text-amber-400/90 font-medium mb-1">Curator's Note</div>
-              <p className="text-slate-300 italic leading-relaxed">{selectedArticle.why}</p>
+            <div className="reader-dim reader-border mb-8 pb-5 border-b text-xs">
+              <div className="reader-accent font-medium mb-1">Curator's Note</div>
+              <p className="reader-ink opacity-90 italic leading-relaxed">{selectedArticle.why}</p>
             </div>
 
             {/* Read Aloud: what is being spoken, and how far through it is */}
             {readAloudActive && (
-              <div className="mb-8 p-3 rounded-xl bg-slate-900/90 border border-slate-800 animate-fade-in shadow-md">
+              <div className="reader-panel mb-8 p-3 rounded-xl border animate-fade-in shadow-md">
                 <div className="flex items-center justify-between gap-3 text-xs">
                   <div className="flex items-center gap-2.5 min-w-0">
                     <button
                       type="button"
                       onClick={() => handleToggleReadAloud(selectedArticle)}
-                      className="h-11 w-11 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center shrink-0 hover:bg-amber-400 transition"
+                      className="reader-play h-11 w-11 rounded-xl flex items-center justify-center shrink-0 transition"
                       title={speechPaused ? 'Resume' : 'Pause'}
                     >
                       {speechPaused ? <Play className="w-3.5 h-3.5 fill-current ml-0.5" /> : <Pause className="w-3.5 h-3.5 fill-current" />}
                     </button>
                     <span
-                      className="text-slate-200 truncate"
+                      className="reader-ink truncate"
                       title={`${speechVoiceLabel} at ${speechRate.toFixed(2)}×`}
                     >
                       {speechPaused ? 'Audio paused' : `Reading aloud · ${speechVoiceLabel}`}
@@ -2908,11 +3073,11 @@ export default function App() {
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-xs text-slate-400 tabular-nums">{speechPercent}%</span>
+                    <span className="reader-dim text-xs tabular-nums">{speechPercent}%</span>
                     <button
                       type="button"
                       onClick={handleStopReadAloud}
-                      className="w-8 h-8 -mr-1 flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800/70 transition"
+                      className="reader-stop w-8 h-8 -mr-1 flex items-center justify-center rounded-lg transition"
                       title="Stop reading aloud"
                       aria-label="Stop reading aloud"
                     >
@@ -2922,7 +3087,7 @@ export default function App() {
                 </div>
 
                 <div
-                  className="mt-2 h-1 rounded-full bg-slate-800 overflow-hidden"
+                  className="reader-track mt-2 h-1 rounded-full overflow-hidden"
                   role="progressbar"
                   aria-valuenow={speechPercent}
                   aria-valuemin={0}
@@ -2930,12 +3095,12 @@ export default function App() {
                   aria-label="Read aloud progress"
                 >
                   <div
-                    className="h-full bg-amber-400 transition-all duration-300"
+                    className="reader-fill h-full transition-all duration-300"
                     style={{ width: `${speechPercent}%` }}
                   />
                 </div>
 
-                <p className="mt-2 text-xs text-slate-400">
+                <p className="reader-dim mt-2 text-xs">
                   {speechProgress.paragraph >= 0 && articleParagraphs.length > 0
                     ? `Paragraph ${Math.min(speechProgress.paragraph + 1, articleParagraphs.length)} of ${articleParagraphs.length} · `
                     : ''}
@@ -2945,7 +3110,10 @@ export default function App() {
               </div>
             )}
 
-            <div className="max-w-[68ch] mx-auto text-slate-300 font-reading space-y-5 text-[1.0625rem] leading-[1.75]">
+            <div
+              className={`reader-body mx-auto ${readerFace === 'serif' ? 'reader-serif' : 'reader-sans'}`}
+              style={{ fontSize: `${readerSize}px` }}
+            >
               {articleParagraphs.length > 0 ? articleParagraphs.map((paragraph, idx) => {
                 const isSpeakingHere = readAloudActive && speechProgress.paragraph === idx;
                 return (
@@ -2954,22 +3122,22 @@ export default function App() {
                     id={`reader-paragraph-${idx}`}
                     onClick={readAloudActive ? () => jumpSpeechToParagraph(idx) : undefined}
                     title={readAloudActive ? 'Listen from this paragraph' : undefined}
-                    className={`text-pretty transition-colors ${
+                    className={`text-pretty ${
                       isSpeakingHere
-                        ? 'text-amber-50 border-l-2 border-amber-400 pl-4 -ml-4'
+                        ? 'reader-speaking reader-ink border-l-2 pl-4 -ml-4'
                         : readAloudActive
-                          ? 'cursor-pointer hover:text-slate-100'
+                          ? 'cursor-pointer'
                           : ''
                     }`}
                   >{paragraph}</p>
                 );
               }) : (
-                <p className="text-slate-400 text-base">This feed supplied no readable body text. Use “Read original” below to open the article.</p>
+                <p className="reader-dim text-base">This feed supplied no readable body text. Use “Read original” below to open the article.</p>
               )}
             </div>
 
             {/* Typographic End-mark */}
-            <div className="flex items-center justify-center pt-16 pb-8 text-slate-700">
+            <div className="reader-dim flex items-center justify-center pt-16 pb-8">
               <span className="text-sm tracking-[0.6em] select-none opacity-40 font-serif">· · ·</span>
             </div>
 
@@ -2994,17 +3162,18 @@ export default function App() {
                     setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
                     showToast(`Opening original on ${selectedArticle.source}`);
                   }}
-                  className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-amber-400 hover:text-amber-300 transition-colors cursor-pointer"
+                  className="reader-link inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold transition-colors cursor-pointer"
                   title={`Read original on ${selectedArticle.source} (opens external browser or app)`}
                   aria-label={`Read original on ${selectedArticle.source}`}
                 >
-                  <ExternalLink className="w-4 h-4 text-amber-400/80 hover:text-amber-300 transition-colors" />
+                  <ExternalLink className="w-4 h-4" />
                   <span>Read original</span>
                 </a>
 
                 {/* Feedback Icons Aligned to Right */}
                 <div className="flex flex-wrap items-center gap-2 ml-auto">
                   <FeedbackActions
+                    tone="reader"
                     isMore={signals.moreIds?.includes(selectedArticle.id) || false}
                     isLess={signals.lessIds?.includes(selectedArticle.id) || false}
                     onMore={() => handleMore(selectedArticle)}
@@ -3014,7 +3183,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => undoHandleLess(selectedArticle.id)}
-                      className="inline-flex min-h-11 items-center gap-1.5 rounded-xl px-3 text-xs font-medium text-amber-400 hover:bg-amber-500/10 hover:text-amber-300 transition-colors"
+                      className="reader-link inline-flex min-h-11 items-center gap-1.5 rounded-xl px-3 text-xs font-medium transition-colors"
                       title="Undo — put this one story back in your digest"
                       aria-label="Undo — put this one story back in your digest"
                     >

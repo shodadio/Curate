@@ -83,9 +83,136 @@ body {
   padding-bottom: calc(8rem + env(safe-area-inset-bottom));
 }
 
-.font-reading {
+/* ---- Reader appearance ---------------------------------------------------
+   The reader is the one screen read for minutes at a time, so it carries its own
+   colours: three low-glare themes, a humanist serif body by default, and a size the
+   reader picks. Everything in the reader hangs off these variables — header, progress
+   bar and end mark included — so the chrome never introduces a second surface. */
+.reader-surface {
+  --reader-bg: #f7f3ea;
+  --reader-ink: #242320;
+  --reader-muted: #6e6a63;
+  --reader-line: rgba(36, 35, 32, 0.16);
+  --reader-track: rgba(36, 35, 32, 0.08);
+  --reader-panel: #f2ece0;
+  --reader-accent: #8a5a24;
+  --reader-negative: #a6432f;
+  background-color: var(--reader-bg);
+  color: var(--reader-ink);
+  color-scheme: light;
+}
+
+.reader-surface[data-reader-theme="dark"] {
+  --reader-bg: #1a1d24;
+  --reader-ink: #d8d6d0;
+  --reader-muted: #8c8f96;
+  --reader-line: rgba(216, 214, 208, 0.16);
+  --reader-track: rgba(216, 214, 208, 0.1);
+  --reader-panel: #21252e;
+  --reader-accent: #d9a55f;
+  --reader-negative: #e08a7a;
+  color-scheme: dark;
+}
+
+.reader-surface[data-reader-theme="sepia"] {
+  --reader-bg: #efe4ce;
+  --reader-ink: #362d24;
+  --reader-muted: #7a6c5d;
+  --reader-line: rgba(54, 45, 36, 0.18);
+  --reader-track: rgba(54, 45, 36, 0.1);
+  --reader-panel: #e8dcc2;
+  --reader-accent: #8a5b2b;
+  --reader-negative: #9a4430;
+  color-scheme: light;
+}
+
+.reader-surface ::selection {
+  background-color: color-mix(in srgb, var(--reader-accent) 24%, transparent);
+  color: var(--reader-ink);
+}
+
+.reader-header {
+  background-color: color-mix(in srgb, var(--reader-bg) 94%, transparent);
+  border-color: var(--reader-line);
+}
+
+.reader-ink { color: var(--reader-ink); }
+.reader-dim { color: var(--reader-muted); }
+.reader-border { border-color: var(--reader-line); }
+.reader-accent { color: var(--reader-accent); }
+.reader-panel { background-color: var(--reader-panel); border-color: var(--reader-line); }
+.reader-track { background-color: var(--reader-track); }
+.reader-fill { background-color: var(--reader-accent); }
+.reader-speaking { border-color: var(--reader-accent); }
+
+.reader-dim-button { color: var(--reader-muted); }
+.reader-dim-button:hover { color: var(--reader-ink); }
+
+.reader-strong { color: var(--reader-ink); }
+.reader-strong:hover { color: var(--reader-accent); }
+
+.reader-link { color: var(--reader-accent); }
+.reader-link:hover { color: var(--reader-ink); }
+
+/* One button shape for every control that sits on the reading surface: outlined at rest,
+   accent-tinted when it is switched on. */
+.reader-button {
+  border-color: var(--reader-line);
+  color: var(--reader-muted);
+  background-color: transparent;
+}
+
+.reader-button:hover {
+  color: var(--reader-ink);
+  border-color: var(--reader-accent);
+}
+
+.reader-button[aria-pressed="true"],
+.reader-button.is-on {
+  color: var(--reader-accent);
+  border-color: var(--reader-accent);
+  background-color: color-mix(in srgb, var(--reader-accent) 12%, transparent);
+}
+
+.reader-button[data-sentiment="less"][aria-pressed="true"] {
+  color: var(--reader-negative);
+  border-color: var(--reader-negative);
+  background-color: color-mix(in srgb, var(--reader-negative) 12%, transparent);
+}
+
+.reader-play {
+  background-color: var(--reader-accent);
+  color: var(--reader-bg);
+}
+
+.reader-play:hover { opacity: 0.88; }
+
+.reader-stop { color: var(--reader-muted); }
+.reader-stop:hover {
+  color: var(--reader-negative);
+  background-color: var(--reader-track);
+}
+
+/* 60 characters is the top of the comfortable range for continuous prose; the paragraph
+   rule gives each thought its own block without the eye losing the previous one. */
+.reader-body {
+  max-width: 60ch;
+  font-size: 1.125rem;
+  line-height: 1.6;
+  color: var(--reader-ink);
+}
+
+.reader-body p { margin-bottom: 1.5em; }
+.reader-body > p:last-child { margin-bottom: 0; }
+
+.reader-serif {
+  font-family: 'Literata', 'Charter', 'Bitstream Charter', 'Merriweather', 'Sitka Text', Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Times New Roman', serif;
+  letter-spacing: 0.005em;
+}
+
+.reader-sans {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
-  letter-spacing: -0.003em;
+  letter-spacing: -0.005em;
 }
 
 .font-mono {
