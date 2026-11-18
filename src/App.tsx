@@ -104,6 +104,9 @@ interface DigestItem {
   id: string;
   title: string;
   source: string;
+  // The writer the feed credited; absent when the feed named nobody, and the reader then
+  // credits the publication alone.
+  author?: string;
   folder: string;
   categories?: string[];
   readTime: string;
@@ -123,6 +126,9 @@ interface DigestItem {
   // stored copy; `linkRefreshAt` keeps a piece with no links of its own from being fetched twice.
   linksCleaned?: boolean;
   linkRefreshAt?: number;
+  // A saved piece from before the reader credited writers asks the server for its byline once;
+  // the stamp keeps a page that names nobody from being asked again on every launch.
+  authorCheckedAt?: number;
 }
 
 interface SourceItem {
@@ -704,7 +710,12 @@ export function buildSpeechQueue(article: DigestItem): SpeechChunk[] {
     }
   };
 
-  push(`${article.title}. By ${article.source}.`, -1);
+  push(
+    article.author
+      ? `${article.title}. By ${article.author}, in ${article.source}.`
+      : `${article.title}. By ${article.source}.`,
+    -1,
+  );
   if (article.summary) push(article.summary, -1);
   buildArticleParagraphs(article.fullText).forEach((paragraph, index) => push(paragraph, index));
 
@@ -1250,6 +1261,79 @@ export default function App() {
     if (safeSetJson('curator_saved_articles', savedArticles)) return;
     safeSetJson('curator_saved_articles', savedArticles.map(({ fullText, ...rest }) => rest));
   }, [savedArticles]);
+
+  // A byline found once is kept; a page that named nobody is asked again only after a week, so
+  // an offline launch does not leave a piece unsigned for good.
+  const AUTHOR_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
+  const authorBackfillStartedRef = React.useRef(false);
+
+  // Old saves carry no author: they were written when the reader credited only the publication.
+  // Their own pages still name the writer, so the queue asks in the background, in the same
+  // batches the citations pass uses, and every screen holding the story takes the name.
+  useEffect(() => {
+    if (authorBackfillStartedRef.current) return;
+    authorBackfillStartedRef.current = true;
+
+    const needsAuthor = (entry: DigestItem): boolean => Boolean(entry?.url) && !entry.author &&
+      (!entry.authorCheckedAt || Date.now() - entry.authorCheckedAt > AUTHOR_RECHECK_MS);
+
+    const queue: DigestItem[] = [];
+    const queued = new Set<string>();
+    for (const entry of [...savedArticles, ...digest]) {
+      if (!entry?.id || queued.has(entry.id) || !needsAuthor(entry)) continue;
+      queued.add(entry.id);
+      queue.push(entry);
+    }
+    if (queue.length === 0) return;
+
+    let cancelled = false;
+    const findWriters = async () => {
+      for (let start = 0; start < queue.length; start += 16) {
+        if (cancelled) return;
+        const batch = queue.slice(start, start + 16);
+        let data: any = null;
+        try {
+          const response = await fetch('/api/article-authors', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: batch.map(({ id, url, source }) => ({ id, url, source })) }),
+          });
+          if (!response.ok) return;
+          data = await response.json().catch(() => null);
+        } catch {
+          // Offline: the unstamped pieces are asked again on the next launch.
+          return;
+        }
+        if (cancelled || !data) return;
+
+        const found = new Map<string, string>();
+        const attempted = new Set<string>();
+        for (const entry of Array.isArray(data.articles) ? data.articles : []) {
+          const id = typeof entry?.id === 'string' ? entry.id : '';
+          if (!id) continue;
+          attempted.add(id);
+          if (typeof entry?.author === 'string' && entry.author.trim()) found.set(id, entry.author.trim());
+        }
+        if (attempted.size === 0) continue;
+
+        const checkedAt = Date.now();
+        const applyBatch = (entry: DigestItem): DigestItem => {
+          if (!attempted.has(entry.id)) return entry;
+          const author = found.get(entry.id);
+          return author
+            ? { ...entry, author, authorCheckedAt: checkedAt }
+            : { ...entry, authorCheckedAt: checkedAt };
+        };
+        setSelectedArticle(prev => (prev ? applyBatch(prev) : prev));
+        setSavedArticles(prev => prev.map(applyBatch));
+        setDigest(prev => prev.map(applyBatch));
+        setFeedStreamArticles(prev => prev.map(applyBatch));
+      }
+    };
+    void findWriters();
+
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     safeSetJson('curator_sources', sources);
@@ -3533,6 +3617,12 @@ export default function App() {
             style={{ fontSize: `${readerSize}px` }}
           >
             <div className="reader-dim font-sans text-xs mb-3 flex items-center gap-2 flex-wrap">
+              {selectedArticle.author && (
+                <>
+                  <span className="reader-ink font-medium">By {selectedArticle.author}</span>
+                  <span aria-hidden="true">·</span>
+                </>
+              )}
               {readerSourceDescription ? (
                 <button
                   type="button"
@@ -4050,6 +4140,12 @@ export default function App() {
                               <span className="truncate">{item.source}</span>
                             </div>
                             <div className="text-xs text-slate-400 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
+                              {item.author && (
+                                <>
+                                  <span className="min-w-0">By {item.author}</span>
+                                  <span aria-hidden="true">·</span>
+                                </>
+                              )}
                               <span className="min-w-0">{decodeArticleEntities(item.publishedAt || '30m')}</span>
                               <span aria-hidden="true">·</span>
                               <span className="min-w-0">{displayFolder(item.folder)}</span>
@@ -4281,6 +4377,12 @@ export default function App() {
                               <div className="min-w-0">
                                 <div className="text-xs font-bold text-rose-200 truncate">{item.source}</div>
                                 <div className="text-xs text-rose-400/80 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
+                                  {item.author && (
+                                    <>
+                                      <span className="min-w-0">By {item.author}</span>
+                                      <span aria-hidden="true">·</span>
+                                    </>
+                                  )}
                                   {item.publishedAt && (
                                     <>
                                       <span className="min-w-0">{decodeArticleEntities(item.publishedAt)}</span>
@@ -4515,6 +4617,7 @@ export default function App() {
                     >
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
                         <span title={item.source} className="font-semibold text-slate-200 min-w-0 truncate">{item.source}</span>
+                        {item.author && <span className="min-w-0 truncate">By {item.author}</span>}
                         {item.publishedAt && <span>{decodeArticleEntities(item.publishedAt)}</span>}
                         <span>{item.readTime}</span>
                         <span className="text-amber-400 font-semibold inline-flex items-center gap-1">
@@ -5863,6 +5966,12 @@ Search for writers, publications, or topics. Curator checks whether each result 
                               <span className="truncate">{item.source}</span>
                             </div>
                             <div className="text-xs text-slate-400 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
+                              {item.author && (
+                                <>
+                                  <span className="min-w-0">By {item.author}</span>
+                                  <span aria-hidden="true">·</span>
+                                </>
+                              )}
                               {item.publishedAt && (
                                 <>
                                   <span className="min-w-0">{decodeArticleEntities(item.publishedAt)}</span>
