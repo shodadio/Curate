@@ -3230,6 +3230,11 @@ export default function App() {
   const currentCalibrationItem = calibrationCandidates[calibrationIndex];
   const articleParagraphs = selectedArticle ? buildArticleParagraphs(selectedArticle.fullText) : [];
   const readAloudActive = Boolean(selectedArticle && speechArticleId === selectedArticle.id);
+  // The tick on the progress line marks the furthest point this piece has been read to, so
+  // scrolling back up does not wipe out where the reader actually got to.
+  const readerFurthestDepth = selectedArticle
+    ? Math.min(100, readingStats[selectedArticle.id]?.maxDepth || 0)
+    : 0;
   const speechPercent = speechProgress.total > 0
     ? Math.min(100, Math.round((speechProgress.index / speechProgress.total) * 100))
     : 0;
@@ -3323,6 +3328,13 @@ export default function App() {
                 aria-valuemax={100}
                 aria-label="Article reading progress"
               />
+              {readerFurthestDepth > readerScrollProgress && (
+                <div
+                  className="reader-furthest absolute inset-y-0 w-[2px]"
+                  style={{ right: `${100 - readerFurthestDepth}%` }}
+                  aria-hidden="true"
+                />
+              )}
             </div>
 
             <button

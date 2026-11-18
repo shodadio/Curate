@@ -159,6 +159,10 @@ body {
    smudge, where a plain accent rule of the reader's own width does not. */
 .reader-header-progress { background-color: transparent; }
 .reader-fill { background-color: var(--reader-accent); }
+/* The furthest-read tick on the same line: the fill follows the scroll, the ink mark keeps the
+   deepest point reached, so a piece read to the end still shows how far it got after scrolling
+   back to the top. */
+.reader-furthest { background-color: var(--reader-ink); }
 .reader-speaking { border-color: var(--reader-accent); }
 
 .reader-dim-button { color: var(--reader-muted); }
