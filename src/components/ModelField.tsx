@@ -26,7 +26,7 @@ export function ModelField({
   kind,
 }: ModelFieldProps) {
   const inputId = useId();
-  const listId = useId();
+  const pickerId = useId();
   const [models, setModels] = useState<string[]>([]);
   const [status, setStatus] = useState<{ tone: 'idle' | 'failed'; message: string }>({ tone: 'idle', message: '' });
   const [fetching, setFetching] = useState(false);
@@ -61,11 +61,13 @@ export function ModelField({
       // Matching can only use an embedding model, so narrow to those when the provider marks
       // any; a catalogue that marks none is shown whole rather than emptied.
       const embeddingModels = kind === 'embedding' ? all.filter(id => /embed/i.test(id)) : [];
-      const list = embeddingModels.length > 0 ? embeddingModels : all;
+      const narrowed = embeddingModels.length > 0;
+      const list = narrowed ? embeddingModels : all;
       setModels(list);
+      const noun = narrowed ? 'embedding model' : 'model';
       setStatus({
         tone: 'idle',
-        message: `${list.length} model${list.length === 1 ? '' : 's'} loaded — open the box to choose, or keep typing.`,
+        message: `${list.length} ${noun}${list.length === 1 ? '' : 's'} fetched — pick one below, or keep typing an ID.`,
       });
     } catch {
       setModels([]);
@@ -98,16 +100,26 @@ export function ModelField({
         value={value}
         onChange={event => onChange(event.target.value)}
         placeholder={placeholder}
-        list={models.length > 0 ? listId : undefined}
         autoComplete="off"
         spellCheck={false}
         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
       />
 
+      {/* A real picker, not a type-ahead: browsers keep a datalist's options hidden until you
+          type, so the fetched list looked like it had never arrived. */}
       {models.length > 0 && (
-        <datalist id={listId}>
-          {models.map(model => <option key={model} value={model} />)}
-        </datalist>
+        <select
+          id={pickerId}
+          value={models.includes(value) ? value : ''}
+          onChange={event => { if (event.target.value) onChange(event.target.value); }}
+          aria-label={`${label}: fetched models`}
+          className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500 cursor-pointer"
+        >
+          <option value="">
+            {`Choose from ${models.length} fetched model${models.length === 1 ? '' : 's'}`}
+          </option>
+          {models.map(model => <option key={model} value={model}>{model}</option>)}
+        </select>
       )}
 
       {status.message && (
