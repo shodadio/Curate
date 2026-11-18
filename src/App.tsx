@@ -2905,6 +2905,9 @@ export default function App() {
   };
 
   const [linkRefreshProgress, setLinkRefreshProgress] = useState<{ done: number; total: number } | null>(null);
+  // Stopping mid-queue aborts the request in flight and the loop that follows it; pieces already
+  // written stay written, so pressing the button again picks up the rest.
+  const linkRefreshAbortRef = React.useRef<AbortController | null>(null);
 
   // The whole queue can be upgraded at once, so a piece is not left without its citations just
   // because it was never reopened. The server reads a batch at a time through the same cache the
@@ -2917,15 +2920,26 @@ export default function App() {
       return;
     }
     setLinkRefreshProgress({ done: 0, total: queue.length });
+    const controller = new AbortController();
+    linkRefreshAbortRef.current = controller;
     let upgraded = 0;
     let completed = true;
+    // A stop lands either between batches (the loop breaks) or inside one (the aborted request
+    // throws), so both paths report the same thing: what was written before the stop.
+    const reportStop = () => showToast(upgraded > 0
+      ? `Stopped — citations added to ${upgraded} saved ${upgraded === 1 ? 'piece' : 'pieces'}`
+      : 'Stopped adding citations');
     try {
-      for (let start = 0; start < queue.length; start += 16) {
-        const batch = queue.slice(start, start + 16);
+      // Eight at a time: enough to keep the server's four extractors busy, small enough that the
+      // bar moves every few seconds on a long queue.
+      for (let start = 0; start < queue.length; start += 8) {
+        if (controller.signal.aborted) break;
+        const batch = queue.slice(start, start + 8);
         const response = await fetch('/api/article-texts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ items: batch.map(({ id, url }) => ({ id, url })) }),
+          signal: controller.signal,
         });
         if (!response.ok) {
           completed = false;
@@ -2962,7 +2976,9 @@ export default function App() {
         }
         setLinkRefreshProgress({ done: Math.min(start + batch.length, queue.length), total: queue.length });
       }
-      if (!completed) {
+      if (controller.signal.aborted) {
+        reportStop();
+      } else if (!completed) {
         showToast('The queue was only partly refreshed — try again in a moment');
       } else if (upgraded === 0) {
         showToast('No citations could be added just now');
@@ -2970,10 +2986,16 @@ export default function App() {
         showToast(`Added citations to ${upgraded} saved ${upgraded === 1 ? 'piece' : 'pieces'}`);
       }
     } catch {
-      showToast('Could not reach the server to add citations');
+      if (controller.signal.aborted) reportStop();
+      else showToast('Could not reach the server to add citations');
     } finally {
+      linkRefreshAbortRef.current = null;
       setLinkRefreshProgress(null);
     }
+  };
+
+  const stopSavedQueueLinks = () => {
+    linkRefreshAbortRef.current?.abort();
   };
 
   const openArticle = (item: DigestItem) => {
@@ -3144,6 +3166,9 @@ export default function App() {
 
   // Pieces saved before the cleaner kept links, which the Saved header can upgrade in one pass.
   const staleSavedCount = savedArticles.filter(articleNeedsLinkRefresh).length;
+  const linkRefreshPercent = linkRefreshProgress && linkRefreshProgress.total > 0
+    ? Math.round((linkRefreshProgress.done / linkRefreshProgress.total) * 100)
+    : 0;
 
   const savedDigestItems = [
     ...savedArticles,
@@ -4322,24 +4347,54 @@ export default function App() {
                 <p className="text-xs text-slate-400 mt-0.5">Your personal re-reading queue ({savedDigestItems.length})</p>
               </div>
               {/* A piece saved before the cleaner kept links reads without its citations until it
-                  is refetched. This does that in one pass, for the pieces you never reopen. */}
-              {staleSavedCount > 0 && (
+                  is refetched. This does that in one pass, for the pieces you never reopen, and
+                  the button becomes the way to stop it while it runs. */}
+              {linkRefreshProgress ? (
+                <button
+                  type="button"
+                  onClick={stopSavedQueueLinks}
+                  aria-label="Stop adding citations"
+                  className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-slate-800 px-3 text-xs font-medium text-slate-300 transition hover:border-rose-500/40 hover:text-rose-300"
+                >
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                  <span>Stop</span>
+                </button>
+              ) : staleSavedCount > 0 ? (
                 <button
                   type="button"
                   onClick={refreshSavedQueueLinks}
-                  disabled={Boolean(linkRefreshProgress)}
-                  className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-slate-800 px-3 text-xs font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300 disabled:opacity-60"
+                  className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-slate-800 px-3 text-xs font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300"
                   title="Read these saved pieces again so the links they cite work in the reader"
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 ${linkRefreshProgress ? 'animate-spin' : ''}`} />
-                  <span>
-                    {linkRefreshProgress
-                      ? `Adding ${linkRefreshProgress.done}/${linkRefreshProgress.total}`
-                      : `Add citations (${staleSavedCount})`}
-                  </span>
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Add citations ({staleSavedCount})</span>
                 </button>
-              )}
+              ) : null}
             </div>
+
+            {linkRefreshProgress && (
+              <div>
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span aria-live="polite">
+                    Adding citations · {linkRefreshProgress.done} of {linkRefreshProgress.total}
+                  </span>
+                  <span className="tabular-nums text-slate-500">{linkRefreshPercent}%</span>
+                </div>
+                <div
+                  className="mt-2 h-1 overflow-hidden rounded-full bg-slate-800"
+                  role="progressbar"
+                  aria-label="Adding citations to saved pieces"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={linkRefreshPercent}
+                >
+                  <div
+                    className="h-full rounded-full bg-amber-500 transition-all duration-300"
+                    style={{ width: `${linkRefreshPercent}%` }}
+                  />
+                </div>
+              </div>
+            )}
 
             {savedDigestItems.length === 0 ? (
               <div className="py-20 text-center text-slate-400 space-y-2">
