@@ -425,3 +425,15 @@ export function splitDenseParagraph(
   const balanced = mergeStubPieces(chunks, DENSE_MIN_PIECE_CHARS);
   return balanced.length > 1 ? balanced : [paragraph];
 }
+
+// A saved piece cleaned before this change has only a link's words left in its stored text, so
+// the reader has to fetch the article again to recover its citations. Text cleaned since then
+// carries `linksCleaned`, and `linkRefreshAt` records a refresh that already happened, so a piece
+// that genuinely has no links is not fetched on every open.
+export function articleNeedsLinkRefresh(item: {
+  url?: string;
+  linksCleaned?: boolean;
+  linkRefreshAt?: number;
+}): boolean {
+  return Boolean(item.url) && !item.linksCleaned && !item.linkRefreshAt;
+}

@@ -18,7 +18,7 @@ import { SettingsSection } from './components/SettingsSection';
 import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
 import { safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, type StorageFailure } from './storage';
 import { DEFAULT_FEEDS } from './defaultFeeds';
-import { dropBylineFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph } from '../lib/markup';
+import { articleNeedsLinkRefresh, dropBylineFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph } from '../lib/markup';
 
 interface DiscoveredSource {
   title: string;
@@ -51,6 +51,11 @@ interface DigestItem {
   quote?: string;
   // The publication's own blurb, carried on the articles a feed returns
   sourceDescription?: string;
+  // Text from the cleaner that keeps a link's address carries the flag. A save written before
+  // that change has no markers left in it, so the reader fetches the piece again and rewrites the
+  // stored copy; `linkRefreshAt` keeps a piece with no links of its own from being fetched twice.
+  linksCleaned?: boolean;
+  linkRefreshAt?: number;
 }
 
 interface SourceItem {
@@ -2863,6 +2868,39 @@ export default function App() {
   const readerAppearanceRef = React.useRef<HTMLDivElement | null>(null);
   const readerAppearanceButtonRef = React.useRef<HTMLButtonElement | null>(null);
 
+  // One refresh attempt per article per session: a failed fetch leaves the stored body alone and
+  // is retried when the piece is next opened, not on every render.
+  const articleLinkRefreshRef = React.useRef<Set<string>>(new Set());
+
+  // A piece saved before the cleaner kept links has only the link's words in its stored text, so
+  // the article is fetched once and the refreshed body replaces the copy in the queue.
+  const refreshArticleLinks = async (item: DigestItem) => {
+    if (articleLinkRefreshRef.current.has(item.id)) return;
+    articleLinkRefreshRef.current.add(item.id);
+    try {
+      const response = await fetch('/api/article-text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: item.url }),
+      });
+      if (!response.ok) return;
+      const data = await response.json().catch(() => ({}));
+      const text = typeof data?.text === 'string' ? data.text : '';
+      // Short text means the extractor found the page's chrome rather than the piece, so the
+      // stored body stays the better read.
+      if (text.length < 200) return;
+      const refreshedAt = Date.now();
+      const upgrade = (entry: DigestItem): DigestItem => entry.id === item.id
+        ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt }
+        : entry;
+      setSelectedArticle(prev => (prev && prev.id === item.id ? upgrade(prev) : prev));
+      setSavedArticles(prev => prev.map(upgrade));
+      setDigest(prev => prev.map(upgrade));
+    } catch {
+      // Offline, or the article is gone: the saved text still reads, and the next open retries.
+    }
+  };
+
   const openArticle = (item: DigestItem) => {
     setSelectedArticle(item);
     // The byline's source description starts collapsed on every article, and so does the
@@ -2893,6 +2931,8 @@ export default function App() {
     if (match && !readSourceIds.includes(match.id)) {
       setReadSourceIds(prev => [...prev, match.id]);
     }
+
+    if (articleNeedsLinkRefresh(item)) void refreshArticleLinks(item);
 
     window.history.pushState({ curatorReader: true }, '');
     readerHistoryDepthRef.current += 1;

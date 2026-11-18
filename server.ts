@@ -1199,6 +1199,9 @@ async function startServer() {
         readTime,
         url: link,
         fullText: cleanFull.length > 120 ? cleanFull : (summary + '\n\n' + 'Read the complete article directly at: ' + link),
+        // This text came from the cleaner that keeps a link's address, so a reader holding it
+        // needs no refresh. Saves written before that change lack the flag and are refreshed.
+        linksCleaned: true,
         _needsArticleFetch: Boolean(link && cleanFull.length > 80 && hasContinuationMarker),
         publishedAt,
         publishedAtMs: Number.isFinite(publishedAtMs) ? publishedAtMs : undefined,
@@ -1901,6 +1904,25 @@ CURATION RULES:
       res.json({ ok: true, itemCount: result.items.length, title: result.items[0]?.source || null });
     } catch (error: any) {
       res.status(200).json({ ok: false, error: error?.message || 'That address could not be read' });
+    }
+  });
+
+  // A piece saved before the cleaner kept inline links has only the link's words left in its
+  // stored text, so the reader can ask for the article once more and replace that copy. The
+  // extractor and its 24-hour cache are the ones curation already uses, so a story fetched for
+  // the digest costs nothing here.
+  app.post('/api/article-text', rateLimit('article-text', 60), async (req, res) => {
+    const target = typeof req.body?.url === 'string' ? req.body.url.trim().slice(0, 2000) : '';
+    res.setHeader('Cache-Control', 'no-store');
+    if (!target) {
+      res.status(400).json({ error: 'A url is required' });
+      return;
+    }
+    try {
+      const text = await fetchArticleBody(target);
+      res.json({ text: text || '' });
+    } catch {
+      res.status(200).json({ text: '' });
     }
   });
 

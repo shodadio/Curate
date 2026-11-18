@@ -32,6 +32,7 @@
   - [`POST /api/calibrate`](#post-apicalibrate)
   - [`POST /api/feed-stream`](#post-apifeed-stream)
   - [`POST /api/source-descriptions`](#post-apisource-descriptions)
+  - [`POST /api/article-text`](#post-apiarticle-text)
   - [`POST /api/check-feed`](#post-apicheck-feed)
   - [`POST /api/discover-sources`](#post-apidiscover-sources)
   - [`POST /api/parse-opml`](#post-apiparse-opml)
@@ -263,6 +264,15 @@ Fetches each source’s publication description from RSS/Atom metadata, falling 
 **Request Body:** `{ "sources": [{ "id": "src_0", "feedUrl": "https://example.com/feed.xml" }] }`
 
 **Response:** `{ "sources": [{ "id": "src_0", "description": "A publication about…" }] }`. A source may include an `error` when its feed or site could not be reached.
+
+---
+
+### `POST /api/article-text`
+Re-extracts one article's body on demand. A piece saved before the reader kept inline links has only the link's words in its stored text, so opening it fetches the piece once and rewrites that copy; text cleaned since then carries a `linksCleaned` flag and is never fetched again. The extractor and its 24-hour cache are the ones curation already uses, so a story fetched for the digest costs nothing here.
+
+**Request Body:** `{ "url": "https://example.com/story" }`
+
+**Response:** `{ "text": "…" }`, with each citation carried as a `[label](url)` marker. An empty string means the article could not be read, and the reader keeps the copy it already had.
 
 ---
 

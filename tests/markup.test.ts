@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { cleanHtml, decodeEntities, htmlToReadableText, splitDenseParagraph, splitSentences } from '../lib/markup.ts';
+import { articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, splitDenseParagraph, splitSentences } from '../lib/markup.ts';
+
+test('only a piece saved before links were kept is refreshed', () => {
+  assert.equal(articleNeedsLinkRefresh({ url: 'https://example.com/story' }), true);
+  assert.equal(articleNeedsLinkRefresh({ url: 'https://example.com/story', linksCleaned: true }), false);
+  assert.equal(articleNeedsLinkRefresh({ url: 'https://example.com/story', linkRefreshAt: 1 }), false);
+  assert.equal(articleNeedsLinkRefresh({ url: '' }), false);
+  assert.equal(articleNeedsLinkRefresh({}), false);
+});
 
 const hasTag = (text: string) => /<[a-z/!][^>]*>/i.test(text);
 
