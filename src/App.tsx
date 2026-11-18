@@ -12,6 +12,7 @@ import { CuratorMark } from './components/CuratorLogo';
 import { WeeklyReviewModal, WeeklyReadingItem } from './components/WeeklyReviewModal';
 import { InterestsEditor } from './components/InterestsEditor';
 import { ProviderTestButton } from './components/ProviderTestButton';
+import { ModelField } from './components/ModelField';
 import { FeedbackActions } from './components/FeedbackActions';
 import { DigestEmptyState } from './components/DigestEmptyState';
 import { SettingsSection } from './components/SettingsSection';
@@ -19,6 +20,72 @@ import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, ty
 import { safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, type StorageFailure } from './storage';
 import { DEFAULT_FEEDS } from './defaultFeeds';
 import { articleNeedsLinkRefresh, dropBylineFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph } from '../lib/markup';
+
+// One-click provider addresses: the popular OpenAI-compatible services, so a working setup
+// starts with a name and a key rather than a copied URL and a guessed model ID.
+interface ProviderPreset {
+  name: string;
+  url: string;
+  model: string;
+}
+
+const CHAT_PROVIDER_PRESETS: ProviderPreset[] = [
+  { name: 'OpenAI', url: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  { name: 'DeepSeek', url: 'https://api.deepseek.com', model: 'deepseek-flash' },
+  { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' },
+  { name: 'Groq', url: 'https://api.groq.com/openai/v1', model: 'openai/gpt-oss-120b' },
+  { name: 'Mistral', url: 'https://api.mistral.ai/v1', model: 'mistral-small-latest' },
+];
+
+// Matching needs a provider that serves embeddings; DeepSeek and Groq do not, so a preset
+// for them there would only ever fail the test.
+const MATCHING_PROVIDER_PRESETS: ProviderPreset[] = [
+  { name: 'OpenAI', url: 'https://api.openai.com/v1', model: 'text-embedding-3-small' },
+  { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', model: 'openai/text-embedding-3-small' },
+  { name: 'Mistral', url: 'https://api.mistral.ai/v1', model: 'mistral-embed' },
+];
+
+// A model still sitting at one preset's default follows the next preset picked; a model the
+// reader typed themselves is never overwritten.
+const PRESET_DEFAULT_MODELS = new Set(
+  [...CHAT_PROVIDER_PRESETS, ...MATCHING_PROVIDER_PRESETS].map(preset => preset.model),
+);
+
+function PresetChips({
+  presets,
+  value,
+  label,
+  onPick,
+}: {
+  presets: ProviderPreset[];
+  value: string;
+  label: string;
+  onPick: (preset: ProviderPreset) => void;
+}) {
+  const current = value.trim().replace(/\/+$/, '');
+  return (
+    <div className="flex flex-wrap gap-1.5" role="group" aria-label={label}>
+      {presets.map(preset => {
+        const selected = current === preset.url;
+        return (
+          <button
+            key={preset.name}
+            type="button"
+            aria-pressed={selected}
+            onClick={() => onPick(preset)}
+            className={`px-2.5 py-1 text-xs rounded-lg border transition ${
+              selected
+                ? 'border-amber-500/40 bg-amber-500/15 text-amber-200'
+                : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-700 hover:text-slate-100'
+            }`}
+          >
+            {preset.name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 interface DiscoveredSource {
   title: string;
@@ -5276,22 +5343,35 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       placeholder="https://api.openai.com/v1"
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                     />
-                    <p className="text-xs text-slate-400 mt-1">HTTPS API URL from your provider.</p>
+                    <p className="text-xs text-slate-400 mt-1">Pick a provider below, or paste your own HTTPS API URL.</p>
+                    <div className="mt-2">
+                      <PresetChips
+                        presets={CHAT_PROVIDER_PRESETS}
+                        value={aiBaseUrl}
+                        label="Popular digest writing providers"
+                        onPick={preset => {
+                          setAiBaseUrl(preset.url);
+                          setAiModel(current => (
+                            !current.trim() || PRESET_DEFAULT_MODELS.has(current.trim()) ? preset.model : current
+                          ));
+                        }}
+                      />
+                    </div>
                   </div>
                 )}
 
                 {aiProvider !== 'deterministic' && (
                   <>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Model name</label>
-                      <input
-                        type="text"
-                        value={aiModel}
-                        onChange={e => setAiModel(e.target.value)}
-                        placeholder={aiProvider === 'openai-compatible' ? 'e.g. gpt-4o-mini or provider model ID' : aiProvider === 'anthropic' ? 'e.g. claude-3-5-sonnet-20241022' : 'e.g. gemini-2.5-flash'}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
-                      />
-                    </div>
+                    <ModelField
+                      label="Model name"
+                      value={aiModel}
+                      onChange={setAiModel}
+                      placeholder={aiProvider === 'openai-compatible' ? 'e.g. gpt-4o-mini or provider model ID' : aiProvider === 'anthropic' ? 'e.g. claude-3-5-sonnet-20241022' : 'e.g. gemini-2.5-flash'}
+                      provider={aiProvider}
+                      apiKey={customApiKey}
+                      baseUrl={aiBaseUrl}
+                      kind="chat"
+                    />
                     <div>
                       <label className="block text-xs font-medium text-slate-300 mb-1.5">Provider API key</label>
                       <input
@@ -5391,17 +5471,31 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         placeholder="https://api.openai.com/v1"
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
                       />
+                      <p className="text-xs text-slate-400 mt-1">Pick a provider below, or paste your own HTTPS API URL.</p>
+                      <div className="mt-2">
+                        <PresetChips
+                          presets={MATCHING_PROVIDER_PRESETS}
+                          value={embeddingBaseUrl}
+                          label="Popular matching providers"
+                          onPick={preset => {
+                            setEmbeddingBaseUrl(preset.url);
+                            setEmbeddingModel(current => (
+                              !current.trim() || PRESET_DEFAULT_MODELS.has(current.trim()) ? preset.model : current
+                            ));
+                          }}
+                        />
+                      </div>
                     </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1.5">Matching model name</label>
-                      <input
-                        type="text"
-                        value={embeddingModel}
-                        onChange={e => setEmbeddingModel(e.target.value)}
-                        placeholder="text-embedding-3-small"
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
-                      />
-                    </div>
+                    <ModelField
+                      label="Matching model name"
+                      value={embeddingModel}
+                      onChange={setEmbeddingModel}
+                      placeholder="text-embedding-3-small"
+                      provider={embeddingProvider}
+                      apiKey={embeddingApiKey || (embeddingKeyMatchesChatProvider ? customApiKey : '')}
+                      baseUrl={embeddingBaseUrl || (embeddingKeyMatchesChatProvider ? aiBaseUrl : '')}
+                      kind="embedding"
+                    />
                   </>
                 )}
 
