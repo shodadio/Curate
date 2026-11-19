@@ -161,7 +161,7 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 │      Provider Adapters         │   Built-in Semantic Engine     │
 │  - OpenAI-compatible APIs      │      (Always On, No Key)       │
 │  - Optional Anthropic/Gemini   │  - TF-IDF article similarity   │
-│  - Separate embedding API      │  - Vote-weighted centroids     │
+│  - Separate embedding API      │  - Multi-interest feedback     │
 │                                │  - Recency + exposure decay    │
 └────────────────────────────────┴────────────────────────────────┘
 ```
@@ -177,9 +177,9 @@ Accepts a list of sources, item count target (3–15), and optional topic prefer
 
 Ranking happens in three layers, and all three run without any API key:
 
-1. **Built-in semantic engine** — TF-IDF vectors over each article's title, folder, summary and excerpt, compared against recency-weighted centroids of your liked and disliked articles. Legacy votes (ids without a stored excerpt) are recovered from the live pool so the engine learns immediately.
+1. **Built-in semantic engine** — TF-IDF vectors over each article's title, folder, summary and excerpt are matched against individual liked and disliked examples, preserving distinct interests instead of averaging them into one profile. The strongest matching example is recency-weighted, so newer feedback wins when interests shift. Legacy votes (ids without a stored excerpt) are recovered from the live pool so the engine learns immediately.
 2. **Freshness** — an edition only draws on pieces published in the last 24 hours; anything older stays readable in the Feeds stream. In ordinary builds, articles you have already been shown are down-weighted (heavy for 18 hours, lighter for up to two weeks). A manual refresh is stricter: it re-reads every feed, drops whatever you saved, opened, voted on or hid, and skips anything already shown, so it either returns genuinely new stories or says plainly that nothing new arrived rather than reshuffling the edition. Feed libraries wider than one run can fetch are rotated by a per-request seed.
-3. **Optional provider embeddings** — when an OpenAI-compatible or Gemini embeddings endpoint is configured, provider similarity is blended 65/35 with the built-in scores. Provider failures fall back to the built-in engine rather than silently disabling semantic ranking.
+3. **Optional provider embeddings** — when an OpenAI-compatible or Gemini embeddings endpoint is configured, each candidate is compared with individual feedback embeddings (also preserving multiple interests and recent-vote preference), then blended 65/35 with the built-in scores. Provider failures fall back to the built-in engine rather than silently disabling semantic ranking.
 
 ### Setup and calibration
 A cold profile has nothing to rank against, so the app ships a three-step setup flow (shown on first run when no votes exist, and re-runnable from **Settings → Your reading preferences → Teach Curator with articles**):

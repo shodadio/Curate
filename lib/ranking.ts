@@ -152,19 +152,38 @@ export const localSemanticScores = (
   const feedbackTexts = feedback.map(entry => `${entry.title}. ${entry.title}. ${entry.title}. ${entry.text}`);
   const vectors = buildSemanticVectors([...candidateTexts, ...feedbackTexts]);
   const feedbackVectors = vectors.slice(candidates.length);
+  const usableFeedback = feedback
+    .map((example, index) => ({ example, vector: feedbackVectors[index] }))
+    .filter((entry): entry is { example: SemanticVoteExample; vector: Map<string, number> } => Boolean(entry.vector?.size));
+  const positiveExamples = usableFeedback.filter(entry => entry.example.vote === 'like');
+  const negativeExamples = usableFeedback.filter(entry => entry.example.vote === 'dislike');
+  if (positiveExamples.length === 0 && negativeExamples.length === 0) return scores;
 
-  const positive = buildSparseCentroid('like', feedback, feedbackVectors, nowMs);
-  const negative = buildSparseCentroid('dislike', feedback, feedbackVectors, nowMs);
-  if (!positive && !negative) return scores;
+  const bestSimilarity = (
+    candidateVector: Map<string, number>,
+    examples: typeof usableFeedback,
+    halfLifeMs: number,
+  ): number => {
+    if (examples.length === 0) return 0;
+    const latestTimestamp = Math.max(...examples.map(({ example }) =>
+      Number.isFinite(example.timestamp) ? example.timestamp : nowMs
+    ));
+    return examples.reduce((best, { example, vector }) => {
+      const timestamp = Number.isFinite(example.timestamp) ? example.timestamp : nowMs;
+      const ageMs = Math.max(0, latestTimestamp - timestamp);
+      const recency = Math.pow(0.5, ageMs / halfLifeMs);
+      return Math.max(best, sparseCosine(candidateVector, vector) * recency);
+    }, 0);
+  };
 
   vectors.slice(0, candidates.length).forEach((vector, index) => {
     const candidate = candidates[index];
     if (!candidate || !candidate.id) return;
-    const positiveSimilarity = positive ? sparseCosine(vector, positive) : 0;
-    const negativeSimilarity = negative ? sparseCosine(vector, negative) : 0;
-    const score = positive && negative
+    const positiveSimilarity = bestSimilarity(vector, positiveExamples, SPARSE_FEEDBACK_HALF_LIFE_MS);
+    const negativeSimilarity = bestSimilarity(vector, negativeExamples, SPARSE_FEEDBACK_HALF_LIFE_MS);
+    const score = positiveExamples.length > 0 && negativeExamples.length > 0
       ? (positiveSimilarity - negativeSimilarity) / 2
-      : positive
+      : positiveExamples.length > 0
         ? positiveSimilarity
         : -negativeSimilarity;
     if (Number.isFinite(score)) scores.set(candidate.id, score);
@@ -321,6 +340,40 @@ export const blendSemanticScores = (providerScore: number, localScore: number): 
 export const cosineSimilarity = (left: number[], right: number[]): number => {
   if (left.length !== right.length || left.length === 0) return 0;
   return left.reduce((sum, value, index) => sum + value * right[index], 0);
+};
+
+// Score against individual feedback examples rather than averaging every interest into one
+// vector. This preserves distinct topics while letting newer votes outweigh older ones.
+export const denseFeedbackScores = (
+  feedback: SemanticVoteExample[],
+  feedbackEmbeddings: Array<number[] | null>,
+  candidateEmbeddings: Array<number[] | null>,
+  nowMs: number = Date.now(),
+): number[] => {
+  const latestByVote: Record<'like' | 'dislike', number> = { like: -Infinity, dislike: -Infinity };
+  feedback.forEach((example, index) => {
+    if (!feedbackEmbeddings[index]) return;
+    const timestamp = Number.isFinite(example.timestamp) ? example.timestamp : nowMs;
+    latestByVote[example.vote] = Math.max(latestByVote[example.vote], timestamp);
+  });
+
+  const scoreFor = (candidate: number[] | null): number => {
+    if (!candidate) return 0;
+    const bestByVote: Record<'like' | 'dislike', number> = { like: 0, dislike: 0 };
+    feedback.forEach((example, index) => {
+      const vector = feedbackEmbeddings[index];
+      if (!vector) return;
+      const latestTimestamp = latestByVote[example.vote];
+      const timestamp = Number.isFinite(example.timestamp) ? example.timestamp : nowMs;
+      const ageMs = Math.max(0, latestTimestamp - timestamp);
+      const recency = Math.pow(0.5, ageMs / DENSE_FEEDBACK_HALF_LIFE_MS);
+      const similarity = cosineSimilarity(candidate, vector) * recency;
+      bestByVote[example.vote] = Math.max(bestByVote[example.vote], similarity);
+    });
+    return (bestByVote.like - bestByVote.dislike) / 2;
+  };
+
+  return candidateEmbeddings.map(scoreFor);
 };
 
 export const buildDenseCentroid = (

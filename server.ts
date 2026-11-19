@@ -12,11 +12,10 @@ import { DEFAULT_FEEDS } from './src/defaultFeeds';
 import { MAX_PAGE_BYTES, MAX_REDIRECTS, BlockedUrlError, assertPublicHttpUrl, guardedLookup } from './lib/ssrf';
 import {
   blendSemanticScores,
-  buildDenseCentroid,
+  denseFeedbackScores,
   buildDeterministicDigest,
   buildExposurePenalty,
   buildWhyLine,
-  cosineSimilarity,
   localSemanticScores,
   maxPerSourceFor,
   scoreCandidates,
@@ -1732,15 +1731,13 @@ async function startServer() {
               .slice(0, 3000)
           );
           const vectors = await embedSemanticTexts([...feedbackTexts, ...candidateTexts], embeddingConfig);
-          const positiveCentroid = buildDenseCentroid('like', feedbackExamples, vectors);
-          const negativeCentroid = buildDenseCentroid('dislike', feedbackExamples, vectors);
+          const feedbackVectors = vectors.slice(0, feedbackExamples.length);
           const candidateVectors = vectors.slice(feedbackExamples.length);
+          const providerScores = denseFeedbackScores(feedbackExamples, feedbackVectors, candidateVectors);
 
           candidateVectors.forEach((vector, index) => {
             if (!vector) return;
-            const positiveSimilarity = positiveCentroid ? cosineSimilarity(vector, positiveCentroid) : 0;
-            const negativeSimilarity = negativeCentroid ? cosineSimilarity(vector, negativeCentroid) : 0;
-            const providerScore = (positiveSimilarity - negativeSimilarity) / 2;
+            const providerScore = providerScores[index] || 0;
             const itemId = semanticItems[index]?.id;
             if (!itemId) return;
             const localScore = semanticScores.get(itemId) || 0;

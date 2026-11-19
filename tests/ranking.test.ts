@@ -11,6 +11,7 @@ import {
   buildSparseCentroid,
   buildWhyLine,
   cosineSimilarity,
+  denseFeedbackScores,
   localSemanticScores,
   matchesInterest,
   maxPerSourceFor,
@@ -25,6 +26,7 @@ import {
   stretchTargetFor,
   withinDigestWindow,
   DIGEST_MAX_AGE_MS,
+  DENSE_FEEDBACK_HALF_LIFE_MS,
   type SemanticVoteExample,
 } from '../lib/ranking.ts';
 
@@ -94,7 +96,7 @@ test('sparseCosine is 0 for unrelated vectors and 1 for identical normalised one
 });
 
 // ---------------------------------------------------------------------------
-// Feedback maths: sparse centroids, decay, dense centroids and blending
+// Feedback maths: sparse and dense matching, decay and blending
 // ---------------------------------------------------------------------------
 
 test('buildSparseCentroid weights votes by age and ignores the other vote', () => {
@@ -122,23 +124,16 @@ test('a recent like dominates a years-old like when directions differ', () => {
     { id: 'rust', title: 'Borrow checker', summary: 'rust memory safety borrow checker' },
     { id: 'garden', title: 'Compost', summary: 'gardening tomatoes compost beds' },
   ];
-  const staleGap = (() => {
-    const scores = localSemanticScores(feedback, candidates, NOW);
-    const rust = scores.get('rust') || 0;
-    const garden = scores.get('garden') || 0;
-    assert.ok(rust > 0.4, `a fresh vote should still score, got ${rust}`);
-    assert.ok(rust > garden, 'the recent topic must outrank the stale one');
-    return rust - garden;
-  })();
+  const staleScores = localSemanticScores(feedback, candidates, NOW);
+  const bothFresh = feedback.map(entry => ({ ...entry, timestamp: NOW }));
+  const freshScores = localSemanticScores(bothFresh, candidates, NOW);
+  const recentRust = staleScores.get('rust') || 0;
+  const staleGarden = staleScores.get('garden') || 0;
+  const freshGarden = freshScores.get('garden') || 0;
 
-  // The same two votes with equal ages pull the centroid halfway between the topics, so the
-  // advantage of the fresh vote above is exactly what the 60-day half-life buys.
-  const freshGap = (() => {
-    const bothFresh = feedback.map(entry => ({ ...entry, timestamp: NOW }));
-    const scores = localSemanticScores(bothFresh, candidates, NOW);
-    return (scores.get('rust') || 0) - (scores.get('garden') || 0);
-  })();
-  assert.ok(staleGap > freshGap + 0.1, `decay should widen the gap: ${staleGap} vs ${freshGap}`);
+  assert.ok(recentRust > 0.4, `a fresh vote should still score, got ${recentRust}`);
+  approx(recentRust, freshScores.get('rust') || 0, 'the recent interest keeps its score');
+  assert.ok(staleGarden < freshGarden * 0.01, 'the older interest fades relative to a newer vote');
 });
 
 test('localSemanticScores returns nothing without feedback or candidates', () => {
@@ -155,6 +150,22 @@ test('localSemanticScores ranks a liked topic above an unrelated one', () => {
   assert.ok((scores.get('rust') || 0) > (scores.get('cook') || 0));
 });
 
+test('localSemanticScores preserves separate liked topics instead of averaging them', () => {
+  const feedback = [
+    vote({ id: 'rust', title: 'Rust memory safety', text: 'rust memory safety borrow checker' }),
+    vote({ id: 'garden', title: 'Garden compost soil', text: 'gardening tomatoes compost soil' }),
+  ];
+  const scores = localSemanticScores(feedback, [
+    { id: 'rust', title: 'Rust memory safety', summary: 'borrow checker' },
+    { id: 'garden', title: 'Garden compost soil', summary: 'tomatoes gardening' },
+    { id: 'unrelated', title: 'Classical music', summary: 'symphonies and orchestras' },
+  ], NOW);
+  assert.ok((scores.get('rust') || 0) > 0.7, 'the Rust interest remains independently strong');
+  assert.ok((scores.get('garden') || 0) > 0.7, 'the gardening interest remains independently strong');
+  assert.ok((scores.get('rust') || 0) > (scores.get('unrelated') || 0));
+  assert.ok((scores.get('garden') || 0) > (scores.get('unrelated') || 0));
+});
+
 test('localSemanticScores pushes disliked topics down', () => {
   const feedback = [vote({ vote: 'dislike', text: 'crypto tokens speculation airdrop' })];
   const scores = localSemanticScores(feedback, [
@@ -164,7 +175,7 @@ test('localSemanticScores pushes disliked topics down', () => {
   assert.ok((scores.get('crypto') || 0) < (scores.get('bread') || 0));
 });
 
-test('positive and negative centroids are averaged into one signed score', () => {
+test('matching positive and negative feedback cancels into a neutral score', () => {
   const feedback = [
     vote({ id: 'up', vote: 'like', text: 'design typography grids' }),
     vote({ id: 'down', vote: 'dislike', text: 'design typography grids' }),
@@ -201,6 +212,21 @@ test('cosineSimilarity is a dot product and rejects mismatched widths', () => {
   approx(cosineSimilarity([0.5, 0.5], [1, 0]), 0.5);
   assert.equal(cosineSimilarity([1, 0], [1, 0, 0]), 0);
   assert.equal(cosineSimilarity([], []), 0);
+});
+
+test('denseFeedbackScores preserves multiple interests and decays older votes', () => {
+  const feedback = [
+    vote({ id: 'recent', vote: 'like', text: 'recent', timestamp: NOW }),
+    vote({ id: 'older', vote: 'like', text: 'older', timestamp: NOW - DENSE_FEEDBACK_HALF_LIFE_MS }),
+  ];
+  const scores = denseFeedbackScores(
+    feedback,
+    [[1, 0], [0, 1]],
+    [[1, 0], [0, 1]],
+    NOW,
+  );
+  approx(scores[0], 0.5, 'most recent matching interest');
+  approx(scores[1], 0.25, 'one-half-life-old interest is down-weighted');
 });
 
 test('provider embeddings are blended 65/35 with the built-in engine', () => {
