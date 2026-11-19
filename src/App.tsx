@@ -1725,7 +1725,7 @@ export default function App() {
       if (!readSourceIds.includes(sourceId)) {
         setReadSourceIds(prev => [...prev, sourceId]);
         const matched = sources.find(s => s.id === sourceId);
-        showToast(`Marked ${matched ? matched.title : sourceTitle} updates as read`);
+        showToast('Marked updates as read');
       }
     } else if (sourceTitle && sourceTitle !== 'all') {
       const match = sources.find(
@@ -1734,7 +1734,7 @@ export default function App() {
       );
       if (match && !readSourceIds.includes(match.id)) {
         setReadSourceIds(prev => [...prev, match.id]);
-        showToast(`Marked ${match.title} updates as read`);
+        showToast('Marked updates as read');
       }
     }
   };
@@ -1918,7 +1918,7 @@ export default function App() {
         ].slice(-150);
         safeSetJson('curator_digest_history', mergedHistory);
       } else if (options?.fresh) {
-        showToast('Nothing new in the last 24 hours. Everything older is still in the Feeds tab.');
+        showToast('Nothing new in 24 hours — older stories are in Feeds');
       }
     } catch {
       if (requestId !== digestRequestRef.current) return;
@@ -2140,7 +2140,7 @@ export default function App() {
       less: [],
     }));
 
-    showToast(item ? `"${item.title}" is back in your digest` : 'Story restored to your digest');
+    showToast('Story restored');
   };
 
   const permanentlyDismissMuted = (itemId: string) => {
@@ -2233,7 +2233,7 @@ export default function App() {
     setNewSourceTitle('');
     setNewSourceUrl('');
     setShowAddSourceModal(false);
-    showToast(`Added "${trimmedTitle}" · ${feedItemCount} recent ${feedItemCount === 1 ? 'story' : 'stories'} found`);
+    showToast(`Feed added · ${feedItemCount} recent ${feedItemCount === 1 ? 'story' : 'stories'} found`);
   };
 
   const toggleSourceCategory = (sourceId: string, category: string) => {
@@ -2273,7 +2273,7 @@ export default function App() {
     const removed = sources.find(s => s.id === id);
     setSources(prev => prev.filter(s => s.id !== id));
     showToast(
-      `Removed "${removed?.title ?? 'source'}"`,
+      'Source removed',
       'Undo',
       () => {
         if (removed) setSources(prev => (prev.some(s => s.id === removed.id) ? prev : [removed, ...prev]));
@@ -2412,7 +2412,7 @@ export default function App() {
     const normalizedFeedUrl = item.feedUrl.trim().toLowerCase();
     const alreadyExists = sources.some(s => s.feedUrl.trim().toLowerCase() === normalizedFeedUrl);
     if (alreadyExists) {
-      showToast(`"${item.title}" is already in your sources`);
+      showToast('That feed is already in your sources');
       return;
     }
 
@@ -2427,8 +2427,8 @@ export default function App() {
     setSources(prev => [newSrc, ...prev]);
     showToast(
       item.rssStatus === 'generatable'
-        ? `Generated RSS and added "${item.title}"`
-        : `Added "${item.title}" to ${newSrc.folder}`
+        ? 'Generated RSS and added the feed'
+        : `Feed added to ${newSrc.folder}`
     );
   };
 
@@ -2581,15 +2581,15 @@ export default function App() {
           setFeedStreamArticles(articles);
           setFeedStreamRenderKey(prev => prev + 1);
         }
-        showToast(`Fetched ${articles.length} ${articles.length === 1 ? 'article' : 'articles'} from "${source.title}"`);
+        showToast(`Fetched ${articles.length} ${articles.length === 1 ? 'article' : 'articles'}`);
       } else {
-        showToast(`Could not refresh "${source.title}"`);
+        showToast('Could not refresh that feed');
       }
     } catch (e) {
       setSources(prev => prev.map(s => s.id === source.id
         ? { ...s, status: 'failing' as const, failingReason: 'Network error while refreshing this feed.' }
         : s));
-      showToast(`Could not refresh "${source.title}"`);
+      showToast('Could not refresh that feed');
     } finally {
       setRefreshingSourceId(null);
     }
@@ -3407,10 +3407,10 @@ export default function App() {
         <div
           role="status"
           aria-live="polite"
-          className="fixed safe-toast left-1/2 -translate-x-1/2 z-[60] w-fit max-w-[calc(100vw-2rem)] bg-slate-900/95 border border-slate-700/80 text-slate-200 text-sm px-4 py-3 rounded-2xl shadow-2xl flex flex-wrap items-center gap-3 animate-fade-in backdrop-blur-md"
+          className="fixed safe-toast left-1/2 -translate-x-1/2 z-[60] w-fit max-w-[calc(100vw-2rem)] bg-slate-900/95 border border-slate-700/80 text-slate-200 text-xs px-3 py-2 rounded-xl shadow-2xl flex items-center gap-2 animate-fade-in backdrop-blur-md"
         >
-          <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span className="min-w-0 flex-[0_1_auto] leading-snug">{activeToast.message}</span>
+          <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />
+          <span className="min-w-0 truncate leading-tight">{activeToast.message}</span>
           {activeToast.actionLabel && activeToast.onAction && (
             <button
               type="button"
@@ -3418,7 +3418,7 @@ export default function App() {
                 activeToast.onAction?.();
                 setActiveToast(null);
               }}
-              className="ml-auto shrink-0 inline-flex min-h-11 items-center justify-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/20 px-3 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/30 cursor-pointer"
+              className="ml-auto shrink-0 inline-flex min-h-8 items-center justify-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/20 px-2.5 text-[11px] font-semibold text-amber-300 transition hover:bg-amber-500/30 cursor-pointer"
             >
               <RotateCcw className="w-3 h-3" />
               <span>{activeToast.actionLabel}</span>
@@ -3782,7 +3782,7 @@ export default function App() {
                       }
                     }));
                     setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
-                    showToast(`Opening original on ${selectedArticle.source}`);
+                    showToast('Opening original');
                   }}
                   className="reader-link inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold transition-colors cursor-pointer"
                   title={`Read original on ${selectedArticle.source} (opens external browser or app)`}
@@ -4071,27 +4071,27 @@ export default function App() {
                     return (
                       <div
                         key={item.id}
-                        className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800/80 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-xs animate-fade-in backdrop-blur-sm shadow-sm"
+                        className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-800/80 flex items-center justify-between gap-2 text-xs animate-fade-in backdrop-blur-sm shadow-sm"
                       >
-                        <div className="flex items-center gap-2.5 min-w-0 flex-1 text-slate-300">
-                          <EyeOff className="w-4 h-4 text-slate-400 shrink-0" />
-                          <span className="min-w-0">Less like this</span>
+                        <div className="flex items-center gap-2 min-w-0 flex-1 text-slate-300">
+                          <EyeOff className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span className="min-w-0 truncate">Less like this</span>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex items-center gap-1.5 shrink-0">
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); undoHandleLess(item.id); }}
-                            className="px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 font-semibold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+                            className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer shadow-sm"
                             title="Undo — put this one story back in your digest"
                             aria-label="Undo — put this one story back in your digest"
                           >
-                            <RotateCcw className="w-3.5 h-3.5" />
+                            <RotateCcw className="w-3 h-3" />
                             <span>Undo</span>
                           </button>
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); permanentlyDismissMuted(item.id); }}
-                            className="text-slate-400 hover:text-slate-100 p-1.5 rounded-md transition"
+                            className="text-slate-400 hover:text-slate-100 p-1 rounded-md transition"
                             title="Dismiss placeholder and remove this story from today"
                             aria-label="Dismiss placeholder and remove this story from today"
                           >
@@ -4257,7 +4257,7 @@ export default function App() {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                                showToast(`Opening source on ${item.source}`);
+                                showToast('Opening original');
                               }}
                               className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
                               title={`Read original on ${item.source} (opens external browser or app)`}
@@ -4309,27 +4309,27 @@ export default function App() {
                         return (
                           <div
                             key={item.id}
-                            className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800/80 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-xs animate-fade-in backdrop-blur-sm shadow-sm"
+                            className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-800/80 flex items-center justify-between gap-2 text-xs animate-fade-in backdrop-blur-sm shadow-sm"
                           >
-                            <div className="flex items-center gap-2.5 min-w-0 flex-1 text-slate-300">
-                              <EyeOff className="w-4 h-4 text-slate-400 shrink-0" />
-                              <span className="min-w-0">Less like this</span>
+                            <div className="flex items-center gap-2 min-w-0 flex-1 text-slate-300">
+                              <EyeOff className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                              <span className="min-w-0 truncate">Less like this</span>
                             </div>
-                            <div className="flex items-center gap-2 shrink-0">
+                            <div className="flex items-center gap-1.5 shrink-0">
                               <button
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); undoHandleLess(item.id); }}
-                                className="px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 font-semibold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+                                className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer shadow-sm"
                                 title="Undo — put this one story back in your digest"
                                 aria-label="Undo — put this one story back in your digest"
                               >
-                                <RotateCcw className="w-3.5 h-3.5" />
+                                <RotateCcw className="w-3 h-3" />
                                 <span>Undo</span>
                               </button>
                               <button
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); permanentlyDismissMuted(item.id); }}
-                                className="text-slate-400 hover:text-slate-100 p-1.5 rounded-md transition"
+                                className="text-slate-400 hover:text-slate-100 p-1 rounded-md transition"
                                 title="Dismiss placeholder and remove this story from today"
                                 aria-label="Dismiss placeholder and remove this story from today"
                               >
@@ -4485,7 +4485,7 @@ export default function App() {
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                                    showToast(`Opening source on ${item.source}`);
+                                    showToast('Opening original');
                                   }}
                                   className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-rose-400 hover:text-rose-300 transition-colors"
                                   title={`Read original on ${item.source} (opens external browser or app)`}
@@ -4662,7 +4662,7 @@ export default function App() {
                             onClick={(e) => {
                               e.stopPropagation();
                               setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                              showToast(`Opening source on ${item.source}`);
+                              showToast('Opening original');
                             }}
                             className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
                             title={`Read original on ${item.source} (opens external browser or app)`}
@@ -6077,7 +6077,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                                showToast(`Opening source on ${item.source}`);
+                                showToast('Opening original');
                               }}
                               className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
                               title={`Read original on ${item.source} (opens external browser or app)`}
