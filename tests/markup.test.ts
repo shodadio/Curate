@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, splitDenseParagraph, splitSentences } from '../lib/markup.ts';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, splitDenseParagraph, splitSentences } from '../lib/markup.ts';
 
 test('only a piece saved before links were kept is refreshed', () => {
   assert.equal(articleNeedsLinkRefresh({ url: 'https://example.com/story' }), true);
@@ -306,6 +306,24 @@ test('htmlToReadableText drops the site sidebar that repeats under a piece', () 
     body,
     'First paragraph of the piece.\n\nSecond paragraph of the piece.\n\nThird paragraph of the piece.\n\nFourth paragraph of the piece.',
   );
+});
+
+test('a feed teaser counts as an unfinished read', () => {
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: 'A couple hours later, Anthropic debuted, at around 11…' }), true);
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: `${'A real sentence. '.repeat(60)}\n\n[Read more](https://example.com/a)` }), true);
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: 'A real sentence. '.repeat(60) }), false);
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: 'Short but whole piece.' }), true);
+  // Nothing to fetch without an address, so the stored body is all there is.
+  assert.equal(articleLooksIncomplete({ fullText: 'Short but whole piece.' }), false);
+});
+
+test('htmlToReadableText stops a paid preview at the subscriber offer', () => {
+  const body = htmlToReadableText([
+    '<p>The piece opens with the argument.</p>',
+    '<p>Already a paid subscriber?</p>',
+    '<p>Keep reading with a 7-day free trial</p>',
+  ].join(''));
+  assert.equal(body, 'The piece opens with the argument.');
 });
 
 test('htmlToReadableText stops a paywalled piece at the teaser', () => {

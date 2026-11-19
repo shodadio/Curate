@@ -26,7 +26,7 @@ import {
   type SemanticVoteExample,
 } from './lib/ranking';
 import { parseOpmlText } from './lib/opml';
-import { cleanHtml, htmlToReadableText } from './lib/markup';
+import { articleLooksIncomplete, cleanHtml, htmlToReadableText } from './lib/markup';
 import { parseArticleAuthor, parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
 
 dotenv.config();
@@ -1227,9 +1227,12 @@ async function startServer() {
       const words = cleanFull.split(/\s+/).filter(Boolean).length;
       const minutes = Math.max(2, Math.round(words / 200));
       const readTime = `${minutes} min read`;
-      const hasContinuationMarker = /(?:\.{3}|…|\[\s*…\s*\])\s*$/.test(cleanFull) ||
-        /\b(?:continue reading|read (?:the )?(?:full )?(?:article|story)|read more)\b/i.test(cleanFull.slice(-250)) ||
-        /\b(?:continue reading|read more)\b/i.test(fullRaw);
+      // A feed that ships only the opening of a piece leaves the reader looking cut off. Those
+      // pieces earn one page read; the full body replaces the teaser when the page gives it up.
+      const needsArticleFetch = Boolean(link) && (
+        articleLooksIncomplete({ url: link, fullText: cleanFull }) ||
+        /\b(?:continue reading|read more)\b/i.test(fullRaw)
+      );
 
       const idHash = Buffer.from(link || title).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 16);
       const id = `live_${idHash}`;
@@ -1249,7 +1252,7 @@ async function startServer() {
         // This text came from the cleaner that keeps a link's address, so a reader holding it
         // needs no refresh. Saves written before that change lack the flag and are refreshed.
         linksCleaned: true,
-        _needsArticleFetch: Boolean(link && cleanFull.length > 80 && hasContinuationMarker),
+        _needsArticleFetch: needsArticleFetch,
         publishedAt,
         publishedAtMs: Number.isFinite(publishedAtMs) ? publishedAtMs : undefined,
         bannerImage,
@@ -1298,6 +1301,11 @@ async function startServer() {
     const paragraphs = text.split(/\n{2,}/).filter(paragraph => paragraph.trim().length > 0);
     if (text.length < 600 || paragraphs.length < 3) return '';
     if (/\b(?:subscribe|sign up|create an account)\b.{0,80}\b(?:continue|read|access)\b|\b(?:sign|log) in to\b.{0,80}\b(?:continue|read|access)\b/i.test(text)) {
+      return '';
+    }
+    // Substack and its kind close a paid preview with the offer rather than the piece. That body
+    // is the paywall's face, not the article, so the feed's own teaser is the better read.
+    if (/(?:already (?:have an account|a paid subscriber)|keep reading with (?:a|the)\b|enter your email and get every post|start your free trial|sign in with google)/i.test(text.slice(-400))) {
       return '';
     }
     return text;
@@ -1393,7 +1401,9 @@ async function startServer() {
       while (nextTarget < targets.length) {
         const item = targets[nextTarget++];
         const articleText = await fetchArticleBody(item.url);
-        if (!articleText) continue;
+        // A page that still stops at a teaser (a paywall, or a stub the publisher never expanded)
+        // is no fuller than the feed's own text, so the stored body stays.
+        if (!articleText || articleLooksIncomplete({ url: item.url, fullText: articleText })) continue;
         item.fullText = articleText;
         const words = articleText.split(/\s+/).filter(Boolean).length;
         item.readTime = `${Math.max(2, Math.round(words / 200))} min read`;
