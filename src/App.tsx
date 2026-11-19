@@ -2118,7 +2118,7 @@ export default function App() {
       [item.id]: item
     }));
 
-    showToast(`Less like this · "${item.title}" hidden`, 'Undo this story', () => undoHandleLess(item.id));
+    showToast('Less like this', 'Undo', () => undoHandleLess(item.id));
   };
 
   const undoHandleLess = (itemId: string) => {
@@ -3410,7 +3410,7 @@ export default function App() {
           className="fixed safe-toast left-1/2 -translate-x-1/2 z-[60] w-fit max-w-[calc(100vw-2rem)] bg-slate-900/95 border border-slate-700/80 text-slate-200 text-sm px-4 py-3 rounded-2xl shadow-2xl flex flex-wrap items-center gap-3 animate-fade-in backdrop-blur-md"
         >
           <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span className="min-w-0 flex-[1_1_12rem] leading-snug">{activeToast.message}</span>
+          <span className="min-w-0 flex-[0_1_auto] leading-snug">{activeToast.message}</span>
           {activeToast.actionLabel && activeToast.onAction && (
             <button
               type="button"
@@ -4075,9 +4075,7 @@ export default function App() {
                       >
                         <div className="flex items-center gap-2.5 min-w-0 flex-1 text-slate-300">
                           <EyeOff className="w-4 h-4 text-slate-400 shrink-0" />
-                          <span className="min-w-0">
-                            Less like this · <span className="font-semibold text-slate-200">"{item.title}"</span> hidden
-                          </span>
+                          <span className="min-w-0">Less like this</span>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           <button
@@ -4315,9 +4313,7 @@ export default function App() {
                           >
                             <div className="flex items-center gap-2.5 min-w-0 flex-1 text-slate-300">
                               <EyeOff className="w-4 h-4 text-slate-400 shrink-0" />
-                              <span className="min-w-0">
-                                Less like this · <span className="font-semibold text-slate-200">"{item.title}"</span> hidden
-                              </span>
+                              <span className="min-w-0">Less like this</span>
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
                               <button
