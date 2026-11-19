@@ -2,10 +2,27 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
+import { execSync } from 'node:child_process';
 import {defineConfig} from 'vite';
+
+// Which build a device is running: the commit it came from, when it was made. Docker images
+// exclude .git, so a deploy can pass the commit in through SOURCE_COMMIT (or GITHUB_SHA) —
+// the build time alone still tells one deploy from another.
+const commitFromEnv = process.env.SOURCE_COMMIT || process.env.GIT_COMMIT || process.env.GITHUB_SHA || '';
+const shortCommit = (() => {
+  if (commitFromEnv.trim()) return commitFromEnv.trim().slice(0, 7);
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  } catch {
+    return '';
+  }
+})();
 
 export default defineConfig(() => {
   return {
+    define: {
+      __BUILD_INFO__: JSON.stringify({ commit: shortCommit, builtAt: new Date().toISOString() }),
+    },
     plugins: [
       react(),
       tailwindcss(),

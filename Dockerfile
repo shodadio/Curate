@@ -4,6 +4,11 @@ FROM oven/bun:1 AS build
 
 WORKDIR /app
 
+# The image has no .git, so the commit is handed in at build time to stamp the app:
+# docker build --build-arg SOURCE_COMMIT=$(git rev-parse --short HEAD) .
+ARG SOURCE_COMMIT=""
+ENV SOURCE_COMMIT=$SOURCE_COMMIT
+
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
