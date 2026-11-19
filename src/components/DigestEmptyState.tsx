@@ -7,6 +7,8 @@ interface DigestEmptyStateProps {
   mutedCount: number;
   onRestoreMuted: () => void;
   onManageSources: () => void;
+  /** Opens the Feeds tab, where stories older than the digest window live. */
+  onBrowseFeeds?: () => void;
 }
 
 export function DigestEmptyState({
@@ -14,6 +16,7 @@ export function DigestEmptyState({
   mutedCount,
   onRestoreMuted,
   onManageSources,
+  onBrowseFeeds,
 }: DigestEmptyStateProps) {
   const isMuted = mode === 'muted';
   const headingId = isMuted ? 'digest-empty-muted-heading' : 'digest-empty-quiet-heading';
@@ -34,12 +37,12 @@ export function DigestEmptyState({
 
       <div role="status">
         <h3 id={headingId} className="text-base font-semibold tracking-tight text-slate-100">
-          {isMuted ? "Nothing left in today's digest" : "No stories in today's digest"}
+          {isMuted ? "Nothing left in today's digest" : 'Nothing new in the last 24 hours'}
         </h3>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-slate-400">
           {isMuted
             ? "You marked every story here \u201cLess like this\u201d, so there is nothing left to read. Restore them to pick up where you left off, or refresh at the top for a new mix."
-            : 'Your feeds are quiet right now. Refresh at the top to look again, or check that your sources are still reachable.'}
+            : 'Your feeds have not published anything new in the last 24 hours. Refresh at the top to look again.'}
         </p>
       </div>
 
@@ -52,6 +55,16 @@ export function DigestEmptyState({
           >
             <RotateCcw className="h-4 w-4" />
             <span>{restoreLabel}</span>
+          </button>
+        )}
+        {!isMuted && onBrowseFeeds && (
+          <button
+            type="button"
+            onClick={onBrowseFeeds}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-700 px-4 text-sm font-medium text-slate-200 transition hover:border-amber-500/40 hover:text-amber-300"
+          >
+            <Rss className="h-4 w-4" />
+            <span>Browse older stories in Feeds</span>
           </button>
         )}
       </div>

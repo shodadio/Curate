@@ -432,6 +432,41 @@ export const stretchTargetFor = (serendipityDial: number, itemCount: number): nu
 
 export const MAX_STRETCH_AGE_MS = 45 * 24 * 60 * 60 * 1000;
 
+// The digest is a daily edition: only pieces published in the last day are candidates. Older
+// pieces stay readable in the Feeds stream, but they never crowd today's finite list.
+export const DIGEST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+// Undated feeds and slightly future-dated posts (timezone drift) still count; only a piece
+// proven older than the window is dropped.
+export const withinDigestWindow = (
+  item: { publishedAtMs?: number },
+  nowMs: number = Date.now(),
+  maxAgeMs: number = DIGEST_MAX_AGE_MS,
+): boolean => {
+  const published = Number(item?.publishedAtMs);
+  if (!Number.isFinite(published) || published <= 0) return true;
+  return nowMs - published <= maxAgeMs;
+};
+
+export interface FreshPoolExclusions {
+  previousDigestIds?: string[];
+  shownIds?: string[];
+  actionedIds?: string[];
+}
+
+// A refresh builds the edition from what is left after the reader's own history: saved, opened,
+// voted and hidden pieces, plus anything this browser already showed. There is deliberately no
+// fallback to the previous edition — an empty result means "nothing new", never "reshuffle the
+// same cards into a fresh-looking list".
+export function freshCandidates<T extends { id: string }>(pool: T[], exclusions: FreshPoolExclusions): T[] {
+  const previousDigestIds = new Set(exclusions.previousDigestIds || []);
+  const shownIds = new Set(exclusions.shownIds || []);
+  const actionedIds = new Set(exclusions.actionedIds || []);
+  return pool.filter(item =>
+    !actionedIds.has(item.id) && !previousDigestIds.has(item.id) && !shownIds.has(item.id)
+  );
+}
+
 export interface DigestSelectionOptions {
   itemCount: number;
   serendipityDial: number;

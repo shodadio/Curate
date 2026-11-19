@@ -20,8 +20,11 @@ import {
   semanticTermCounts,
   semanticTokens,
   sparseCosine,
+  freshCandidates,
   stableJitter,
   stretchTargetFor,
+  withinDigestWindow,
+  DIGEST_MAX_AGE_MS,
   type SemanticVoteExample,
 } from '../lib/ranking.ts';
 
@@ -469,6 +472,38 @@ test('buildDeterministicDigest infers a familiar folder from the digest when the
   const stretch = digest.filter(item => item.isOutOfBubble);
   assert.equal(stretch.length, 1);
   assert.equal(stretch[0].folder, 'History');
+});
+
+test('the digest only draws from the last day of publishing', () => {
+  assert.equal(DIGEST_MAX_AGE_MS, DAY);
+  assert.equal(withinDigestWindow({ publishedAtMs: NOW - 23 * 60 * 60 * 1000 }, NOW), true);
+  assert.equal(withinDigestWindow({ publishedAtMs: NOW - DAY }, NOW), true, 'exactly a day old still counts');
+  assert.equal(withinDigestWindow({ publishedAtMs: NOW - DAY - 1 }, NOW), false, 'any older than a day is out');
+  // Undated feeds and posts dated slightly ahead (timezone drift) are never treated as stale.
+  assert.equal(withinDigestWindow({}, NOW), true);
+  assert.equal(withinDigestWindow({ publishedAtMs: NaN }, NOW), true);
+  assert.equal(withinDigestWindow({ publishedAtMs: NOW + 60 * 60 * 1000 }, NOW), true);
+});
+
+test('a refresh drops actioned, already-shown and previous-edition stories', () => {
+  const pool = [{ id: 'saved' }, { id: 'opened' }, { id: 'shown' }, { id: 'previous' }, { id: 'new' }];
+  const kept = freshCandidates(pool, {
+    actionedIds: ['saved', 'opened'],
+    shownIds: ['shown'],
+    previousDigestIds: ['previous'],
+  });
+  assert.deepEqual(kept.map(item => item.id), ['new']);
+});
+
+test('a refresh returns nothing rather than reshuffling the old edition', () => {
+  const pool = [{ id: 'a' }, { id: 'b' }];
+  const kept = freshCandidates(pool, { previousDigestIds: ['a'], shownIds: ['b'] });
+  assert.deepEqual(kept, [], 'no fallback to stories the browser already showed');
+});
+
+test('a refresh keeps every unseen story, including ones from another source', () => {
+  const pool = [{ id: 'x' }, { id: 'y' }, { id: 'z' }];
+  assert.deepEqual(freshCandidates(pool, { previousDigestIds: ['y'] }).map(item => item.id), ['x', 'z']);
 });
 
 test('buildDeterministicDigest never returns more than the requested edition size', () => {

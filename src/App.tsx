@@ -1872,6 +1872,16 @@ export default function App() {
           embeddingModel,
           recentlyShown,
           previousDigestIds: [...currentDigestIds],
+          // A refresh must not hand back what the reader already saved, opened, voted on or hid.
+          actionedIds: options?.fresh
+            ? Array.from(new Set([
+                ...savedIds,
+                ...Object.keys(mutedCards),
+                ...(signals.moreIds || []),
+                ...(signals.lessIds || []),
+                ...Object.keys(readingStats),
+              ]))
+            : [],
           fresh: Boolean(options?.fresh),
           seed: options?.fresh ? `${Date.now()}-${Math.random()}` : 'stable',
         }),
@@ -1908,7 +1918,7 @@ export default function App() {
         ].slice(-150);
         safeSetJson('curator_digest_history', mergedHistory);
       } else if (options?.fresh) {
-        showToast('No other stories are ready right now. Restore hidden stories or review your sources.');
+        showToast('Nothing new in the last 24 hours. Everything older is still in the Feeds tab.');
       }
     } catch {
       if (requestId !== digestRequestRef.current) return;
@@ -3912,6 +3922,10 @@ export default function App() {
                           ? 'Edition date not recorded'
                           : `Today's digest · ${new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}`
                       } · ${digestSummaryLabel}${
+                        editionIsToday && digest.length > 0
+                          ? ' · from the last 24 hours'
+                          : ''
+                      }${
                         semanticSummary && semanticSummary.feedbackExamples > 0
                           ? ` · ranked from ${semanticSummary.feedbackExamples} vote example${semanticSummary.feedbackExamples === 1 ? '' : 's'}`
                           : ''
@@ -4045,6 +4059,7 @@ export default function App() {
                 mutedCount={0}
                 onRestoreMuted={restoreAllMutedCards}
                 onManageSources={() => setActiveTab('sources')}
+                onBrowseFeeds={() => setActiveTab('feeds')}
               />
             ) : (
               <div className="space-y-8">
@@ -5846,7 +5861,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 <p className="text-xs text-slate-400 mt-0.5">
                   {loadingFeedStream
                     ? 'Loading stream…'
-                    : `Traditional chronological reading stream · ${feedStreamArticles.length} ${feedStreamArticles.length === 1 ? 'entry' : 'entries'}`}
+                    : `Traditional chronological reading stream · ${feedStreamArticles.length} ${feedStreamArticles.length === 1 ? 'entry' : 'entries'} · every story, including ones older than today's digest`}
                 </p>
               </div>
 
