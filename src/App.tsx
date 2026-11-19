@@ -173,8 +173,9 @@ function formatBuildStamp(info: { commit: string; builtAt: string }): string {
   const when = Number.isNaN(at.getTime())
     ? ''
     : at.toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-  const commit = info.commit ? `Build ${info.commit}` : 'Local build';
-  return when ? `${commit} · ${when}` : commit;
+  // A deploy that cannot name its commit still gets a time, rather than claiming to be local.
+  if (!info.commit) return when ? `Built ${when}` : 'Build time not recorded';
+  return when ? `Build ${info.commit} · ${when}` : `Build ${info.commit}`;
 }
 
 // Duplicate detection compares feeds by address, not by the name a reader gave them.
