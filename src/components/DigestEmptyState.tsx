@@ -34,12 +34,12 @@ export function DigestEmptyState({
 
       <div role="status">
         <h3 id={headingId} className="text-base font-semibold tracking-tight text-slate-100">
-          {isMuted ? "Nothing left in today's digest" : "No stories in today's digest"}
+          {isMuted ? "Nothing left in today's digest" : 'Nothing new in the last 24 hours'}
         </h3>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-slate-400">
           {isMuted
             ? "You marked every story here \u201cLess like this\u201d, so there is nothing left to read. Restore them to pick up where you left off, or refresh at the top for a new mix."
-            : 'Your feeds are quiet right now. Refresh at the top to look again, or check that your sources are still reachable.'}
+            : 'Your feeds have not published anything new in the last 24 hours. Refresh at the top to look again, or browse older stories in the Feeds tab.'}
         </p>
       </div>
 

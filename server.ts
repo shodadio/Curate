@@ -22,6 +22,7 @@ import {
   scoreCandidates,
   selectDiverse,
   stableJitter,
+  withinDigestWindow,
   type SemanticVoteExample,
 } from './lib/ranking';
 import { parseOpmlText } from './lib/opml';
@@ -1571,8 +1572,10 @@ async function startServer() {
         : activeSources;
       const runSources = orderedSources.slice(0, MAX_SOURCES_PER_RUN);
 
+      // A refresh means "look for what is new since last time", so it reads the networks again
+      // instead of replaying the five-minute feed cache that produced the current edition.
       const feedResults = await Promise.allSettled(
-        runSources.map((s: any) => fetchFeedWithStatus(s.feedUrl, s.title, s.folder, s.categories))
+        runSources.map((s: any) => fetchFeedWithStatus(s.feedUrl, s.title, s.folder, s.categories, { force: wantsFreshDigest }))
       );
 
       const feedFailures: Array<{ title: string; feedUrl?: string; reason: string }> = [];
@@ -1589,6 +1592,12 @@ async function startServer() {
         candidatePool.push(...result.value.items);
       });
 
+      // Today's edition draws only on the last day of publishing. The Feeds tab keeps the whole
+      // stream, so nothing older is lost — it simply cannot fill a slot in today's list.
+      const digestNowMs = Date.now();
+      const dropStaleFromDigest = (pool: any[]) => pool.filter(item => withinDigestWindow(item, digestNowMs));
+      candidatePool = dropStaleFromDigest(candidatePool);
+
       // If pool is sparse, fetch from default verified feeds as supplement
       if (candidatePool.length < 4) {
         const defResults = await Promise.allSettled(
@@ -1599,6 +1608,7 @@ async function startServer() {
             candidatePool.push(...r.value);
           }
         }
+        candidatePool = dropStaleFromDigest(candidatePool);
       }
 
       // Deduplicate candidates by url or title
@@ -1678,13 +1688,27 @@ async function startServer() {
           ? req.body.previousDigestIds.filter((id: any) => typeof id === 'string')
           : []
       );
+      // Saved, opened, voted and hidden pieces are already dealt with; a refresh must not hand
+      // them back. The browser knows which ones those are, so it sends their ids.
+      const actionedIds = new Set<string>(
+        Array.isArray(req.body.actionedIds)
+          ? req.body.actionedIds.filter((id: any) => typeof id === 'string').slice(0, 600)
+          : []
+      );
+      const shownIds = new Set(recentlyShown.map(entry => entry.id));
       const exposurePenalty = buildExposurePenalty(recentlyShown);
 
-      // A manual refresh keeps the current digest's articles out of the pool when there is room.
-      if (wantsFreshDigest && previousDigestIds.size > 0) {
-        const withoutPrevious = candidatePool.filter(item => !previousDigestIds.has(item.id));
-        if (withoutPrevious.length >= itemCount) {
-          candidatePool = withoutPrevious;
+      // A refresh builds a genuinely new edition: actioned pieces never come back, and pieces
+      // this browser already showed are skipped. Each stricter rule yields only when it would
+      // empty the edition, so a quiet day still returns the freshest stories available.
+      if (wantsFreshDigest) {
+        candidatePool = candidatePool.filter(item => !actionedIds.has(item.id));
+        const withoutShown = candidatePool.filter(item => !previousDigestIds.has(item.id) && !shownIds.has(item.id));
+        if (withoutShown.length > 0) {
+          candidatePool = withoutShown;
+        } else {
+          const withoutEdition = candidatePool.filter(item => !previousDigestIds.has(item.id));
+          if (withoutEdition.length > 0) candidatePool = withoutEdition;
         }
       }
 
