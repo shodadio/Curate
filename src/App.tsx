@@ -4059,6 +4059,7 @@ export default function App() {
                 mutedCount={0}
                 onRestoreMuted={restoreAllMutedCards}
                 onManageSources={() => setActiveTab('sources')}
+                onBrowseFeeds={() => setActiveTab('feeds')}
               />
             ) : (
               <div className="space-y-8">
@@ -5860,7 +5861,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 <p className="text-xs text-slate-400 mt-0.5">
                   {loadingFeedStream
                     ? 'Loading stream…'
-                    : `Traditional chronological reading stream · ${feedStreamArticles.length} ${feedStreamArticles.length === 1 ? 'entry' : 'entries'}`}
+                    : `Traditional chronological reading stream · ${feedStreamArticles.length} ${feedStreamArticles.length === 1 ? 'entry' : 'entries'} · every story, including ones older than today's digest`}
                 </p>
               </div>
 
