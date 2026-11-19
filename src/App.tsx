@@ -1945,6 +1945,7 @@ export default function App() {
 
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [pendingReset, setPendingReset] = useState(false);
+  const [pendingDeadDelete, setPendingDeadDelete] = useState(false);
 
   useEffect(() => {
     if (!pendingDeleteId && !pendingReset) return;
@@ -2282,6 +2283,24 @@ export default function App() {
     );
   };
 
+  // One pass over the failed list: feeds that look closed, moved or inactive go together, after a
+  // single confirmation. A feed that is only quiet right now is left where it is.
+  const deleteDeadSources = () => {
+    const dead = sources.filter(src => src.status === 'failing' && explainFeedFailure(src.failingReason).likelyDead);
+    if (dead.length === 0) {
+      setPendingDeadDelete(false);
+      return;
+    }
+    const deadIds = new Set(dead.map(src => src.id));
+    setSources(prev => prev.filter(src => !deadIds.has(src.id)));
+    setPendingDeadDelete(false);
+    showToast(
+      `Removed ${dead.length} dead ${dead.length === 1 ? 'feed' : 'feeds'}`,
+      'Undo',
+      () => setSources(prev => [...dead.filter(src => !prev.some(entry => entry.id === src.id)), ...prev])
+    );
+  };
+
   const processOpmlText = async (rawText: string, options?: { skipConfirm?: boolean }) => {
     if (!rawText.trim()) return;
     // Importing merges, so an existing list is never replaced — but say so before the first file.
@@ -2499,6 +2518,21 @@ export default function App() {
     return `${days}d ago`;
   };
 
+  // A failed feed's last delivery tells a brand-new failure from one that has been dead for
+  // months, so anything older than a day is dated as well as counted.
+  const formatLastDelivery = (timestamp?: number): string => {
+    if (!timestamp) return '';
+    const diff = Math.max(0, Date.now() - timestamp);
+    if (diff < 24 * 60 * 60 * 1000) return formatSyncTime(timestamp);
+    const date = new Date(timestamp);
+    const day = date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      ...(date.getFullYear() === new Date().getFullYear() ? {} : { year: 'numeric' }),
+    });
+    return `${day} · ${Math.floor(diff / (24 * 60 * 60 * 1000))}d ago`;
+  };
+
   // "4 min ago · Nov 20": how long ago the edition was built, then its date, so nobody has to
   // work out whether "Nov 20 at 6:03 AM" is today. The year only appears when it differs.
   const formatCuratedAt = (value: number): string => {
@@ -2595,8 +2629,6 @@ export default function App() {
       setRefreshingSourceId(null);
     }
   };
-
-  const failingSourceCount = sources.filter(s => s.status === 'failing').length;
 
   // Re-read every watched feed — and only the feeds. It never rebuilds the digest, so a refresh
   // here cannot reshuffle what is waiting on the Today page.
@@ -3329,6 +3361,10 @@ export default function App() {
       return !query || `${src.title} ${src.feedUrl} ${displayFolder(src.folder)}`.toLowerCase().includes(query);
     })
     .sort((a, b) => a.title.localeCompare(b.title));
+
+  // Only the failures that will not fix themselves are offered for a bulk delete; a site that is
+  // merely quiet today keeps its place until the reader decides.
+  const deadFailedSources = sources.filter(src => src.status === 'failing' && explainFeedFailure(src.failingReason).likelyDead);
 
   // The source an open article came from, plus its cached description (the article's own
   // copy of the blurb wins when the feed supplied one).
@@ -4712,7 +4748,7 @@ export default function App() {
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-100">Watched Sources</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  {sources.length} {sources.length === 1 ? 'source' : 'sources'} across {Object.keys(sourcesByFolder).length} {Object.keys(sourcesByFolder).length === 1 ? 'folder' : 'folders'} · {sources.some(s => s.status === 'failing') ? `${sources.filter(s => s.status === 'failing').length} need attention` : 'all feeds healthy'}
+                  {sources.length} {sources.length === 1 ? 'source' : 'sources'} across {Object.keys(sourcesByFolder).length} {Object.keys(sourcesByFolder).length === 1 ? 'folder' : 'folders'}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -4748,17 +4784,55 @@ export default function App() {
                       Left out of your digest until they answer again.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleRefreshAllFeeds()}
-                    disabled={refreshingAllFeeds}
-                    className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50"
-                    title="Re-read every feed, and clear the ones that answer"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${refreshingAllFeeds ? 'animate-spin' : ''}`} />
-                    <span>{refreshingAllFeeds ? 'Refreshing…' : 'Refresh all'}</span>
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {deadFailedSources.length > 0 && !pendingDeadDelete && !sourceSearch.trim() && (
+                      <button
+                        type="button"
+                        onClick={() => setPendingDeadDelete(true)}
+                        className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20"
+                        title="Remove every feed that looks closed or inactive"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete {deadFailedSources.length} dead {deadFailedSources.length === 1 ? 'feed' : 'feeds'}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleRefreshAllFeeds()}
+                      disabled={refreshingAllFeeds}
+                      className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50"
+                      title="Re-read every feed, and clear the ones that answer"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${refreshingAllFeeds ? 'animate-spin' : ''}`} />
+                      <span>{refreshingAllFeeds ? 'Refreshing…' : 'Refresh all'}</span>
+                    </button>
+                  </div>
                 </div>
+
+                {pendingDeadDelete && deadFailedSources.length > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-500/40 bg-rose-500/10 p-2.5">
+                    <span className="text-xs text-rose-100">
+                      Remove {deadFailedSources.length} {deadFailedSources.length === 1 ? 'feed that looks' : 'feeds that look'} closed or inactive?
+                    </span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={deleteDeadSources}
+                        className="inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-rose-500 px-2.5 text-xs font-semibold text-slate-950 transition hover:bg-rose-400"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Remove {deadFailedSources.length}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPendingDeadDelete(false)}
+                        className="inline-flex min-h-8 items-center rounded-lg border border-slate-700 px-2.5 text-xs font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <ul className="space-y-2">
                   {failedSources.map(src => {
@@ -4772,6 +4846,11 @@ export default function App() {
                             <span className="block text-sm font-medium text-slate-100 truncate">{src.title}</span>
                             <span className="block text-xs text-slate-500 truncate" title={src.feedUrl}>
                               {formatFeedUrlForDisplay(src.feedUrl)}
+                            </span>
+                            <span className="block text-xs text-slate-400 mt-1">
+                              {src.lastSyncedAt
+                                ? `Last delivered stories ${formatLastDelivery(src.lastSyncedAt)}`
+                                : 'Has not delivered any stories yet'}
                             </span>
                           </div>
                           <div className="flex items-center gap-1.5 shrink-0">
@@ -5087,14 +5166,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
                                 </p>
                               )}
                               <div className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-slate-500">
-                                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${src.status === 'failing' ? 'bg-rose-400' : src.lastSyncedAt ? 'bg-emerald-400' : 'bg-slate-600'}`} />
-                                <span className={src.status === 'failing' ? 'text-rose-400' : undefined}>
-                                  <span className="sr-only">{src.status === 'failing' ? 'Failing. ' : 'Active. '}</span>
-                                  {src.status === 'failing'
-                                    ? 'Failing'
-                                    : src.lastSyncedAt
-                                      ? formatSyncTime(src.lastSyncedAt)
-                                      : 'Not synced yet'}
+                                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${src.lastSyncedAt ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                                <span>
+                                  {src.lastSyncedAt ? formatSyncTime(src.lastSyncedAt) : 'Not synced yet'}
                                 </span>
                                 {categoryLabels.map(category => (
                                   <span key={category} className="flex items-center gap-x-1.5">
@@ -5129,9 +5203,6 @@ Search for writers, publications, or topics. Curator checks whether each result 
                                   {categoryLabels.length === 0 && <span>Categories</span>}
                                 </button>
                               </div>
-                              {src.failingReason && (
-                                <span className="text-xs text-rose-400 block mt-1 break-words">{src.failingReason}</span>
-                              )}
                             </div>
                           </div>
 
