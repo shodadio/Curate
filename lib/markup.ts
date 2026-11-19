@@ -195,10 +195,10 @@ const sidebarAction = /^\[(?:view all|view more|log in|sign in|sign up|subscribe
 
 // A paywalled piece stops early and spends the rest of the page selling the subscription; the
 // marker is the pitch's opening line, so everything from there on is not the article.
-const paywallLine = /^(?:already (?:a )?(?:subscriber|subscribed)\?|(?:log|sign) in to (?:continue|keep) reading|subscribe to (?:continue|keep) reading|this (?:article|story|post|content) is (?:for|available to) (?:subscribers|members)|you(?:'ve| have) reached (?:your|the) (?:free )?(?:article )?limit\.?)$/i;
+const paywallLine = /^(?:already (?:a )?(?:paid )?(?:subscriber|subscribed)\?|keep reading (?:with|for)\b.*|(?:log|sign) in to (?:continue|keep) reading|subscribe to (?:continue|keep) reading|this (?:article|story|post|content) is (?:for|available to) (?:paid |premium )?(?:subscribers|members)|you(?:'ve| have) reached (?:your|the) (?:free )?(?:article )?limit\.?)$/i;
 // A sign-in prompt on its own is not a paywall — plenty of sites print one above a full
 // article — so the pitch only counts when the subscription offer follows it.
-const pitchLine = /[$£€]\s?\d+(?:\.\d+)?\s*(?:\/|per)\s*(?:month|mo|year|yr|week|wk)\b|\bget access to\b|\bsubscriber-only\b|\bsubscribe now\b|\bstart your (?:free )?trial\b|\bbecome a (?:member|subscriber)\b/i;
+const pitchLine = /[$£€]\s?\d+(?:\.\d+)?\s*(?:\/|per)\s*(?:month|mo|year|yr|week|wk)\b|\bget access to\b|\bsubscriber-only\b|\bsubscribe now\b|\bstart your (?:free )?trial\b|\b(?:free|7-day|14-day|30-day) trial\b|\bbecome a (?:member|subscriber)\b/i;
 
 // "Jacob is a copy editor at Ars Technica. He resides in Portland…" is a bio, not the last
 // paragraph of the piece: a name, a newsroom job, and the publication or a personal detail.
@@ -551,4 +551,18 @@ export function articleNeedsLinkRefresh(item: {
   linkRefreshAt?: number;
 }): boolean {
   return Boolean(item.url) && !item.linksCleaned && !item.linkRefreshAt;
+}
+
+// A feed can carry only the opening of a piece: a short body, a sentence that runs out with an
+// ellipsis, or a "Read more" line where the rest should be. The reader then looks as if it cut
+// the story off mid-thought, so such a piece earns one page read when it is opened.
+const TEASER_TAIL = /(?:\.{3}|…|\[\s*…\s*\]|\[read more\]\([^)]*\)|read more|continue reading|read (?:the )?(?:full|complete) (?:article|story|post|piece))$/i;
+const TEASER_MIN_CHARS = 700;
+
+export function articleLooksIncomplete(item: { url?: string; fullText?: string }): boolean {
+  if (!item?.url) return false;
+  const text = (item.fullText || '').trim();
+  if (!text) return true;
+  if (/read the complete article directly at:/i.test(text)) return true;
+  return text.length < TEASER_MIN_CHARS || TEASER_TAIL.test(text.slice(-200).trim());
 }

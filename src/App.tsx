@@ -19,7 +19,8 @@ import { SettingsSection } from './components/SettingsSection';
 import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
 import { safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, type StorageFailure } from './storage';
 import { DEFAULT_FEEDS } from './defaultFeeds';
-import { articleNeedsLinkRefresh, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph } from '../lib/markup';
+import { explainFeedFailure } from '../lib/feedHealth';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph } from '../lib/markup';
 
 // One-click provider addresses: the popular OpenAI-compatible services, so a working setup
 // starts with a name and a key rather than a copied URL and a guessed model ID.
@@ -2266,7 +2267,7 @@ export default function App() {
   const handleDeleteSource = (id: string) => {
     if (pendingDeleteId !== id) {
       setPendingDeleteId(id);
-      showToast('Tap the trash again to confirm removal');
+      showToast('Tap again to delete this feed');
       return;
     }
     setPendingDeleteId(null);
@@ -3048,8 +3049,10 @@ export default function App() {
       const data = await response.json().catch(() => ({}));
       const text = typeof data?.text === 'string' ? data.text : '';
       // Short text means the extractor found the page's chrome rather than the piece, so the
-      // stored body stays the better read.
+      // stored body stays the better read. A page that still stops at a teaser (a paywall, or a
+      // feed excerpt the publisher never expanded) is no fuller than what is already stored.
       if (text.length < 200) return;
+      if (articleLooksIncomplete(item) && articleLooksIncomplete({ url: item.url, fullText: text })) return;
       const refreshedAt = Date.now();
       const upgrade = (entry: DigestItem): DigestItem => entry.id === item.id
         ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt }
@@ -3193,7 +3196,7 @@ export default function App() {
       setReadSourceIds(prev => [...prev, match.id]);
     }
 
-    if (articleNeedsLinkRefresh(item)) void refreshArticleLinks(item);
+    if (articleNeedsLinkRefresh(item) || articleLooksIncomplete(item)) void refreshArticleLinks(item);
 
     window.history.pushState({ curatorReader: true }, '');
     readerHistoryDepthRef.current += 1;
@@ -3310,11 +3313,22 @@ export default function App() {
   ])).sort((a, b) => a.localeCompare(b));
   const filteredSourcesByFolder = Object.entries(sourcesByFolder).reduce((acc, [folder, folderSources]) => {
     const matching = folderSources
+      // A feed that stopped answering belongs to the failed list, not to its old folder.
+      .filter(src => src.status !== 'failing')
       .filter(src => `${src.title} ${src.feedUrl} ${folder} ${normalizeCategoryLabels(src.categories, src.folder).join(' ')}`.toLowerCase().includes(sourceSearch.trim().toLowerCase()))
       .sort((a, b) => a.title.localeCompare(b.title));
     if (matching.length > 0) acc[folder] = matching;
     return acc;
   }, {} as Record<string, SourceItem[]>);
+
+  // Failed feeds are listed together, so one dead site cannot hide inside a folder of working ones.
+  const failedSources = sources
+    .filter(src => src.status === 'failing')
+    .filter(src => {
+      const query = sourceSearch.trim().toLowerCase();
+      return !query || `${src.title} ${src.feedUrl} ${displayFolder(src.folder)}`.toLowerCase().includes(query);
+    })
+    .sort((a, b) => a.title.localeCompare(b.title));
 
   // The source an open article came from, plus its cached description (the article's own
   // copy of the blurb wins when the feed supplied one).
@@ -4720,32 +4734,81 @@ export default function App() {
               </div>
             </div>
 
-            {/* Failures first: a feed that stopped answering makes everything else on this page
-                moot, so it sits above discovery and offers a retry for the whole library. */}
-            {failingSourceCount > 0 && (
-              <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex flex-wrap items-start gap-3 w-full max-w-full">
-                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                <div className="min-w-0 flex-1">
-                  <span className="font-semibold block mb-0.5">
-                    {failingSourceCount === 1 ? 'One source needs attention' : `${failingSourceCount} sources need attention`}
-                  </span>
-                  <span>
-                    {failingSourceCount === 1
-                      ? 'It is not responding right now and has been left out of recent digests.'
-                      : 'They are not responding right now and have been left out of recent digests.'}
-                  </span>
+            {/* Failures get their own list: a feed that stopped answering is not a source to
+                browse, and its error would otherwise sit buried inside a folder of working ones. */}
+            {failedSources.length > 0 && (
+              <section className="rounded-3xl border border-rose-500/25 bg-rose-500/5 p-4 sm:p-5 space-y-3 w-full max-w-full">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                      <span>Failed feeds ({failedSources.length})</span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Left out of your digest until they answer again.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleRefreshAllFeeds()}
+                    disabled={refreshingAllFeeds}
+                    className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50"
+                    title="Re-read every feed, and clear the ones that answer"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${refreshingAllFeeds ? 'animate-spin' : ''}`} />
+                    <span>{refreshingAllFeeds ? 'Refreshing…' : 'Refresh all'}</span>
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => handleRefreshAllFeeds()}
-                  disabled={refreshingAllFeeds}
-                  className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50"
-                  title="Re-read every feed, and clear the ones that answer"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${refreshingAllFeeds ? 'animate-spin' : ''}`} />
-                  <span>{refreshingAllFeeds ? 'Refreshing…' : 'Refresh all'}</span>
-                </button>
-              </div>
+
+                <ul className="space-y-2">
+                  {failedSources.map(src => {
+                    const failure = explainFeedFailure(src.failingReason);
+                    const confirming = pendingDeleteId === src.id;
+                    const trying = refreshingSourceId === src.id;
+                    return (
+                      <li key={src.id} className="rounded-2xl border border-slate-800/80 bg-slate-950/60 p-3 space-y-2">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0 flex-1">
+                            <span className="block text-sm font-medium text-slate-100 truncate">{src.title}</span>
+                            <span className="block text-xs text-slate-500 truncate" title={src.feedUrl}>
+                              {formatFeedUrlForDisplay(src.feedUrl)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleRefreshSource(src)}
+                              disabled={trying}
+                              className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-slate-800 px-2.5 text-xs font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-200 disabled:opacity-50"
+                              title="Try this feed again"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${trying ? 'animate-spin text-amber-400' : ''}`} />
+                              <span>{trying ? 'Trying…' : 'Try again'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSource(src.id)}
+                              className={`inline-flex min-h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-semibold transition ${
+                                confirming
+                                  ? 'border-rose-500/60 bg-rose-500/15 text-rose-200'
+                                  : 'border-rose-500/30 text-rose-300 hover:bg-rose-500/10'
+                              }`}
+                              aria-label={confirming ? `Tap again to delete ${src.title} permanently` : `Delete ${src.title} permanently`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>{confirming ? 'Tap again to delete' : failure.likelyDead ? 'Delete permanently' : 'Remove feed'}</span>
+                            </button>
+                          </div>
+                        </div>
+                        <p className="text-xs leading-relaxed text-slate-300">{failure.summary}</p>
+                        <p className={`text-[11px] leading-relaxed ${failure.likelyDead ? 'text-rose-300/90' : 'text-slate-500'}`}>
+                          {failure.likelyDead ? `This looks closed or inactive. ${failure.suggestion}` : failure.suggestion}
+                        </p>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
             )}
 
             {/* Google Search & RSS Investigation Tool */}
