@@ -3,7 +3,7 @@ import {
   Bookmark, Rss, RefreshCw, Check, CheckCheck, Plus, Trash2, 
   Download, Upload, Sliders, ExternalLink, ArrowLeft, Sparkles, 
   AlertCircle, X, Home, Compass,
-  ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square,
+  ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square, Headphones,
   RotateCcw, EyeOff, BarChart3, Clock, ArrowRight, ChevronDown, Activity
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
@@ -157,6 +157,14 @@ interface SemanticFeedbackItem {
   source?: string;
   folder?: string;
 }
+
+// Feed stories arrive with a note that only names the subscription they came through. That is
+// not an editorial reason, so the reader opens straight into the story instead of printing it.
+const SUBSCRIPTION_ONLY_NOTE = /^From your .+ subscription\.?$/i;
+const hasCuratorNote = (why?: string): boolean => {
+  const note = (why || '').trim();
+  return Boolean(note) && !SUBSCRIPTION_ONLY_NOTE.test(note);
+};
 
 // Duplicate detection compares feeds by address, not by the name a reader gave them.
 const normalizeFeedUrl = (url?: string): string => (url || '').trim().toLowerCase().replace(/\/+$/, '');
@@ -1179,6 +1187,9 @@ export default function App() {
   // the reader wants is a calm Enhanced voice at just under normal pace.
   const [speechPlaying, setSpeechPlaying] = useState<boolean>(false);
   const [speechPaused, setSpeechPaused] = useState<boolean>(false);
+  // The floating listening bar: opened by Start listening, closed by the reader or by the
+  // session reaching its end.
+  const [speechPanelOpen, setSpeechPanelOpen] = useState<boolean>(false);
   // The article the running session belongs to; null when nothing is being read
   const [speechArticleId, setSpeechArticleId] = useState<string | null>(null);
   const [speechProgress, setSpeechProgress] = useState<{ index: number; total: number; paragraph: number }>({
@@ -2790,6 +2801,7 @@ export default function App() {
     const finishedId = speechArticleIdRef.current;
     const finishedArticle = speechArticleItemRef.current;
     stopSpeech();
+    setSpeechPanelOpen(false);
     if (!finishedId) return;
     setReadingStats(prev => ({
       ...prev,
@@ -2895,6 +2907,7 @@ export default function App() {
     speechArticleItemRef.current = article;
     speechStartedRef.current = false;
     setSpeechArticleId(article.id);
+    setSpeechPanelOpen(true);
     setSpeechProgress({ index: first, total: queue.length, paragraph: queue[first].paragraphIndex });
     requestWakeLock();
     // Still inside the tap: iOS only starts speaking from a user gesture
@@ -2994,9 +3007,13 @@ export default function App() {
   // Leaving the article ends the session, so speech never reads a page the reader closed
   useEffect(() => {
     const sessionArticleId = speechArticleIdRef.current;
-    if (!sessionArticleId) return;
+    if (!sessionArticleId) {
+      setSpeechPanelOpen(false);
+      return;
+    }
     if (selectedArticle && selectedArticle.id === sessionArticleId) return;
     stopSpeech();
+    setSpeechPanelOpen(false);
   }, [selectedArticle]);
 
   // Follow the voice down the page, but only once the spoken paragraph has scrolled away
@@ -3005,7 +3022,8 @@ export default function App() {
     const element = document.getElementById(`reader-paragraph-${speechProgress.paragraph}`);
     if (!element) return;
     const rect = element.getBoundingClientRect();
-    if (rect.top >= 88 && rect.bottom <= window.innerHeight - 48) return;
+    // Leave room for the listening bar, so the spoken paragraph never hides behind it.
+    if (rect.top >= 88 && rect.bottom <= window.innerHeight - 140) return;
     element.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }, [speechPlaying, speechProgress.paragraph]);
 
@@ -3058,6 +3076,7 @@ export default function App() {
   // closes the article instead of leaving the site.
   const readerHistoryDepthRef = React.useRef(0);
   const readerCloseButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const readerHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
   const readerReturnFocusRef = React.useRef<HTMLElement | null>(null);
   const readerAppearanceRef = React.useRef<HTMLDivElement | null>(null);
   const readerAppearanceButtonRef = React.useRef<HTMLButtonElement | null>(null);
@@ -3307,7 +3326,7 @@ export default function App() {
       readerReturnFocusRef.current = (document.activeElement as HTMLElement) || null;
       // Wait a frame: the reader paints in this commit, and focusing before it lands makes iOS
       // scroll the page instead of the reader.
-      requestAnimationFrame(() => readerCloseButtonRef.current?.focus());
+      requestAnimationFrame(() => readerHeadingRef.current?.focus());
     } else if (readerReturnFocusRef.current) {
       readerReturnFocusRef.current.focus?.();
       readerReturnFocusRef.current = null;
@@ -3372,6 +3391,11 @@ export default function App() {
     ? sources.find(src => src.title.trim().toLowerCase() === selectedArticle.source.trim().toLowerCase())
     : undefined;
   const readerSourceDescription = (selectedArticle?.sourceDescription || readerSource?.description || '').trim();
+  // The publication's own icon is the reader's one visual anchor; the article's host answers
+  // when the feed itself is not in the saved list.
+  const readerAvatar = selectedArticle
+    ? getSourceAvatar(readerSource?.feedUrl || selectedArticle.url)
+    : undefined;
 
   // Editable feed categories, rather than organizational folders, seed interest suggestions.
   const interestSuggestions = suggestionsFromFolders(sources.flatMap(src =>
@@ -3484,7 +3508,7 @@ export default function App() {
           aria-modal="true"
           aria-label={selectedArticle.title}
           data-reader-theme={readerTheme}
-          className="reader-surface fixed inset-0 z-50 overflow-y-auto flex flex-col animate-fade-in"
+          className="reader-surface fixed inset-0 z-50 overflow-y-auto flex flex-col"
           onScroll={(e) => {
             const target = e.currentTarget;
             const scrollHeight = target.scrollHeight - target.clientHeight;
@@ -3525,11 +3549,11 @@ export default function App() {
             }
           }}
         >
-          <header className="reader-header sticky top-0 z-30 safe-reader-header backdrop-blur-md border-b px-4 sm:px-6 pb-4 flex items-center justify-between gap-2">
+          <header className="reader-header sticky top-0 z-30 safe-reader-header px-3 pb-2 backdrop-blur-md sm:px-5 flex items-center justify-between gap-2">
             {/* How far through the piece the reader has scrolled. The line starts just below the
                 phone's safe area, because the header's top padding is where the notch sits and a
                 line drawn at the very top disappears underneath it. */}
-            <div className="reader-header-progress absolute inset-x-0 top-[env(safe-area-inset-top,0px)] h-1 overflow-hidden">
+            <div className="reader-header-progress absolute inset-x-0 top-[env(safe-area-inset-top,0px)] h-[2px] overflow-hidden">
               <div
                 className="reader-fill h-full"
                 style={{ width: `${readerScrollProgress}%` }}
@@ -3552,41 +3576,22 @@ export default function App() {
               type="button"
               ref={readerCloseButtonRef}
               onClick={closeArticle}
-              className="reader-dim-button flex items-center gap-2 min-h-10 px-1 text-sm font-medium whitespace-nowrap transition-colors"
+              className="reader-dim-button flex min-h-11 max-w-[11rem] items-center gap-1.5 rounded-full pl-1 pr-2 text-sm font-medium transition-colors"
             >
-              <ArrowLeft className="w-4 h-4" />
-              <span>{readerBackLabel}</span>
+              <ArrowLeft className="w-4 h-4 shrink-0" />
+              <span className="truncate">{readerBackLabel}</span>
             </button>
-            <div className="flex items-center gap-2">
-              <button 
+
+            <div className="flex items-center gap-1">
+              <button
                 type="button"
-                onClick={() => handleToggleReadAloud(selectedArticle)}
-                aria-pressed={readAloudActive}
-                className={`reader-button px-3 py-2 min-h-11 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${readAloudActive ? 'is-on' : ''}`}
-                title={readAloudActive
-                  ? (speechPaused ? 'Resume reading aloud' : 'Pause reading aloud')
-                  : `Read aloud with ${speechVoiceLabel}`}
-                aria-label={readAloudActive
-                  ? (speechPaused ? 'Resume reading aloud' : 'Pause reading aloud')
-                  : 'Read aloud'}
-              >
-                {speechPlaying ? (
-                  speechPaused ? <Play className="w-3.5 h-3.5 fill-current" /> : <Pause className="w-3.5 h-3.5 fill-current" />
-                ) : (
-                  <Volume2 className="reader-accent w-3.5 h-3.5" />
-                )}
-                {/* Below 380px the label would wrap the whole bar onto two lines, so the
-                    button keeps its icon and its aria-label instead. */}
-                <span className="whitespace-nowrap max-[380px]:hidden">{speechPlaying ? (speechPaused ? 'Resume' : 'Pause') : 'Read aloud'}</span>
-              </button>
-              <button 
                 onClick={() => handleSave(selectedArticle)}
                 aria-pressed={savedIds.includes(selectedArticle.id)}
-                className="reader-button p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition-colors"
+                className={`reader-icon ${savedIds.includes(selectedArticle.id) ? 'is-on' : ''}`}
                 title={savedIds.includes(selectedArticle.id) ? 'Remove from saved' : 'Save for later'}
                 aria-label={savedIds.includes(selectedArticle.id) ? `Remove "${selectedArticle.title}" from saved` : `Save "${selectedArticle.title}" for later`}
               >
-                <Bookmark className="w-4 h-4" />
+                <Bookmark className={`w-4 h-4 ${savedIds.includes(selectedArticle.id) ? 'fill-current' : ''}`} />
               </button>
 
               {/* Reading appearance: theme, face and size, one tap from the article */}
@@ -3597,7 +3602,7 @@ export default function App() {
                   onClick={() => setShowReaderAppearance(open => !open)}
                   aria-expanded={showReaderAppearance}
                   aria-controls="reader-appearance-menu"
-                  className={`reader-button p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition-colors ${showReaderAppearance ? 'is-on' : ''}`}
+                  className={`reader-icon ${showReaderAppearance ? 'is-on' : ''}`}
                   title="Reading appearance — theme, typeface, text size"
                   aria-label="Reading appearance"
                 >
@@ -3673,118 +3678,103 @@ export default function App() {
           </header>
 
           <main
-            className={`reader-column mx-auto w-full px-6 py-10 flex-1 ${readerFace === 'serif' ? 'reader-serif' : 'reader-sans'}`}
+            className={`reader-column mx-auto flex-1 px-5 pt-4 sm:px-6 ${speechPanelOpen ? 'pb-40' : 'pb-28'} ${readerFace === 'serif' ? 'reader-serif' : 'reader-sans'}`}
             style={{ fontSize: `${readerSize}px` }}
           >
-            <div className="reader-dim font-sans text-xs mb-3 flex items-center gap-2 flex-wrap">
-              {selectedArticle.author && (
-                <>
-                  <span className="reader-ink font-medium">By {selectedArticle.author}</span>
-                  <span aria-hidden="true">·</span>
-                </>
+            {/* The masthead is the page's identity: the publication's avatar, its name, the
+                headline and one line of credit — no frame around any of it. */}
+            <div className="reader-masthead">
+              <div className="flex items-center gap-3">
+                <span className="reader-avatar shrink-0" aria-hidden="true">
+                  {readerAvatar && (
+                    <img
+                      src={readerAvatar}
+                      alt=""
+                      decoding="async"
+                      onLoad={markTinyIcon}
+                      onError={(event) => { (event.currentTarget as HTMLElement).style.display = 'none'; }}
+                    />
+                  )}
+                  <span className="reader-avatar-initials font-sans">{selectedArticle.source.slice(0, 2).toUpperCase()}</span>
+                </span>
+                <div className="min-w-0 font-sans">
+                  {readerSourceDescription ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowReaderSourceNote(prev => !prev)}
+                      aria-expanded={showReaderSourceNote}
+                      title={showReaderSourceNote ? 'Hide the source description' : `About ${selectedArticle.source}`}
+                      className="reader-strong inline-flex max-w-full items-center gap-1 text-[0.82rem] font-semibold transition-colors"
+                    >
+                      <span className="truncate">{selectedArticle.source}</span>
+                      <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform ${showReaderSourceNote ? 'rotate-180' : ''}`} />
+                    </button>
+                  ) : (
+                    <div className="reader-ink truncate text-[0.82rem] font-semibold">{selectedArticle.source}</div>
+                  )}
+                  <div className="reader-dim mt-1 text-[0.64rem] font-medium uppercase tracking-[0.2em]">
+                    {displayFolder(selectedArticle.folder)}
+                  </div>
+                </div>
+              </div>
+
+              {showReaderSourceNote && readerSourceDescription && (
+                <p className="reader-dim mt-3 max-w-[46ch] font-sans text-xs leading-relaxed">{readerSourceDescription}</p>
               )}
-              {readerSourceDescription ? (
+
+              <h1
+                ref={readerHeadingRef}
+                tabIndex={-1}
+                className="reader-heading reader-ink mt-6 text-balance text-[1.95em] font-semibold leading-[1.12] tracking-[-0.024em] focus:outline-none"
+              >
+                {selectedArticle.title}
+              </h1>
+
+              <div className="reader-dim mt-4 flex flex-wrap items-center gap-x-2 gap-y-1.5 font-sans text-[0.75rem]">
+                {selectedArticle.author && (
+                  <span className="reader-ink font-medium">By {selectedArticle.author}</span>
+                )}
+                {selectedArticle.publishedAt && (
+                  <span>{decodeArticleEntities(selectedArticle.publishedAt)}</span>
+                )}
+                <span>{decodeArticleEntities(selectedArticle.readTime || '')}</span>
+                <span aria-hidden="true">·</span>
                 <button
                   type="button"
-                  onClick={() => setShowReaderSourceNote(prev => !prev)}
-                  className="reader-strong inline-flex items-center gap-1 font-medium transition cursor-pointer"
-                  aria-expanded={showReaderSourceNote}
-                  title={showReaderSourceNote ? 'Hide the source description' : `About ${selectedArticle.source}`}
+                  onClick={() => {
+                    setSpeechPanelOpen(true);
+                    if (!readAloudActive) startSpeech(selectedArticle);
+                  }}
+                  aria-pressed={readAloudActive}
+                  className="reader-listen-trigger inline-flex min-h-10 items-center gap-1.5 rounded-full px-1 text-[0.75rem] font-semibold transition-colors"
+                  aria-label={readAloudActive ? 'Show the reading aloud controls' : `Listen — read aloud with ${speechVoiceLabel}`}
                 >
-                  <span>{selectedArticle.source}</span>
-                  <ChevronDown className={`w-3 h-3 transition-transform ${showReaderSourceNote ? 'rotate-180' : ''}`} />
+                  <Headphones className="w-3.5 h-3.5" />
+                  <span>{readAloudActive ? 'Listening' : 'Listen'}</span>
                 </button>
-              ) : (
-                <span className="reader-ink font-medium">{selectedArticle.source}</span>
-              )}
-              <span aria-hidden="true">·</span>
-              <span>{selectedArticle.folder}</span>
-              <span aria-hidden="true">·</span>
-              <span>{decodeArticleEntities(selectedArticle.readTime || '')}</span>
-              {selectedArticle.publishedAt && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <span>{decodeArticleEntities(selectedArticle.publishedAt)}</span>
-                </>
-              )}
+              </div>
             </div>
 
-            {showReaderSourceNote && readerSourceDescription && (
-              <p className="reader-dim reader-border font-sans text-xs leading-relaxed mb-4 border-l pl-3">
-                {readerSourceDescription}
-              </p>
+            {selectedArticle.bannerImage && (
+              <figure className="reader-figure font-sans mt-7">
+                <img
+                  src={selectedArticle.bannerImage}
+                  alt=""
+                  loading="lazy"
+                  decoding="async"
+                  onError={(event) => { (event.currentTarget.parentElement as HTMLElement).style.display = 'none'; }}
+                />
+              </figure>
             )}
 
-            <h1 className="reader-ink font-sans text-2xl md:text-3xl font-semibold tracking-tight mb-6 leading-snug">
-              {selectedArticle.title}
-            </h1>
-
-            {/* Clear editorial context note */}
-            <div className="reader-dim reader-border font-sans mb-8 pb-5 border-b text-xs">
-              <div className="reader-accent font-medium mb-1">Curator's Note</div>
-              <p className="reader-ink opacity-90 italic leading-relaxed">{selectedArticle.why}</p>
-            </div>
-
-            {/* Read Aloud: what is being spoken, and how far through it is */}
-            {readAloudActive && (
-              <div className="reader-panel font-sans mb-8 p-3 rounded-xl border animate-fade-in shadow-md">
-                <div className="flex items-center justify-between gap-3 text-xs">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <button
-                      type="button"
-                      onClick={() => handleToggleReadAloud(selectedArticle)}
-                      className="reader-play h-11 w-11 rounded-xl flex items-center justify-center shrink-0 transition"
-                      title={speechPaused ? 'Resume' : 'Pause'}
-                    >
-                      {speechPaused ? <Play className="w-3.5 h-3.5 fill-current ml-0.5" /> : <Pause className="w-3.5 h-3.5 fill-current" />}
-                    </button>
-                    <span
-                      className="reader-ink truncate"
-                      title={`${speechVoiceLabel} at ${speechRate.toFixed(2)}×`}
-                    >
-                      {speechPaused ? 'Audio paused' : `Reading aloud · ${speechVoiceLabel}`}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="reader-dim text-xs tabular-nums">{speechPercent}%</span>
-                    <button
-                      type="button"
-                      onClick={handleStopReadAloud}
-                      className="reader-stop w-8 h-8 -mr-1 flex items-center justify-center rounded-lg transition"
-                      title="Stop reading aloud"
-                      aria-label="Stop reading aloud"
-                    >
-                      <Square className="w-3.5 h-3.5 fill-current" />
-                    </button>
-                  </div>
-                </div>
-
-                <div
-                  className="reader-track mt-2 h-1 rounded-full overflow-hidden"
-                  role="progressbar"
-                  aria-valuenow={speechPercent}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-label="Read aloud progress"
-                >
-                  <div
-                    className="reader-fill h-full transition-all duration-300"
-                    style={{ width: `${speechPercent}%` }}
-                  />
-                </div>
-
-                <p className="reader-dim mt-2 text-xs">
-                  {speechProgress.paragraph >= 0 && articleParagraphs.length > 0
-                    ? `Paragraph ${Math.min(speechProgress.paragraph + 1, articleParagraphs.length)} of ${articleParagraphs.length} · `
-                    : ''}
-                  sentence {Math.min(speechProgress.index + 1, speechProgress.total || 1)} of {speechProgress.total || 1}
-                  {' · '}tap a paragraph to listen from there
-                </p>
+            {hasCuratorNote(selectedArticle.why) && (
+              <div className="reader-note font-sans mt-8">
+                <div className="reader-accent text-[0.62rem] font-semibold uppercase tracking-[0.22em]">Curator’s note</div>
+                <p className="reader-ink mt-2 text-[0.94rem] italic leading-relaxed opacity-85">{selectedArticle.why}</p>
               </div>
             )}
 
-            <div className="reader-body">
+            <div className="reader-body mt-11">
               {articleParagraphs.length > 0 ? articleParagraphs.map((paragraph, idx) => {
                 const isSpeakingHere = readAloudActive && speechProgress.paragraph === idx;
                 return (
@@ -3795,7 +3785,7 @@ export default function App() {
                     title={readAloudActive ? 'Listen from this paragraph' : undefined}
                     className={`text-pretty ${
                       isSpeakingHere
-                        ? 'reader-speaking reader-ink border-l-2 pl-4 -ml-4'
+                        ? 'reader-speaking reader-ink'
                         : readAloudActive
                           ? 'cursor-pointer'
                           : ''
@@ -3807,66 +3797,125 @@ export default function App() {
               )}
             </div>
 
-            {/* Typographic End-mark, then a hairline that closes the article without a gap
-                the reader has to travel across to reach the buttons */}
-            <div className="reader-dim flex items-center justify-center pt-6 pb-4">
-              <span className="text-sm tracking-[0.6em] select-none opacity-40 font-serif">· · ·</span>
+            <div className="reader-dim flex items-center justify-center pt-10 pb-8">
+              <span className="select-none text-sm tracking-[0.6em] opacity-40" aria-hidden="true">· · ·</span>
             </div>
 
-            {/* Minimalist Editorial Completion & Tuning Footer */}
-            <footer className="reader-border font-sans border-t pt-5 pb-24">
-              {/* Primary Outbound Action & Feedback Row */}
-              <div className="flex items-center justify-between gap-4">
-                <a
-                  href={selectedArticle.url || '#'}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => {
-                    // Only a record of when it was opened: reading the rest happens in another
-                    // app, which this one cannot see, so it must not claim the article was finished.
-                    setReadingStats(prev => ({
-                      ...prev,
-                      [selectedArticle.id]: {
-                        ...prev[selectedArticle.id],
-                        lastRead: Date.now()
-                      }
-                    }));
-                    setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
-                    showToast('Opening original');
-                  }}
-                  className="reader-link inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold transition-colors cursor-pointer"
-                  title={`Read original on ${selectedArticle.source} (opens external browser or app)`}
-                  aria-label={`Read original on ${selectedArticle.source}`}
-                >
-                  <ExternalLink className="w-4 h-4" />
-                  <span>Read original</span>
-                </a>
+            <footer className="reader-footer font-sans">
+              <a
+                href={selectedArticle.url || '#'}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => {
+                  // Only a record of when it was opened: reading the rest happens in another
+                  // app, which this one cannot see, so it must not claim the article was finished.
+                  setReadingStats(prev => ({
+                    ...prev,
+                    [selectedArticle.id]: {
+                      ...prev[selectedArticle.id],
+                      lastRead: Date.now()
+                    }
+                  }));
+                  setReadArticleIds(prev => (prev.includes(selectedArticle.id) ? prev : [...prev, selectedArticle.id]));
+                  showToast('Opening original');
+                }}
+                className="reader-original inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-5 text-sm font-semibold transition-colors"
+                title={`Read original on ${selectedArticle.source} (opens external browser or app)`}
+                aria-label={`Read original on ${selectedArticle.source}`}
+              >
+                <span>Read original</span>
+                <ExternalLink className="w-4 h-4" />
+              </a>
 
-                {/* Feedback Icons Aligned to Right */}
-                <div className="flex flex-wrap items-center gap-2 ml-auto">
-                  <FeedbackActions
-                    tone="reader"
-                    isMore={signals.moreIds?.includes(selectedArticle.id) || false}
-                    isLess={signals.lessIds?.includes(selectedArticle.id) || false}
-                    onMore={() => handleMore(selectedArticle)}
-                    onLess={() => handleLess(selectedArticle)}
-                  />
-                  {signals.lessIds?.includes(selectedArticle.id) && (
-                    <button
-                      type="button"
-                      onClick={() => undoHandleLess(selectedArticle.id)}
-                      className="reader-link inline-flex min-h-11 items-center gap-1.5 rounded-xl px-3 text-xs font-medium transition-colors"
-                      title="Undo — put this one story back in your digest"
-                      aria-label="Undo — put this one story back in your digest"
-                    >
-                      <RotateCcw className="w-4 h-4" />
-                      <span>Undo</span>
-                    </button>
-                  )}
-                </div>
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                <FeedbackActions
+                  tone="reader"
+                  isMore={signals.moreIds?.includes(selectedArticle.id) || false}
+                  isLess={signals.lessIds?.includes(selectedArticle.id) || false}
+                  onMore={() => handleMore(selectedArticle)}
+                  onLess={() => handleLess(selectedArticle)}
+                />
+                {signals.lessIds?.includes(selectedArticle.id) && (
+                  <button
+                    type="button"
+                    onClick={() => undoHandleLess(selectedArticle.id)}
+                    className="reader-link inline-flex min-h-11 items-center gap-1.5 rounded-xl px-3 text-xs font-medium transition-colors"
+                    title="Undo — put this one story back in your digest"
+                    aria-label="Undo — put this one story back in your digest"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    <span>Undo</span>
+                  </button>
+                )}
               </div>
             </footer>
           </main>
+
+          {/* The listening controls float over the page, so they are always one tap away
+              without standing between the reader and the last paragraph. */}
+          {speechPanelOpen && (
+            <div className="reader-listen font-sans" role="region" aria-label="Read aloud">
+              <div className="reader-listen-card mx-auto w-full max-w-md">
+                <div
+                  className="reader-track h-[3px] overflow-hidden"
+                  role="progressbar"
+                  aria-valuenow={speechPercent}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label="Read aloud progress"
+                >
+                  <div className="reader-fill h-full transition-all duration-500" style={{ width: `${speechPercent}%` }} />
+                </div>
+
+                <div className="flex items-center gap-2 p-2 pl-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (readAloudActive) handleToggleReadAloud(selectedArticle);
+                      else startSpeech(selectedArticle);
+                    }}
+                    className="reader-play flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition"
+                    title={readAloudActive && !speechPaused ? 'Pause' : 'Play'}
+                    aria-label={readAloudActive && !speechPaused ? 'Pause reading aloud' : readAloudActive ? 'Resume reading aloud' : 'Start reading aloud'}
+                  >
+                    {readAloudActive && !speechPaused
+                      ? <Pause className="w-3.5 h-3.5 fill-current" />
+                      : <Play className="ml-0.5 w-3.5 h-3.5 fill-current" />}
+                  </button>
+
+                  <div className="min-w-0 flex-1 pl-1">
+                    <p className="reader-ink truncate text-[0.8rem] font-semibold">
+                      {readAloudActive ? (speechPaused ? 'Paused' : 'Listening') : 'Ready to listen'}
+                    </p>
+                    <p className="reader-dim truncate text-[0.68rem] tabular-nums">
+                      {readAloudActive
+                        ? `${speechPercent}% · ${Math.min(speechProgress.index + 1, speechProgress.total || 1)} of ${speechProgress.total || 1} sentences`
+                        : `${speechVoiceLabel} at ${speechRate.toFixed(2)}×`}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={stopSpeech}
+                    className="reader-icon shrink-0"
+                    title="Stop reading aloud"
+                    aria-label="Stop reading aloud"
+                  >
+                    <Square className="w-3.5 h-3.5 fill-current" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { stopSpeech(); setSpeechPanelOpen(false); }}
+                    className="reader-icon shrink-0"
+                    title="Close the listening bar"
+                    aria-label="Close the listening bar"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
