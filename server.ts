@@ -29,7 +29,6 @@ import {
 import { parseOpmlText } from './lib/opml';
 import { cleanHtml, htmlToReadableText } from './lib/markup';
 import { parseArticleAuthor, parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
-import { describeProviderFailure } from './lib/providerErrors';
 
 dotenv.config();
 
@@ -163,9 +162,7 @@ async function requestProviderJson(
       });
       res.on('end', () => {
         if (status < 200 || status >= 300) {
-          // The provider's own reason rather than its JSON wrapper: a rejected model name
-          // belongs in front of the reader in the words the provider used.
-          reject(new Error(describeProviderFailure(status, text)));
+          reject(new Error(`AI provider error: ${status} ${text.slice(0, 1000)}`));
           return;
         }
         try {

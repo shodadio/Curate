@@ -38,7 +38,6 @@
   - [`POST /api/discover-sources`](#post-apidiscover-sources)
   - [`POST /api/parse-opml`](#post-apiparse-opml)
   - [`POST /api/test-provider`](#post-apitest-provider)
-  - [`POST /api/list-models`](#post-apilist-models)
   - [`GET /api/generated-feed`](#get-apigenerated-feed)
   - [`GET /api/favicon`](#get-apifavicon)
   - [`GET /api/health`](#get-apihealth)
@@ -339,22 +338,6 @@ The **Test API** button in Settings: one minimal request using the provider, key
 ```
 
 **Response:** `{ "ok": true, "provider": "openai-compatible", "model": "gpt-4o-mini", "latencyMs": 412, "reply": "pong" }`. Failures return `{ "ok": false, "error": "…" }` with `200`, because the route reports a bad key rather than throwing.
-
----
-
-### `POST /api/list-models`
-The **Fetch models** action beside the model field in Settings: asks an OpenAI-compatible service for the model names it currently serves (`GET {baseUrl}/models` with the same key), so a retired or mistyped ID — the cause of a provider's “The supported API model names are …” rejection — is a choice from the provider's own catalogue instead of a guess. Settings offers the names as autocomplete on the field, and the field still accepts any ID typed by hand.
-
-**Request Body:**
-```json
-{
-  "provider": "openai-compatible",
-  "apiKey": "sk-…",
-  "baseUrl": "https://api.deepseek.com/v1"
-}
-```
-
-**Response:** `{ "ok": true, "models": ["deepseek-flash", "deepseek-v4-pro"] }`, sorted, de-duplicated and capped at 500 names. A refused key or unreachable provider returns `{ "ok": false, "error": "…" }` with `200`, the error carrying the provider's own words rather than its JSON envelope.
 
 ---
 
