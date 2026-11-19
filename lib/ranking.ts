@@ -448,6 +448,25 @@ export const withinDigestWindow = (
   return nowMs - published <= maxAgeMs;
 };
 
+export interface FreshPoolExclusions {
+  previousDigestIds?: string[];
+  shownIds?: string[];
+  actionedIds?: string[];
+}
+
+// A refresh builds the edition from what is left after the reader's own history: saved, opened,
+// voted and hidden pieces, plus anything this browser already showed. There is deliberately no
+// fallback to the previous edition — an empty result means "nothing new", never "reshuffle the
+// same cards into a fresh-looking list".
+export function freshCandidates<T extends { id: string }>(pool: T[], exclusions: FreshPoolExclusions): T[] {
+  const previousDigestIds = new Set(exclusions.previousDigestIds || []);
+  const shownIds = new Set(exclusions.shownIds || []);
+  const actionedIds = new Set(exclusions.actionedIds || []);
+  return pool.filter(item =>
+    !actionedIds.has(item.id) && !previousDigestIds.has(item.id) && !shownIds.has(item.id)
+  );
+}
+
 export interface DigestSelectionOptions {
   itemCount: number;
   serendipityDial: number;

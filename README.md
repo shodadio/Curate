@@ -178,7 +178,7 @@ Accepts a list of sources, item count target (3–15), and optional topic prefer
 Ranking happens in three layers, and all three run without any API key:
 
 1. **Built-in semantic engine** — TF-IDF vectors over each article's title, folder, summary and excerpt, compared against recency-weighted centroids of your liked and disliked articles. Legacy votes (ids without a stored excerpt) are recovered from the live pool so the engine learns immediately.
-2. **Freshness** — articles you have already been shown are down-weighted (heavy for 18 hours, lighter for up to two weeks), and a manual refresh keeps the current digest's articles out of the pool when there is room. Feed libraries wider than one run can fetch are rotated by a per-request seed.
+2. **Freshness** — an edition only draws on pieces published in the last 24 hours; anything older stays readable in the Feeds stream. In ordinary builds, articles you have already been shown are down-weighted (heavy for 18 hours, lighter for up to two weeks). A manual refresh is stricter: it re-reads every feed, drops whatever you saved, opened, voted on or hid, and skips anything already shown, so it either returns genuinely new stories or says plainly that nothing new arrived rather than reshuffling the edition. Feed libraries wider than one run can fetch are rotated by a per-request seed.
 3. **Optional provider embeddings** — when an OpenAI-compatible or Gemini embeddings endpoint is configured, provider similarity is blended 65/35 with the built-in scores. Provider failures fall back to the built-in engine rather than silently disabling semantic ranking.
 
 ### Setup and calibration
@@ -202,6 +202,7 @@ Calibration is served by `POST /api/calibrate` with `{ sources, excludeIds }` an
   ],
   "recentlyShown": [{ "id": "live_cd34", "shownAt": 1732000000000 }],
   "previousDigestIds": ["live_cd34"],
+  "actionedIds": ["live_ab12"],
   "fresh": true,
   "seed": "1732000000000-0.42",
   "itemCount": 6,

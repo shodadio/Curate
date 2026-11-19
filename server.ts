@@ -21,6 +21,7 @@ import {
   maxPerSourceFor,
   scoreCandidates,
   selectDiverse,
+  freshCandidates,
   stableJitter,
   withinDigestWindow,
   type SemanticVoteExample,
@@ -1699,17 +1700,14 @@ async function startServer() {
       const exposurePenalty = buildExposurePenalty(recentlyShown);
 
       // A refresh builds a genuinely new edition: actioned pieces never come back, and pieces
-      // this browser already showed are skipped. Each stricter rule yields only when it would
-      // empty the edition, so a quiet day still returns the freshest stories available.
+      // this browser already showed are skipped. If that leaves nothing, the honest answer is
+      // an empty edition — never the same stories shuffled into a fresh-looking list.
       if (wantsFreshDigest) {
-        candidatePool = candidatePool.filter(item => !actionedIds.has(item.id));
-        const withoutShown = candidatePool.filter(item => !previousDigestIds.has(item.id) && !shownIds.has(item.id));
-        if (withoutShown.length > 0) {
-          candidatePool = withoutShown;
-        } else {
-          const withoutEdition = candidatePool.filter(item => !previousDigestIds.has(item.id));
-          if (withoutEdition.length > 0) candidatePool = withoutEdition;
-        }
+        candidatePool = freshCandidates(candidatePool, {
+          previousDigestIds: [...previousDigestIds],
+          shownIds: [...shownIds],
+          actionedIds: [...actionedIds],
+        });
       }
 
       // Provider-free semantic ranking: votes change the digest even with no API key.
