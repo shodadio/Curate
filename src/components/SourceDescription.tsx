@@ -34,7 +34,7 @@ export function SourceDescription({ description, sourceTitle, expanded, onToggle
         <button
           type="button"
           onClick={onToggle}
-          className="mt-1 inline-flex items-center gap-0.5 text-[11px] font-medium text-slate-500 hover:text-amber-300 transition cursor-pointer"
+          className="mt-0.5 inline-flex min-h-8 items-center gap-0.5 px-0.5 text-[11px] font-medium text-slate-500 hover:text-amber-300 transition cursor-pointer"
           aria-expanded={expanded}
           title={expanded ? 'Show less of this site description' : `Show more about ${sourceTitle}`}
         >
