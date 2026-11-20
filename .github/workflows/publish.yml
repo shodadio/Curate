@@ -1,0 +1,57 @@
+name: Publish
+
+# Every merge to main ships a fresh image, so what is deployed is always what was just
+# verified: the release check in the Dockerfile runs during this build, and the commit that
+# triggered it is the one stamped into the bundle. A manual run re-publishes the same commit.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Two pushes racing means two images and only one deploy worth having; the second build
+# replaces the first rather than both of them shipping.
+concurrency:
+  group: publish-main
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Build and publish the container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags name the commit, so a running container can be traced back without opening it:
+      # the short SHA it was built from, plus a floating tag for the host to follow.
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/shodadio/curator
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
+          # The build itself is the attestation that matters here; keyless signing of the
+          # image would need an identity the private package cannot verify on pull.
+          provenance: false
