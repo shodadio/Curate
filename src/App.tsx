@@ -1144,6 +1144,8 @@ export default function App() {
   // The request in flight, so a retry or a timeout can actually cancel it
   const digestAbortRef = React.useRef<AbortController | null>(null);
   const feedStreamRequestRef = React.useRef(0);
+  // Set when the reader hands off to a feed, so the stream opens at its newest entry
+  const scrollFeedStreamTopRef = React.useRef(false);
   // Read Aloud queue: the sentences still to speak, which one is playing, and the session
   // they belong to, so a superseded callback can never speak over a newer one
   const speechQueueRef = React.useRef<SpeechChunk[]>([]);
@@ -3419,6 +3421,26 @@ export default function App() {
   const readerAvatar = selectedArticle
     ? getSourceAvatar(readerSource?.feedUrl || selectedArticle.url)
     : undefined;
+  // The feed the masthead points at: the saved source when it matches, otherwise the
+  // article's own publication name.
+  const readerSourceTitle = readerSource?.title || selectedArticle?.source || '';
+
+  // The publication in the masthead is also a way back to it: tapping the icon or the name
+  // closes the reader and opens that feed's own chronological stream.
+  const openReaderSourceFeed = () => {
+    if (!selectedArticle) return;
+    scrollFeedStreamTopRef.current = true;
+    handleOpenFeedStream(readerSourceTitle, readerSource?.id);
+    closeArticle();
+  };
+
+  // Landing on a feed should start at its newest entry, not at whatever the page under the
+  // reader happened to be scrolled to. Declared after the close effect, which may focus a card.
+  React.useEffect(() => {
+    if (!scrollFeedStreamTopRef.current || selectedArticle || activeTab !== 'feeds') return;
+    scrollFeedStreamTopRef.current = false;
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [selectedArticle, activeTab]);
 
   // Editable feed categories, rather than organizational folders, seed interest suggestions.
   const interestSuggestions = suggestionsFromFolders(sources.flatMap(src =>
@@ -3450,6 +3472,33 @@ export default function App() {
   const editionItems = digest.filter(item => !mutedCards[item.id]);
   const editionMinutes = editionItems.reduce((total, item) => total + (parseInt(item.readTime, 10) || 0), 0);
   const allDigestItemsMuted = digest.length > 0 && mutedDigestItems.length === digest.length;
+  // A story counts as dealt with in the same way its card turns green: opened, read through,
+  // saved or voted on. Once every story is in that state, the edition is finished for now.
+  const allDigestItemsActioned = digest.length > 0
+    && digest.every(item => Boolean(mutedCards[item.id]) || getCardActions(item.id).hasAnyAction);
+
+  // A new round replaces the edition under the reader's feet, so land them on its first story
+  // rather than wherever the finished edition had scrolled to. Only move when the edition
+  // actually changed: a "nothing new" answer should leave them beside the button and its notice.
+  const freshRoundStartRef = React.useRef<DigestItem[] | null>(null);
+  // Its own flag, not the shared digest spinner: a vote can start a background re-rank that
+  // must not make this button claim it is searching for a new set.
+  const [startingFreshRound, setStartingFreshRound] = useState(false);
+  const searchAnotherRound = () => {
+    freshRoundStartRef.current = digest;
+    setStartingFreshRound(true);
+    void generateDigest({ fresh: true });
+  };
+  React.useEffect(() => {
+    if (!freshRoundStartRef.current || loadingDigest) return;
+    const previousEdition = freshRoundStartRef.current;
+    freshRoundStartRef.current = null;
+    setStartingFreshRound(false);
+    // If the reader wandered to another tab while it searched, leave that page where it is.
+    if (digest !== previousEdition && activeTab === 'today') {
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    }
+  }, [loadingDigest, digest, activeTab]);
   // Say how much is actually readable, so a fully muted digest never claims items are waiting.
   const digestSummaryLabel = digest.length === 0
     ? 'No stories yet'
@@ -3708,7 +3757,14 @@ export default function App() {
                 headline and one line of credit — no frame around any of it. */}
             <div className="reader-masthead">
               <div className="flex items-center gap-3">
-                <span className="reader-avatar shrink-0" aria-hidden="true">
+                {/* The icon and the name are both doors to the same feed. */}
+                <button
+                  type="button"
+                  onClick={openReaderSourceFeed}
+                  className="reader-avatar shrink-0 transition-opacity hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60"
+                  title={`Open the ${readerSourceTitle} feed`}
+                  aria-label={`Open the ${readerSourceTitle} feed`}
+                >
                   {readerAvatar && (
                     <img
                       src={readerAvatar}
@@ -3718,23 +3774,32 @@ export default function App() {
                       onError={(event) => { (event.currentTarget as HTMLElement).style.display = 'none'; }}
                     />
                   )}
-                  <span className="reader-avatar-initials font-sans">{selectedArticle.source.slice(0, 2).toUpperCase()}</span>
-                </span>
+                  <span className="reader-avatar-initials font-sans" aria-hidden="true">{selectedArticle.source.slice(0, 2).toUpperCase()}</span>
+                </button>
                 <div className="min-w-0 font-sans">
-                  {readerSourceDescription ? (
+                  <div className="flex max-w-full items-center gap-0.5">
                     <button
                       type="button"
-                      onClick={() => setShowReaderSourceNote(prev => !prev)}
-                      aria-expanded={showReaderSourceNote}
-                      title={showReaderSourceNote ? 'Hide the source description' : `About ${selectedArticle.source}`}
-                      className="reader-strong inline-flex max-w-full items-center gap-1 text-[0.82rem] font-semibold transition-colors"
+                      onClick={openReaderSourceFeed}
+                      title={`Open the ${readerSourceTitle} feed`}
+                      aria-label={`Open the ${readerSourceTitle} feed`}
+                      className="reader-strong inline-flex min-w-0 max-w-full items-center rounded-lg text-left text-[0.82rem] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60"
                     >
                       <span className="truncate">{selectedArticle.source}</span>
-                      <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform ${showReaderSourceNote ? 'rotate-180' : ''}`} />
                     </button>
-                  ) : (
-                    <div className="reader-ink truncate text-[0.82rem] font-semibold">{selectedArticle.source}</div>
-                  )}
+                    {readerSourceDescription && (
+                      <button
+                        type="button"
+                        onClick={() => setShowReaderSourceNote(prev => !prev)}
+                        aria-expanded={showReaderSourceNote}
+                        title={showReaderSourceNote ? 'Hide the source description' : `About ${selectedArticle.source}`}
+                        aria-label={showReaderSourceNote ? 'Hide the source description' : `About ${selectedArticle.source}`}
+                        className="reader-dim-button -my-2 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors"
+                      >
+                        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showReaderSourceNote ? 'rotate-180' : ''}`} />
+                      </button>
+                    )}
+                  </div>
                   <div className="reader-dim mt-1 text-[0.64rem] font-medium uppercase tracking-[0.2em]">
                     {displayFolder(selectedArticle.folder)}
                   </div>
@@ -4648,16 +4713,40 @@ export default function App() {
                 )}
 
                 {/* The edition ends here: say what they just read, and how the next one arrives.
-                    Nothing is scheduled, so the copy must not imply a 7am delivery. */}
-                <div className="rounded-3xl border border-slate-800 bg-slate-900/40 px-5 py-6 text-center">
-                  <CuratorMark className="w-8 h-8 mx-auto mb-3 opacity-90" />
-                  <p className="text-sm font-semibold text-slate-100">
-                    That&apos;s your edition — {editionItems.length} {editionItems.length === 1 ? 'story' : 'stories'}, ~{editionMinutes} minutes.
-                  </p>
-                  <p className="mt-1 text-xs text-slate-400">
-                    Curator has no schedule: a fresh edition builds the next time you open it.
-                  </p>
-                </div>
+                    Nothing is scheduled, so the copy must not imply a 7am delivery. Once every
+                    story has been actioned, the end of the edition offers a fresh search. */}
+                {allDigestItemsActioned ? (
+                  <div className="animate-fade-in rounded-3xl border border-emerald-500/30 bg-emerald-500/[0.06] px-5 py-6 text-center">
+                    <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full border border-emerald-500/40 bg-emerald-500/10">
+                      <CheckCheck className="h-5 w-5 text-emerald-400" />
+                    </div>
+                    <div role="status">
+                      <h3 className="text-base font-semibold tracking-tight text-slate-100">All done, for now</h3>
+                      <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-slate-400">
+                        You&apos;ve been through every story in this edition. Curator can search your feeds again for a new set.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={searchAnotherRound}
+                      disabled={startingFreshRound}
+                      className="mt-4 inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-amber-500 px-4 text-sm font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-60"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${startingFreshRound ? 'animate-spin' : ''}`} />
+                      <span>{startingFreshRound ? 'Searching…' : 'Search for a new set'}</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="rounded-3xl border border-slate-800 bg-slate-900/40 px-5 py-6 text-center">
+                    <CuratorMark className="w-8 h-8 mx-auto mb-3 opacity-90" />
+                    <p className="text-sm font-semibold text-slate-100">
+                      That&apos;s your edition — {editionItems.length} {editionItems.length === 1 ? 'story' : 'stories'}, ~{editionMinutes} minutes.
+                    </p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Curator has no schedule: a fresh edition builds the next time you open it.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </div>
