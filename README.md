@@ -40,6 +40,7 @@
   - [`POST /api/test-provider`](#post-apitest-provider)
   - [`GET /api/generated-feed`](#get-apigenerated-feed)
   - [`GET /api/favicon`](#get-apifavicon)
+  - [`GET /api/version`](#get-apiversion)
   - [`GET /api/health`](#get-apihealth)
   - [`GET /api/semantic-status`](#get-apisemantic-status)
   - [`GET /api/usage`](#get-apiusage)
@@ -354,6 +355,11 @@ Returns a source's site icon, fetched server-side and cached in memory for seven
 
 **Query Parameters:**
 - `domain`: The feed's hostname (e.g., `marginalrevolution.com`).
+
+---
+
+### `GET /api/version`
+Names the build this server is running: `{ "version": "abc1234", "commit": "abc1234", "builtAt": "…", "repo": "shodadio/Curate", "stamp": "shodadio/Curate · Build abc1234 · …" }`, with `Cache-Control: no-store`. The version and stamp match what Settings shows, so a deployment can be confirmed with one request instead of opening the app on a device. A build that could not name its commit reports a generated id rather than an empty version.
 
 ---
 

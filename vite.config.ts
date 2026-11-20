@@ -1,41 +1,19 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import fs from 'node:fs';
 import path from 'path';
 import { execSync } from 'node:child_process';
-import {defineConfig} from 'vite';
+import {defineConfig, type Plugin, type ResolvedConfig} from 'vite';
+import { BUILD_INFO_FILE, commitFromEnv } from './lib/buildInfo.ts';
+import type { BuildStampInfo } from './lib/buildStamp.ts';
 
-// Which build a device is running: the commit it came from, when it was made. Docker images
-// exclude .git, so the commit also comes from whichever host variable is set — the first one
-// below wins, and SOURCE_COMMIT remains the documented override.
-const commitEnvNames = [
-  'SOURCE_COMMIT',         // Docker --build-arg, the documented override
-  'GITHUB_SHA',            // GitHub Actions
-  'CI_COMMIT_SHA',         // GitLab CI
-  'COMMIT_SHA',            // Cloud Build (what AI Studio deploys run on)
-  'SHORT_SHA',             // Cloud Build
-  'COMMIT_REF',            // Netlify
-  'VERCEL_GIT_COMMIT_SHA', // Vercel
-  'RENDER_GIT_COMMIT',     // Render
-  'RAILWAY_GIT_COMMIT_SHA',// Railway
-  'CF_PAGES_COMMIT_SHA',   // Cloudflare Pages
-  'WORKERS_CI_COMMIT_SHA', // Cloudflare Workers Builds
-  'HEROKU_SLUG_COMMIT',    // Heroku
-  'BITBUCKET_COMMIT',      // Bitbucket Pipelines
-  'CIRCLE_SHA1',           // CircleCI
-  'TRAVIS_COMMIT',         // Travis CI
-  'BUILDKITE_COMMIT',      // Buildkite
-  'DRONE_COMMIT_SHA',      // Drone
-  'GIT_COMMIT',            // generic CI
-  'GIT_COMMIT_SHA',        // generic CI
-] as const;
-
-const commitFromEnv = commitEnvNames
-  .map(name => (process.env[name] || '').trim())
-  .find(Boolean) || '';
+// Which build a device is running: the commit it came from, when it was made. The host-variable
+// list lives in lib/buildInfo.ts because the server reads the same values at runtime.
+const envCommit = commitFromEnv();
 
 const shortCommit = (() => {
-  if (commitFromEnv) return commitFromEnv.slice(0, 7);
+  if (envCommit) return envCommit.slice(0, 7);
   try {
     return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
   } catch {
@@ -47,6 +25,24 @@ const shortCommit = (() => {
 // as its version. A GitHub build supplies this; local builds fall back to the project repo.
 const repository = process.env.GITHUB_REPOSITORY || 'shodadio/Curate';
 
+// The server cannot read .git and cannot see build args, so the build leaves its identity next
+// to the bundle. GET /api/version reads this file.
+function writeBuildInfo(info: BuildStampInfo): Plugin {
+  let outDir = '';
+  return {
+    name: 'curator-build-info',
+    apply: 'build',
+    configResolved(config: ResolvedConfig) {
+      outDir = path.resolve(config.root, config.build.outDir);
+    },
+    closeBundle() {
+      if (!outDir) return;
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.writeFileSync(path.join(outDir, BUILD_INFO_FILE), `${JSON.stringify(info, null, 2)}\n`);
+    },
+  };
+}
+
 export default defineConfig(({ command }) => {
   // A version-less stamp is a support problem: a phone cannot say which build it runs.
   // Say so where the operator will see it, before the bundle is written.
@@ -57,13 +53,19 @@ export default defineConfig(({ command }) => {
         '  Pass SOURCE_COMMIT=<sha>, or build from a checkout with .git, to stamp the real commit.\n'
     );
   }
+  const buildInfo: BuildStampInfo = {
+    commit: shortCommit,
+    builtAt: new Date().toISOString(),
+    repo: repository,
+  };
   return {
     define: {
-      __BUILD_INFO__: JSON.stringify({ commit: shortCommit, builtAt: new Date().toISOString(), repo: repository }),
+      __BUILD_INFO__: JSON.stringify(buildInfo),
     },
     plugins: [
       react(),
       tailwindcss(),
+      writeBuildInfo(buildInfo),
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'fonts/*.woff2'],

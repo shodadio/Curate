@@ -11,6 +11,7 @@ import fs from 'fs';
 import { DEFAULT_FEEDS } from './src/defaultFeeds';
 import { MAX_PAGE_BYTES, MAX_REDIRECTS, BlockedUrlError, assertPublicHttpUrl, guardedLookup } from './lib/ssrf';
 import { clientAddress, parseTrustedHops, type ProxyTrust } from './lib/clientAddress';
+import { DEFAULT_REPO, commitFromEnv, readBuildInfo, versionReport } from './lib/buildInfo';
 import {
   blendSemanticScores,
   denseFeedbackScores,
@@ -482,6 +483,19 @@ async function startServer() {
   }
 
   const app = express();
+
+  // The build leaves its identity next to the bundle, so this process can name the version it
+  // serves even after .git and the build args are gone. Development serves a fresh bundle from
+  // Vite, so a stale dist must not answer for it.
+  const distDir = path.resolve(process.cwd(), 'dist');
+  const production = process.env.NODE_ENV === 'production';
+  const buildInfo = (production ? readBuildInfo(distDir) : null) ?? {
+    commit: commitFromEnv(),
+    builtAt: '',
+    repo: (process.env.GITHUB_REPOSITORY || '').trim() || DEFAULT_REPO,
+  };
+  const liveVersion = versionReport(buildInfo);
+
   app.use(express.json({ limit: '25mb' }));
   // Count the calls the app makes into its own server (the usage route excludes itself)
   app.use('/api', (req, _res, next) => {
@@ -579,6 +593,12 @@ async function startServer() {
   app.get('/api/health', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ ok: true, service: 'curator' });
+  });
+
+  // Which build is live: the same version Settings shows, reachable without a device.
+  app.get('/api/version', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(liveVersion);
   });
 
   // API Routes
@@ -2742,9 +2762,8 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
     }
   });
 
-  if (process.env.NODE_ENV === 'production') {
+  if (production) {
     // Serve the client built by `npm run build` instead of mounting the dev middleware
-    const distDir = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distDir, { index: false, maxAge: '1h' }));
     app.get('*', (_req, res) => res.sendFile(path.join(distDir, 'index.html')));
   } else {
@@ -2760,6 +2779,7 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
   }
 
   app.listen(Number(PORT), '0.0.0.0', () => {
+    console.log(`[Curator] Serving ${liveVersion.stamp}`);
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
