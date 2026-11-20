@@ -24,6 +24,16 @@ import { readBackupFile, restorePlan } from '../lib/backup';
 import { MAX_EDITIONS, editionDayLabel, editionMinutes as editionMinutesFor, readEditions, recordEdition, type Edition } from '../lib/editions';
 import { formatBytes, measureStorage, pruneArticleBodies, type StorageReport } from '../lib/storageHealth';
 import { activeSources, applyFeedFailures, resumeFeed } from '../lib/sourceRetirement';
+import {
+  EMPTY_DIGEST_TOAST,
+  buildDigestRequest,
+  digestOutcome,
+  digestTransportFailure,
+  postDigest,
+  readReadingStats,
+  readShownHistory,
+  shownHistoryAfter,
+} from '../lib/curationRequest';
 import { DEFAULT_FEEDS } from './defaultFeeds';
 import { explainFeedFailure } from '../lib/feedHealth';
 import {
@@ -1657,38 +1667,22 @@ export default function App() {
       if (requestId === digestRequestRef.current) setDigestSlow(true);
     }, DIGEST_SLOW_HINT_MS);
     try {
-      let readingStats = {};
-      try {
-        readingStats = JSON.parse(safeGetItem('curator_reading_stats') || '{}');
-      } catch (e) { /* ignore */ }
-
-      // Freshness history lives in this browser. The digest currently on screen is not
-      // "already shown" — the server only down-weights pieces you have moved past.
-      let shownHistory: Array<{ id: string; shownAt: number }> = [];
-      try {
-        const savedHistory = JSON.parse(safeGetItem('curator_digest_history') || '[]');
-        if (Array.isArray(savedHistory)) {
-          shownHistory = savedHistory
-            .filter((entry: any) => entry && typeof entry.id === 'string' && Number.isFinite(entry.shownAt))
-            .slice(-150);
-        }
-      } catch {
-        shownHistory = [];
-      }
-
-      const currentDigestIds = new Set(digest.map(item => item.id));
-      const recentlyShown = shownHistory.filter(entry => !currentDigestIds.has(entry.id));
-
-      const res = await fetch('/api/curate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sources: activeSources(sources),
-          signals: { ...signals, moreTopics: interests.more, lessTopics: interests.less },
-          feedback: semanticFeedback,
-          readingStats,
-          serendipityDial,
-          itemCount,
+      // Freshness history and the reading tally live in this browser; the request module turns
+      // them, the profile and the provider settings into the payload the server ranks against.
+      const shownHistory = readShownHistory(safeGetItem('curator_digest_history'));
+      const payload = buildDigestRequest({
+        sources: activeSources(sources),
+        signals,
+        interests,
+        feedback: semanticFeedback,
+        readingStats: readReadingStats(safeGetItem('curator_reading_stats')),
+        shownHistory,
+        currentDigestIds: digest.map(item => item.id),
+        savedIds,
+        mutedIds: Object.keys(mutedCards),
+        serendipityDial,
+        itemCount,
+        model: {
           provider: aiProvider,
           apiKey: customApiKey,
           baseUrl: aiBaseUrl,
@@ -1697,70 +1691,47 @@ export default function App() {
           embeddingApiKey,
           embeddingBaseUrl,
           embeddingModel,
-          recentlyShown,
-          previousDigestIds: [...currentDigestIds],
-          // A refresh must not hand back what the reader already saved, opened, voted on or hid.
-          actionedIds: options?.fresh
-            ? Array.from(new Set([
-                ...savedIds,
-                ...Object.keys(mutedCards),
-                ...(signals.moreIds || []),
-                ...(signals.lessIds || []),
-                ...Object.keys(readingStats),
-              ]))
-            : [],
-          fresh: Boolean(options?.fresh),
-          seed: options?.fresh ? `${Date.now()}-${Math.random()}` : 'stable',
-        }),
-        signal: controller.signal,
+        },
+        fresh: Boolean(options?.fresh),
       });
-      const data = await res.json().catch(() => ({}));
+
+      const { status, data } = await postDigest(payload, { signal: controller.signal });
       if (requestId !== digestRequestRef.current) return;
-      if (!res.ok) {
-        const message = data?.error
-          ? `Curator could not build the digest: ${String(data.error).slice(0, 200)}`
-          : `Curator’s server returned HTTP ${res.status}.`;
-        if (digest.length === 0) setDigestError(message);
-        else showToast(message);
+      const outcome = digestOutcome<DigestItem>(status, data, digest.length > 0);
+      if (outcome.kind === 'error') {
+        if (outcome.surface === 'card') setDigestError(outcome.message);
+        else showToast(outcome.message);
         return;
       }
       setDigestError(null);
       setDigestOffline(false);
       setDigestCuratedAt(Date.now());
-      if (Array.isArray(data.digest) && data.digest.length > 0) {
+      if (outcome.kind === 'empty') {
+        if (options?.fresh) showToast(EMPTY_DIGEST_TOAST);
+        return;
+      }
+      if (outcome.items.length > 0) {
         const builtAt = Date.now();
-        setDigest(data.digest);
-        safeSetJson('curator_digest_cache', { curatedAt: builtAt, items: data.digest });
+        setDigest(outcome.items);
+        safeSetJson('curator_digest_cache', { curatedAt: builtAt, items: outcome.items });
         // The edition that just arrived joins the archive, so tomorrow's miss is not a loss.
-        setEditions(prev => recordEdition(prev, builtAt, data.digest));
-        applySourceMetadata(data.digest);
-        if (data.semanticSummary) setSemanticSummary(data.semanticSummary);
-        if (data.feedReport) {
-          setFeedReport(data.feedReport);
-          applyFeedReport(data.feedReport);
+        setEditions(prev => recordEdition(prev, builtAt, outcome.items));
+        applySourceMetadata(outcome.items);
+        if (outcome.semanticSummary) setSemanticSummary(outcome.semanticSummary);
+        if (outcome.feedReport) {
+          setFeedReport(outcome.feedReport);
+          applyFeedReport(outcome.feedReport);
         }
-
-        const shownAt = Date.now();
-        const freshIds = new Set<string>(data.digest.map((item: DigestItem) => item.id));
-        const mergedHistory = [
-          ...shownHistory.filter(entry => !freshIds.has(entry.id)),
-          ...data.digest.map((item: DigestItem) => ({ id: item.id, shownAt })),
-        ].slice(-150);
-        safeSetJson('curator_digest_history', mergedHistory);
-      } else if (options?.fresh) {
-        showToast('Nothing new in 24 hours — older stories are in Feeds');
+        safeSetJson('curator_digest_history', shownHistoryAfter(shownHistory, outcome.items, Date.now()));
       }
     } catch {
       if (requestId !== digestRequestRef.current) return;
-      const timedOut = controller.signal.aborted;
-      const message = timedOut
-        ? 'Curator’s server did not answer in time. It may be waking up from idle — try again in a moment.'
-        : 'Could not reach Curator’s server. Check your connection and try again.';
       // With stories already on screen a toast is enough; an empty screen needs a card that
       // stays put, because a passing message looks identical to "nothing to read today".
+      const failure = digestTransportFailure(controller.signal.aborted);
       setDigestOffline(true);
-      if (digest.length === 0) setDigestError(message);
-      else showToast(timedOut ? 'Digest took too long — try refreshing again' : 'Could not refresh the digest');
+      if (digest.length === 0) setDigestError(failure.message);
+      else showToast(failure.toast);
     } finally {
       window.clearTimeout(timeout);
       window.clearTimeout(slowHint);

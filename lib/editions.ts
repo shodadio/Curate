@@ -30,7 +30,7 @@ const text = (value: unknown): string => (typeof value === 'string' ? value : ''
 
 // A digest entry carries a lot the archive does not need: full text, link state, reading
 // markers. Picking the fields explicitly keeps a stray save from ballooning the stored file.
-export function editionItem(item: EditionItem & Record<string, unknown>): EditionItem {
+export function editionItem(item: EditionItem): EditionItem {
   return {
     id: text(item.id),
     title: text(item.title),
@@ -53,7 +53,7 @@ const sameDay = (a: number, b: number): boolean =>
 export function recordEdition(
   history: Edition[],
   curatedAt: number,
-  items: Array<EditionItem & Record<string, unknown>>,
+  items: EditionItem[],
   max: number = MAX_EDITIONS,
 ): Edition[] {
   if (!Number.isFinite(curatedAt) || !Array.isArray(items) || items.length === 0) return history;
@@ -67,7 +67,7 @@ export function recordEdition(
     .slice(0, Math.max(1, max));
 }
 
-function editionItemList(items: Array<EditionItem & Record<string, unknown>>): EditionItem[] {
+function editionItemList(items: EditionItem[]): EditionItem[] {
   const seen = new Set<string>();
   const result: EditionItem[] = [];
   for (const item of items) {
@@ -98,7 +98,7 @@ export function readEditions(raw: string | null): Edition[] {
     )
     .map(entry => ({
       curatedAt: entry.curatedAt,
-      items: entry.items.filter(item => item && typeof item === 'object').map(item => editionItem(item as EditionItem & Record<string, unknown>)),
+      items: entry.items.filter(item => item && typeof item === 'object').map(item => editionItem(item as EditionItem)),
     }))
     .filter(entry => entry.items.length > 0)
     .sort((a, b) => b.curatedAt - a.curatedAt)

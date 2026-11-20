@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MAX_EDITIONS, editionDayLabel, editionItem, editionMinutes, readEditions, recordEdition } from '../lib/editions.ts';
+import { MAX_EDITIONS, editionDayLabel, editionItem, editionMinutes, readEditions, recordEdition, type EditionItem } from '../lib/editions.ts';
 
 const item = (id: string, extra: Record<string, unknown> = {}) => ({
   id,
@@ -17,7 +17,8 @@ const item = (id: string, extra: Record<string, unknown> = {}) => ({
 const at = (iso: string) => Date.parse(iso);
 
 test('an edition keeps only the fields an archive card needs', () => {
-  const kept = editionItem({ ...item('a'), fullText: 'x'.repeat(5000), linksCleaned: true, linkRefreshAt: 1 });
+  // A digest entry carries bodies, link state and reading markers; the archive keeps none of it.
+  const kept = editionItem({ ...item('a'), fullText: 'x'.repeat(5000), linksCleaned: true, linkRefreshAt: 1 } as unknown as EditionItem);
   assert.equal('fullText' in kept, false);
   assert.equal('linksCleaned' in kept, false);
   assert.equal(kept.title, 'Story a');
