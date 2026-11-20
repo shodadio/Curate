@@ -25,6 +25,27 @@ import { MAX_EDITIONS, editionDayLabel, editionMinutes as editionMinutesFor, rea
 import { formatBytes, measureStorage, pruneArticleBodies, type StorageReport } from '../lib/storageHealth';
 import { activeSources, applyFeedFailures, resumeFeed } from '../lib/sourceRetirement';
 import {
+  REFRESH_ALL_TRANSPORT_TOAST,
+  SINGLE_REFRESH_FAILED_TOAST,
+  SINGLE_SOURCE_NETWORK_REASON,
+  buildFeedStreamRequest,
+  buildRefreshAllRequest,
+  buildSingleFeedRequest,
+  findRefreshRow,
+  postFeedStream,
+  readFeedStreamArticles,
+  readRefreshAllOutcome,
+  readSingleSourceOutcome,
+  refreshAllSourceUpdate,
+  refreshAllToast,
+} from '../lib/feedStreamRequest';
+import {
+  CALIBRATION_UNREACHABLE,
+  buildCalibrationRequest,
+  postCalibration,
+  readCalibrationOutcome,
+} from '../lib/calibrationRequest';
+import {
   EMPTY_DIGEST_TOAST,
   buildDigestRequest,
   digestOutcome,
@@ -1529,17 +1550,13 @@ export default function App() {
     const requestId = ++feedStreamRequestRef.current;
     setLoadingFeedStream(true);
     try {
-      const res = await fetch('/api/feed-stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceTitle: sourceTitle || 'all', sources: activeSources(sources) })
-      });
-      const data = await res.json();
+      const { data } = await postFeedStream(buildFeedStreamRequest(sourceTitle, activeSources(sources)));
       if (requestId !== feedStreamRequestRef.current) return;
-      if (Array.isArray(data.articles)) {
-        setFeedStreamArticles(data.articles);
+      const articles = readFeedStreamArticles<DigestItem>(data);
+      if (articles) {
+        setFeedStreamArticles(articles);
         setFeedStreamRenderKey(prev => prev + 1);
-        applySourceMetadata(data.articles);
+        applySourceMetadata(articles);
       }
     } catch (e) {
       // fallback
@@ -1812,26 +1829,21 @@ export default function App() {
     setLoadingCalibration(true);
     setSetupError(null);
     try {
-      const res = await fetch('/api/calibrate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sources: activeSources(sources),
-          excludeIds: semanticFeedback.map(entry => entry.id),
-        })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !Array.isArray(data.candidates) || data.candidates.length === 0) {
-        setSetupError(data?.error || 'No live articles came back. Check your feed URLs, then try again.');
+      const { status, data } = await postCalibration(
+        buildCalibrationRequest(activeSources(sources), semanticFeedback.map(entry => entry.id)),
+      );
+      const outcome = readCalibrationOutcome<DigestItem>(status, data);
+      if (outcome.kind === 'error') {
+        setSetupError(outcome.message);
         return;
       }
-      setCalibrationCandidates(data.candidates);
-      applySourceMetadata(data.candidates);
+      setCalibrationCandidates(outcome.candidates);
+      applySourceMetadata(outcome.candidates);
       setCalibrationIndex(0);
       setCalibrationVotes(0);
       setSetupStep(2);
     } catch {
-      setSetupError('Could not reach your feeds. Check your connection and try again.');
+      setSetupError(CALIBRATION_UNREACHABLE);
     } finally {
       setLoadingCalibration(false);
     }
@@ -2397,43 +2409,31 @@ export default function App() {
   const handleRefreshSource = async (source: SourceItem) => {
     setRefreshingSourceId(source.id);
     try {
-      // The id is exact; the title is only a fallback for older saved sources without one, and
-      // force skips the server's five-minute feed cache so this is a real re-read.
-      const res = await fetch('/api/feed-stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceId: source.id, sourceTitle: source.title, sources, force: true })
-      });
-      const data = await res.json().catch(() => ({}));
-      const articles: DigestItem[] = Array.isArray(data.articles) ? data.articles : [];
-      const fetched = res.ok && articles.length > 0;
-      if (fetched) applySourceMetadata(articles);
+      const { status, data } = await postFeedStream(buildSingleFeedRequest(source, sources));
+      const outcome = readSingleSourceOutcome<DigestItem>(status, data);
+      if (outcome.fetched) applySourceMetadata(outcome.articles);
 
       setSources(prev => prev.map(s => {
         if (s.id !== source.id) return s;
-        return fetched
-          ? { ...s, lastSyncedAt: Date.now(), status: 'active' as const, failingReason: undefined }
-          : {
-              ...s,
-              status: 'failing' as const,
-              failingReason: res.ok ? 'This feed returned no articles.' : (data.error || `Feed returned HTTP ${res.status}.`)
-            };
+        return outcome.fetched
+          ? { ...s, lastSyncedAt: Date.now(), status: 'active' as const, failingReason: undefined, consecutiveFailures: 0 }
+          : { ...s, status: 'failing' as const, failingReason: outcome.failingReason };
       }));
 
-      if (fetched) {
+      if (outcome.fetched) {
         if (selectedFeedSource === source.title) {
-          setFeedStreamArticles(articles);
+          setFeedStreamArticles(outcome.articles);
           setFeedStreamRenderKey(prev => prev + 1);
         }
-        showToast(`Fetched ${articles.length} ${articles.length === 1 ? 'article' : 'articles'}`);
+        showToast(`Fetched ${outcome.articles.length} ${outcome.articles.length === 1 ? 'article' : 'articles'}`);
       } else {
-        showToast('Could not refresh that feed');
+        showToast(SINGLE_REFRESH_FAILED_TOAST);
       }
     } catch (e) {
       setSources(prev => prev.map(s => s.id === source.id
-        ? { ...s, status: 'failing' as const, failingReason: 'Network error while refreshing this feed.' }
+        ? { ...s, status: 'failing' as const, failingReason: SINGLE_SOURCE_NETWORK_REASON }
         : s));
-      showToast('Could not refresh that feed');
+      showToast(SINGLE_REFRESH_FAILED_TOAST);
     } finally {
       setRefreshingSourceId(null);
     }
@@ -2445,56 +2445,31 @@ export default function App() {
     if (refreshingAllFeeds) return;
     setRefreshingAllFeeds(true);
     try {
-      const res = await fetch('/api/feed-stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sourceTitle: selectedFeedSource || 'all',
-          sources: activeSources(sources),
-          refreshAll: true,
-        })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        showToast(data.error || 'Could not refresh your feeds');
+      const { status, data } = await postFeedStream(
+        buildRefreshAllRequest(selectedFeedSource || 'all', activeSources(sources)),
+      );
+      const outcome = readRefreshAllOutcome<DigestItem>(status, data);
+      if (outcome.kind === 'error') {
+        showToast(outcome.message);
         return;
       }
 
-      const articles: DigestItem[] = Array.isArray(data.articles) ? data.articles : [];
-      const results: Array<{ id?: string; title?: string; ok?: boolean; itemCount?: number; error?: string }> =
-        Array.isArray(data.sources) ? data.sources : [];
-
-      if (results.length > 0) {
+      if (outcome.rows.length > 0) {
         // The server reports one row per feed, so a source is only marked healthy when it
         // actually answered with articles.
-        setSources(prev => prev.map(src => {
-          const result = results.find(row =>
-            (row.id && row.id === src.id) ||
-            String(row.title || '').trim().toLowerCase() === src.title.trim().toLowerCase()
-          );
-          if (!result) return src;
-          return result.ok
-            ? { ...src, lastSyncedAt: Date.now(), status: 'active' as const, failingReason: undefined }
-            : { ...src, status: 'failing' as const, failingReason: result.error || 'This feed returned no articles.' };
-        }));
+        const syncedAt = Date.now();
+        setSources(prev => prev.map(src => ({
+          ...src,
+          ...refreshAllSourceUpdate(findRefreshRow(outcome.rows, src), src, syncedAt),
+        })));
       }
 
-      applySourceMetadata(articles);
-      setFeedStreamArticles(articles);
+      applySourceMetadata(outcome.articles);
+      setFeedStreamArticles(outcome.articles);
       setFeedStreamRenderKey(prev => prev + 1);
-
-      if (results.length > 0) {
-        const answered = results.filter(row => row.ok).length;
-        showToast(
-          answered === results.length
-            ? `Refreshed all ${results.length} feeds`
-            : `Refreshed ${answered} of ${results.length} feeds — the rest did not answer`
-        );
-      } else {
-        showToast(`Refreshed ${articles.length} ${articles.length === 1 ? 'entry' : 'entries'}`);
-      }
+      showToast(refreshAllToast(outcome.rows, outcome.articles.length));
     } catch (e) {
-      showToast('Could not refresh your feeds');
+      showToast(REFRESH_ALL_TRANSPORT_TOAST);
     } finally {
       setRefreshingAllFeeds(false);
     }
