@@ -467,7 +467,7 @@ docker build --build-arg SOURCE_COMMIT=$(git rev-parse --short HEAD) -t curator 
 docker run --rm -p 8080:8080 curator
 ```
 
-The image builds the bundle and sets production mode and port 8080 on its own, so there is nothing else to run before or after it, and `GET /api/version` inside the container names the same commit the local path would. Rebuild the image for every release rather than redeploying the previous one: a redeploy keeps the original build time, so installed apps checking for a newer build find nothing to switch to. Hosts that already export `GITHUB_SHA`, `CI_COMMIT_SHA`, `COMMIT_SHA` or `SHORT_SHA` supply the commit without the flag.
+The image builds the bundle and runs the same release check before it finishes, so an image that cannot name its commit fails to build exactly where the local path does. It also sets production mode and port 8080 on its own, so there is nothing else to run before or after it, and `GET /api/version` inside the container names the same commit the local path would. Rebuild the image for every release rather than redeploying the previous one: a redeploy keeps the original build time, so installed apps checking for a newer build find nothing to switch to. Hosts that already export `GITHUB_SHA`, `CI_COMMIT_SHA`, `COMMIT_SHA` or `SHORT_SHA` supply the commit without the flag.
 
 If you deploy behind a proxy, set `TRUST_PROXY=1` as described in [Environment Variables](#environment-variables) — otherwise the per-client rate limits collapse into one shared bucket.
 

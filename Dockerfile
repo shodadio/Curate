@@ -15,7 +15,9 @@ RUN bun install --frozen-lockfile
 
 COPY . .
 # The commit is read from .git during the build; the runtime image does not need the history.
-RUN bun run build && rm -rf .git
+# The stamp check fails the image when the bundle cannot name its commit, so the container path
+# fails the same way the local one does (bun run check:stamp) instead of shipping unstamped.
+RUN bun run build && bun run check:stamp && rm -rf .git
 
 FROM node:22-slim
 
