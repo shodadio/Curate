@@ -14,10 +14,22 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 COPY . .
-# The commit is read from .git during the build; the runtime image does not need the history.
-# The stamp check fails the image when the bundle cannot name its commit, so the container path
-# fails the same way the local one does (bun run check:stamp) instead of shipping unstamped.
-RUN bun run build && bun run check:stamp && rm -rf .git
+# The stamp names the commit, so the build needs one, and it arrives one of three ways: the build
+# argument above, the .git of a context that still has history, or — for a host that copies the
+# tree without history and cannot pass build args, as Cloud Build does — scripts/tree-stamp.ts,
+# a hash of the sources in the context. That hash is reproducible: the same tree always stamps
+# the same build, so a deploy can still be matched to the sources it shipped.
+# The stamp check then fails the image when none of those named anything, so the container path
+# fails the way the local one does (bun run check:stamp) instead of shipping an unstamped bundle,
+# and the runtime image drops the history it no longer needs.
+RUN set -eu; \
+    commit="${SOURCE_COMMIT}"; \
+    if [ -z "$commit" ] && [ -d .git ]; then \
+      commit="$(git rev-parse --short HEAD 2>/dev/null || true)"; \
+    fi; \
+    if [ -z "$commit" ]; then commit="$(bun scripts/tree-stamp.ts)"; fi; \
+    echo "Stamping the bundle with $commit"; \
+    SOURCE_COMMIT="$commit" bun run build && bun run check:stamp && rm -rf .git
 
 FROM node:22-slim
 
