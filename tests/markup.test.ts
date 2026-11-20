@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { articleLooksIncomplete, articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, splitDenseParagraph, splitSentences } from '../lib/markup.ts';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, splitDenseParagraph, splitSentences, trimSummaryFurniture } from '../lib/markup.ts';
 
 test('only a piece saved before links were kept is refreshed', () => {
   assert.equal(articleNeedsLinkRefresh({ url: 'https://example.com/story' }), true);
@@ -12,6 +12,47 @@ test('only a piece saved before links were kept is refreshed', () => {
 });
 
 const hasTag = (text: string) => /<[a-z/!][^>]*>/i.test(text);
+
+// ---------------------------------------------------------------------------
+// Card summaries
+// ---------------------------------------------------------------------------
+
+test('a summary loses the byline and call to action a teaser feed appends', () => {
+  assert.equal(
+    trimSummaryFurniture('Parents fear what AI will do to children. But for some, it’s the only steady presence they have – and that’s the real worry - by Tom Wooldridge Read on Aeon'),
+    'Parents fear what AI will do to children. But for some, it’s the only steady presence they have – and that’s the real worry',
+  );
+  assert.equal(
+    trimSummaryFurniture('Nautilus shells, automata and unicorn horns – the eclectic collections that embodied early modern Europe’s expanding world - by Aeon Video Watch on Aeon'),
+    'Nautilus shells, automata and unicorn horns – the eclectic collections that embodied early modern Europe’s expanding world',
+  );
+});
+
+test('a byline is trimmed even when the publication links nowhere', () => {
+  assert.equal(
+    trimSummaryFurniture('Nautilus shells, automata and unicorn horns – the eclectic collections that embodied early modern Europe’s expanding world - by Aeon Video'),
+    'Nautilus shells, automata and unicorn horns – the eclectic collections that embodied early modern Europe’s expanding world',
+  );
+  assert.equal(
+    trimSummaryFurniture('Parents fear what AI will do to children - by Tom Wooldridge.'),
+    'Parents fear what AI will do to children',
+  );
+});
+
+test('a dash before lowercase words is prose, not a credit', () => {
+  const summary = 'The collection grew quietly, and not – by design.';
+  assert.equal(trimSummaryFurniture(summary), summary);
+});
+
+test('a summary without that furniture is left alone', () => {
+  const summary = 'Serving the Technologist since 1998. News, reviews, and analysis.';
+  assert.equal(trimSummaryFurniture(summary), summary);
+  // Prose that merely mentions the publication keeps its words.
+  const prose = 'The archive is free to read on Aeon’s site, with a note on every essay.';
+  assert.equal(trimSummaryFurniture(prose), prose);
+  // A summary that is nothing but the call to action stays, so a card is never blank.
+  assert.equal(trimSummaryFurniture('Read on Aeon'), 'Read on Aeon');
+});
 
 // ---------------------------------------------------------------------------
 // Entity decoding

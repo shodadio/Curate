@@ -423,6 +423,27 @@ export const htmlToReadableText = (html: string, baseUrl = ''): string => {
   return joinContinuedParagraphs(dropEndingFurniture(dropBylineFurniture(dropRepeatedShortParagraphs(dropChromeRuns(paragraphs))))).join('\n\n');
 };
 
+// A teaser feed glues its standfirst, the writer and the publication's own call to action into
+// one card summary ("… - by Tom Wooldridge" followed by a "Read on Aeon" link), so every story
+// from that publication ends the same way. The body cleaner already drops those lines, so the
+// summary gets the same treatment: a card is not the place for a byline.
+// The verb keeps its own case rule ("Read on Aeon" opens the link) while the publication's
+// capital stays required: an insensitive \p{Lu} would also accept lowercase words.
+const summaryCta = /\s*(?:[Ww]atch|[Rr]ead|[Ll]isten|[Vv]iew|[Ss]ee|[Pp]lay)\s+on\s+\p{Lu}[\p{L}'’&.\-]*\s*$/u;
+// A byline can arrive on its own, with no link after it, so the name is held to capitals:
+// "– by design" is prose, "– by Aeon Video" is a credit.
+const summaryByline = /\s*[-–—|·]\s*(?:by|words by|story by)\s+\p{Lu}[\p{L}'’.-]*(?:\s+(?:\p{Lu}[\p{L}'’.-]*|van|von|der|de|del|della|da|di|la|le|bin|al)){0,5}\.?$/u;
+
+/** Trims the byline and call to action a teaser feed glues onto a card summary. */
+export const trimSummaryFurniture = (summary: string): string => {
+  if (!summary) return '';
+  const text = summary
+    .replace(summaryCta, '')
+    .replace(summaryByline, '')
+    .trim();
+  return text || summary;
+};
+
 // ---- Dense paragraphs --------------------------------------------------------
 // Some publishers put a whole section in a single <p>, which reaches the reader as one wall of
 // text. The reader shows that as a few shorter paragraphs instead, but only at a real sentence

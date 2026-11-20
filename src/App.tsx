@@ -21,7 +21,7 @@ import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, ty
 import { safeGetItem, safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, type StorageFailure } from './storage';
 import { DEFAULT_FEEDS } from './defaultFeeds';
 import { explainFeedFailure } from '../lib/feedHealth';
-import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph } from '../lib/markup';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
 
 // One-click provider addresses: the popular OpenAI-compatible services, so a working setup
 // starts with a name and a key rather than a copied URL and a guessed model ID.
@@ -893,7 +893,9 @@ export default function App() {
   const [digest, setDigest] = useState<DigestItem[]>(() => {
     try {
       const cached = JSON.parse(safeGetItem('curator_digest_cache') || 'null');
-      return Array.isArray(cached?.items) ? cached.items : [];
+      return Array.isArray(cached?.items)
+        ? cached.items.map((item: DigestItem) => ({ ...item, summary: trimSummaryFurniture(item.summary) }))
+        : [];
     } catch {
       return [];
     }
@@ -931,7 +933,9 @@ export default function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          return parsed.map((item: DigestItem) => ({ ...item, summary: trimSummaryFurniture(item.summary) }));
+        }
       } catch (e) { /* ignore */ }
     }
     return [];

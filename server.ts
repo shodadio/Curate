@@ -26,7 +26,7 @@ import {
   type SemanticVoteExample,
 } from './lib/ranking';
 import { parseOpmlText } from './lib/opml';
-import { articleLooksIncomplete, cleanHtml, htmlToReadableText } from './lib/markup';
+import { articleLooksIncomplete, cleanHtml, htmlToReadableText, trimSummaryFurniture } from './lib/markup';
 import { parseArticleAuthor, parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
 
 dotenv.config();
@@ -1193,7 +1193,7 @@ async function startServer() {
       const cleanFull = htmlToReadableText(fullRaw, link);
 
       const summaryRaw = summaryMatch ? summaryMatch[1] : (descMatch ? descMatch[1] : fullRaw);
-      let summary = cleanHtml(summaryRaw);
+      let summary = trimSummaryFurniture(cleanHtml(summaryRaw));
       if (summary.length > 280) {
         summary = summary.slice(0, 277).replace(/\s+\S*$/, '') + '...';
       }
