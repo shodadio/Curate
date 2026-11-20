@@ -6,3 +6,8 @@ dist
 artifacts
 public/assets/aistudio
 *.log
+# Not release sources: the runtime usage tally a local dev server writes, and the agent's own
+# launch config. Both differ from machine to machine, so keeping them out of the context keeps
+# the image free of a developer's tally and the source-hash build stamp tied to the sources.
+usage-stats.json
+.freemilk
