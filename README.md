@@ -26,6 +26,7 @@
   - [8. Distraction-Free Reader & Onboard Read Aloud](#8-distraction-free-reader--onboard-read-aloud)
   - [9. Mobile & iOS Safari Viewport Hardening](#9-mobile--ios-safari-viewport-hardening)
   - [10. Progressive Web App (PWA) Support](#10-progressive-web-app-pwa-support)
+  - [11. Your Library: Search, Archive, Backup and Storage](#11-your-library-search-archive-backup-and-storage)
 - [System Architecture](#system-architecture)
 - [API Reference](#api-reference)
   - [`POST /api/curate`](#post-apicurate)
@@ -130,6 +131,13 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Icon Set**: Complete set of PWA assets (`favicon.ico`, `apple-touch-icon.png`, `pwa-192x192.png`, `pwa-512x512.png`).
 - **Offline Reliability**: Powered by `vite-plugin-pwa` with service worker asset caching.
 - **Update prompt**: When the server reports a build newer than the bundle a device is running, the app offers a one-tap **Reload** that releases the old service worker and loads the new bundle — so an installed app does not keep showing an old build stamp after a deploy.
+
+### 11. Your Library: Search, Archive, Backup and Storage
+- **Saved search**: the Saved queue can be searched by title, writer, publication, folder or summary. Every word has to appear somewhere in the piece, so a two-word search narrows rather than widens.
+- **Earlier editions**: the last six editions are kept in the browser, one per day, newest first, so a morning you did not open is still readable instead of falling outside the 24-hour window. Opening a piece from the archive fetches its text again if the body is no longer stored.
+- **Backup and restore**: Settings → *Your library* exports everything Curator stores — feeds, saved pieces, votes, reading history and preferences — as one JSON file, and restores it on another device. Restoring asks for confirmation and then replaces what the browser holds with the file's library, so it never leaves half of an old profile behind. A file written by a newer version of Curator is refused rather than partly read.
+- **Storage health**: the same panel shows what the browser is holding, by category, and *Free up space* drops the stored full text of older saved pieces while keeping their headline, summary and link. The newest five saves keep their bodies for offline reading.
+- **Feeds that keep failing are paused, not deleted**: a source that fails five reads in a row drops out of the digest's fetches until you resume it from the Sources list, so one dead address costs a single run instead of every run. Its folders, tags and place in the library stay intact.
 
 ---
 
@@ -375,7 +383,7 @@ Reports whether a server-side Gemini key is configured (`geminiConfigured`) alon
 ---
 
 ### `GET /api/usage`
-Running token and cost accounting for the AI and outbound traffic the server has made: `today`, `week` and `month` totals plus a 30-day `days` series, with USD (and GBP at `usdPerGbp`), current peak-pricing flag, the rates in use and the retention window. Counters live in server memory and reset on restart, so this is a spend tripwire for an operator, not a billing record.
+Running token and cost accounting for the AI and outbound traffic the server has made: `today`, `week` and `month` totals plus a 30-day `days` series, with USD (and GBP at `usdPerGbp`), current peak-pricing flag, the rates in use and the retention window. Counters are held in memory and written to `usage-stats.json` in the working directory, so a restart resumes the tally rather than starting from zero. There is no per-user accounting behind it, so this is a spend tripwire for an operator, not a billing record.
 
 > Be aware that this route is **not authenticated**: on a public deployment it reveals your AI spend, so gate it at your proxy if that matters.
 

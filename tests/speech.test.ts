@@ -2,7 +2,8 @@
 // shows. Everything here is about not reading scraped machinery out loud.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSpeechQueue, normaliseForSpeech } from '../src/App.tsx';
+import { buildSpeechQueue } from '../src/App.tsx';
+import { normaliseForSpeech } from '../lib/speech.ts';
 
 const article = (fullText: string) => ({
   id: 'speech-test',
