@@ -440,27 +440,34 @@ Open your browser to [http://localhost:3000](http://localhost:3000), or whicheve
 
 ### Production Deployment
 
+The two paths below are alternatives: run one, not both. Either builds the same bundle from the same tree and stamps it with the commit it was built from, so Settings and `GET /api/version` name the same version whichever you use.
+
+**Local bundle**
+
 1. Build the production client bundle into `dist/`, naming the commit it was built from:
    ```bash
    SOURCE_COMMIT=$(git rev-parse --short HEAD) bun run build
    bun run check:stamp
    ```
 
-   A build that cannot name its commit still runs, but Settings and `GET /api/version` fall back to a build time, so a phone cannot tell you which commit it is showing. `check:stamp` turns that into a failed release instead. A checkout that still has `.git` supplies the commit on its own; the explicit variable matters when the build runs without history — a container image build, a CI job, or a host that copies the tree without `.git`.
+   A build that cannot name its commit still runs, but Settings and `GET /api/version` fall back to a build time, so a phone cannot tell you which commit it is showing. `check:stamp` turns that into a failed release instead. A checkout that still has `.git` supplies the commit on its own; the explicit variable matters when the build runs without history — a CI job, or a host that copies the tree without `.git`.
 
-2. To deploy as a container, build the image with the same commit as a build argument:
-   ```bash
-   docker build --build-arg SOURCE_COMMIT=$(git rev-parse --short HEAD) -t curator .
-   ```
-
-   Rebuild the image for every release rather than redeploying the previous one: a redeploy keeps the original build time, so installed apps checking for a newer build find nothing to switch to. Hosts that already export `GITHUB_SHA`, `CI_COMMIT_SHA`, `COMMIT_SHA` or `SHORT_SHA` supply the commit without the flag.
-
-3. Start the server with `NODE_ENV=production` so it serves `dist/` instead of mounting the Vite dev middleware:
+2. Start the server with `NODE_ENV=production` so it serves `dist/` instead of mounting the Vite dev middleware:
    ```bash
    NODE_ENV=production bun run start
    ```
 
-   `bun run start` executes `tsx server.ts`, the same entry point as development. Without `NODE_ENV=production` you get the development middleware and the built bundle is ignored, so set it in your process environment (the `Dockerfile` already sets it, along with `PORT=8080`).
+   `bun run start` executes `tsx server.ts`, the same entry point as development. Without `NODE_ENV=production` you get the development middleware and the built bundle is ignored, so set it in your process environment. `GET /api/version` on that server answers with the commit the build was stamped with.
+
+**Container image**
+
+Build the image with the same commit as a build argument, then run it:
+```bash
+docker build --build-arg SOURCE_COMMIT=$(git rev-parse --short HEAD) -t curator .
+docker run --rm -p 8080:8080 curator
+```
+
+The image builds the bundle and sets production mode and port 8080 on its own, so there is nothing else to run before or after it, and `GET /api/version` inside the container names the same commit the local path would. Rebuild the image for every release rather than redeploying the previous one: a redeploy keeps the original build time, so installed apps checking for a newer build find nothing to switch to. Hosts that already export `GITHUB_SHA`, `CI_COMMIT_SHA`, `COMMIT_SHA` or `SHORT_SHA` supply the commit without the flag.
 
 If you deploy behind a proxy, set `TRUST_PROXY=1` as described in [Environment Variables](#environment-variables) — otherwise the per-client rate limits collapse into one shared bucket.
 
