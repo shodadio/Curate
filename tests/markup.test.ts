@@ -427,6 +427,46 @@ test('htmlToReadableText keeps a sentence that merely opens with a caption word'
   assert.equal(body, 'Painting: my grandfather built sets for the opera.');
 });
 
+test('htmlToReadableText drops a caption that leads with an article and credits with a colon', () => {
+  const body = htmlToReadableText(
+    "<p>Real article text starts here.</p><p>A screenshot of the top of Amazon's homepage. Credit: Scharon Harding/Amazon</p><p>Real article text continues.</p>",
+  );
+  assert.equal(body, 'Real article text starts here.\n\nReal article text continues.');
+});
+
+test('htmlToReadableText drops a caption that credits with a slash', () => {
+  const body = htmlToReadableText('<p>Real article text.</p><p>A photo of the crowd leaving. Michael Nagle/Bloomberg</p>');
+  assert.equal(body, 'Real article text.');
+});
+
+test('htmlToReadableText drops a parenthesised picture credit', () => {
+  const body = htmlToReadableText('<p>Real article text.</p><p>(Photo: Reuters)</p>');
+  assert.equal(body, 'Real article text.');
+});
+
+test('htmlToReadableText drops a credit line that stands on its own', () => {
+  const body = htmlToReadableText('<p>Real article text.</p><p>Scharon Harding/Amazon</p>');
+  assert.equal(body, 'Real article text.');
+});
+
+test('htmlToReadableText keeps a slash inside a real sentence', () => {
+  const prose = 'The storm is heading for New York/New Jersey overnight.';
+  assert.equal(htmlToReadableText(`<p>${prose}</p>`), prose);
+});
+
+test('htmlToReadableText keeps a picture sentence that credits nobody', () => {
+  // Naming a picture is not furniture by itself: without a credit or a link it can still
+  // be the only thing telling the reader what happened.
+  assert.equal(
+    htmlToReadableText('<p>The photo shows the crowd leaving the square.</p>'),
+    'The photo shows the crowd leaving the square.',
+  );
+  assert.equal(
+    htmlToReadableText('<p>Image: the new gallery opens Friday.</p>'),
+    'Image: the new gallery opens Friday.',
+  );
+});
+
 test('htmlToReadableText rejoins a quotation whose attribution arrived as its own paragraph', () => {
   const body = htmlToReadableText(
     '<p>“The key issue is not whether but how AI is used. The difference lies less in the technology itself and more in the user,”</p><p>said Jackson G. Lu, PhD, an associate professor at MIT.</p>',

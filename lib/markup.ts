@@ -89,16 +89,33 @@ const bylineParagraph = /^(?:[-–—•*]\s*)?(?:by|words by|story by|written b
 
 // An image caption or credit outlives the picture it described: the feed keeps the line, the
 // image itself is dropped, and the reader gets a stray paragraph that names no subject
-// ("Painting: Cognitive Incline | Leroy David Nunery III - https://longview.gallery/…"). The
-// label alone is not enough — a short line is only debris when it also carries a credit's
-// separator or a link — so prose that merely opens with one of these words is left alone.
-const mediaCreditLabel = /^(?:painting|image|photo|photograph|illustration|artwork|graphic|screenshot|caption|credit|video|film still|still|thumbnail|cover art|header image|featured image|figure|fig\.|drawing|cartoon|diagram)\s*[:\-–—]/i;
-const mediaCreditBody = /https?:\/\/|\s[|·]\s|\s[-–—]\s/;
+// ("Painting: Cognitive Incline | Leroy David Nunery III - https://longview.gallery/…" or
+// "A screenshot of the top of Amazon's homepage. Credit: Scharon Harding/Amazon"). The label
+// alone is not enough — a short line is only debris when it also credits someone, links
+// off-site or carries a caption's separator — so prose that merely opens with one of these
+// words is left alone. Captions also lead with an article ("A screenshot of…", "This photo
+// shows…") or sit in brackets, so those forms are recognised too.
+const mediaCreditLabel = /^[\s([“"']*(?:(?:a|an|the|this|here(?:'s| is))\s+)?(?:painting|image|photo|photograph|picture|illustration|artwork|graphic|screenshot|caption|credit|video|film still|still|thumbnail|cover art|header image|featured image|figure|fig\.|drawing|cartoon|diagram)\b/i;
+// A credit can arrive without a dash between it and the caption: "Credit: Name",
+// "(Photo: Reuters)", a trailing "Name/Publication", or "via Name". The word forms are
+// matched case-insensitively, but a name's capital has to stay a capital: an insensitive
+// \p{Lu} also matches lowercase, which would swallow "Image: the new gallery opens Friday".
+const mediaCreditWords = /https?:\/\/|\s[|·]\s|\s[-–—]\s|(?:^|[\s(])(?:(?:image|photo|picture|illustration|artwork|graphic|video|screenshot)\s+)?credit\s*:/i;
+// The caption word itself may be capitalised ("Photo: Reuters" opens the line), so only the
+// name after the colon is held to a capital letter.
+const mediaCreditName = /^[\s([“"']*(?:(?:a|an|the|this)\s+)?[^:]{0,40}:\s*\p{Lu}|[Vv]ia\s+\p{Lu}|\/\p{Lu}[\p{L}'’.-]*(?:\s+\p{Lu}[\p{L}'’.-]*)*$/u;
+
+// A gallery also prints the credit on a line of its own, with no caption in front of it
+// ("Scharon Harding/Amazon"). Both sides have to read as names, so a line that merely holds
+// a slash — "and/or", "candidates Smith/Jones" — is not touched.
+const bareCreditLine = /^[-–—•*\s]*\p{Lu}[\p{L}'’.-]*(?:\s+\p{Lu}[\p{L}'’.-]*){0,3}\s*\/\s*\p{Lu}[\p{L}\p{N}'’&.-]*(?:\s+\p{Lu}[\p{L}\p{N}'’&.-]*){0,3}\.?$/u;
 
 /** True for a caption or picture credit that lost the picture it belonged to. */
 export const isMediaCreditParagraph = (paragraph: string): boolean => {
-  const text = linkLabelsOnly(paragraph);
-  return text.length <= 240 && mediaCreditLabel.test(text) && mediaCreditBody.test(text);
+  const text = linkLabelsOnly(paragraph).trim();
+  if (text.length <= 80 && bareCreditLine.test(text)) return true;
+  return text.length <= 240 && mediaCreditLabel.test(text) &&
+    (mediaCreditWords.test(text) || mediaCreditName.test(text));
 };
 
 // Some publishers print a quotation and the attribution that follows it as two paragraphs
