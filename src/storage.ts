@@ -55,6 +55,19 @@ export function safeSetItem(key: string, value: string): boolean {
   }
 }
 
+/**
+ * Reads one key. Returns null when the browser refuses to hand storage over at all, and
+ * prefers a value this session could not persist over the stale one still on disk.
+ */
+export function safeGetItem(key: string): string | null {
+  if (memoryFallback.has(key)) return memoryFallback.get(key) as string;
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
 /** Serialises and writes one key; unserialisable values are dropped, not thrown. */
 export function safeSetJson(key: string, value: unknown): boolean {
   let serialized: string;

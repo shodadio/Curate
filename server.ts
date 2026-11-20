@@ -1164,9 +1164,13 @@ async function startServer() {
         }
       }
       if (!link && baseUrl) link = baseUrl;
-      if (link.startsWith('/') && baseUrl) {
-        try { link = new URL(link, baseUrl).toString(); } catch { /* ignore */ }
+      // The item's address is rendered as a link, so it has to be a web address: a feed that
+      // hands over "javascript:…" is not followable, and a path without a leading slash
+      // ("2026/05/post.html") is relative to the feed, not to this app.
+      if (link && !/^https?:\/\//i.test(link)) {
+        try { link = new URL(link, baseUrl || undefined).toString(); } catch { link = ''; }
       }
+      if (link && !/^https?:\/\//i.test(link)) link = '';
 
       const dateMatch = block.match(/<(?:pubDate|published|updated|dc:date)[^>]*>([\s\S]*?)<\/(?:pubDate|published|updated|dc:date)>/i);
       const rawDate = dateMatch ? cleanHtml(dateMatch[1]) : '';

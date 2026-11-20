@@ -18,10 +18,10 @@ import { DigestEmptyState } from './components/DigestEmptyState';
 import { SettingsSection } from './components/SettingsSection';
 import { SourceDescription } from './components/SourceDescription';
 import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
-import { safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, type StorageFailure } from './storage';
+import { safeGetItem, safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, type StorageFailure } from './storage';
 import { DEFAULT_FEEDS } from './defaultFeeds';
 import { explainFeedFailure } from '../lib/feedHealth';
-import { articleLooksIncomplete, articleNeedsLinkRefresh, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph } from '../lib/markup';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph } from '../lib/markup';
 
 // One-click provider addresses: the popular OpenAI-compatible services, so a working setup
 // starts with a name and a key rather than a copied URL and a guessed model ID.
@@ -241,9 +241,9 @@ function formatFeedUrlForDisplay(url: string): string {
   }
 }
 
-// Only web addresses become links: a feed URL is user-supplied, and anything else
-// (javascript:, data:) must stay plain text.
-function feedUrlHref(url?: string | null): string | undefined {
+// Only web addresses become links: feed and article addresses are supplied by other sites,
+// and anything else (javascript:, data:) must never be followed.
+function webUrlHref(url?: string | null): string | undefined {
   if (!url) return undefined;
   try {
     const parsed = new URL(url);
@@ -253,39 +253,10 @@ function feedUrlHref(url?: string | null): string | undefined {
   }
 }
 
-function decodeArticleEntities(text: string): string {
-  return (text || '')
-    .replace(/&#x([0-9a-f]+);/gi, (entity, hex: string) => {
-      const code = parseInt(hex, 16);
-      return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
-        ? String.fromCodePoint(code)
-        : entity;
-    })
-    .replace(/&#(\d+);/g, (entity, dec: string) => {
-      const code = parseInt(dec, 10);
-      return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
-        ? String.fromCodePoint(code)
-        : entity;
-    })
-    .replace(/&bull;/gi, '•')
-    .replace(/&middot;/gi, '·')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&mdash;/gi, '—')
-    .replace(/&ndash;/gi, '–')
-    .replace(/&hellip;/gi, '…')
-    .replace(/&rsquo;|&lsquo;/gi, '’')
-    .replace(/&rdquo;|&ldquo;/gi, '”')
-    .replace(/&quot;/gi, '"')
-    .replace(/&apos;|&#39;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&amp;/gi, '&');
-}
-
 // Reader-side clean-up in case cached feed text still carries markup debris.
 function buildArticleParagraphs(text: string): string[] {
   if (!text) return [];
-  const clean = decodeArticleEntities(text)
+  const clean = decodeEntities(text)
     .replace(/\r\n?/g, '\n')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/\u00a0/g, ' ')
@@ -563,7 +534,7 @@ function speechVoiceChoices(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoic
 export function normaliseForSpeech(text: string): string {
   if (!text) return '';
 
-  let out = decodeArticleEntities(text)
+  let out = decodeEntities(text)
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
     // Figures are images and captions, not part of the article's spoken copy.
@@ -805,16 +776,16 @@ const READER_FACE_DEFAULT: ReaderFaceId = 'serif';
 const READER_SIZE_DEFAULT = 18;
 
 function storedReaderTheme(): ReaderThemeId {
-  const saved = localStorage.getItem(READER_THEME_STORAGE_KEY);
+  const saved = safeGetItem(READER_THEME_STORAGE_KEY);
   return READER_THEMES.some(theme => theme.id === saved) ? (saved as ReaderThemeId) : READER_THEME_DEFAULT;
 }
 
 function storedReaderFace(): ReaderFaceId {
-  return localStorage.getItem(READER_FACE_STORAGE_KEY) === 'sans' ? 'sans' : READER_FACE_DEFAULT;
+  return safeGetItem(READER_FACE_STORAGE_KEY) === 'sans' ? 'sans' : READER_FACE_DEFAULT;
 }
 
 function storedReaderSize(): number {
-  const saved = Number(localStorage.getItem(READER_SIZE_STORAGE_KEY));
+  const saved = Number(safeGetItem(READER_SIZE_STORAGE_KEY));
   return (READER_SIZES as readonly number[]).includes(saved) ? saved : READER_SIZE_DEFAULT;
 }
 
@@ -840,7 +811,7 @@ export default function App() {
   // without it the previous filter's cards were left in place under the new header.
   const [feedStreamRenderKey, setFeedStreamRenderKey] = useState<number>(0);
   const [readSourceIds, setReadSourceIds] = useState<string[]>(() => {
-    const saved = localStorage.getItem('curator_read_sources');
+    const saved = safeGetItem('curator_read_sources');
     if (saved) {
       try { return JSON.parse(saved); } catch (e) { /* ignore */ }
     }
@@ -848,7 +819,7 @@ export default function App() {
     return [];
   });
   const [readArticleIds, setReadArticleIds] = useState<string[]>(() => {
-    const saved = localStorage.getItem('curator_read_articles');
+    const saved = safeGetItem('curator_read_articles');
     if (saved) {
       try { return JSON.parse(saved); } catch (e) { /* ignore */ }
     }
@@ -856,7 +827,7 @@ export default function App() {
   });
   const [readingStats, setReadingStats] = useState<Record<string, { maxDepth?: number; finished?: boolean; lastRead?: number }>>(() => {
     try {
-      const raw = localStorage.getItem('curator_reading_stats');
+      const raw = safeGetItem('curator_reading_stats');
       return raw ? JSON.parse(raw) : {};
     } catch (e) {
       return {};
@@ -898,7 +869,7 @@ export default function App() {
         url.includes('worldhistory.com');
     };
 
-    const saved = localStorage.getItem('curator_sources');
+    const saved = safeGetItem('curator_sources');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -921,7 +892,7 @@ export default function App() {
   // stories (labelled as such) instead of pretending the feeds were quiet.
   const [digest, setDigest] = useState<DigestItem[]>(() => {
     try {
-      const cached = JSON.parse(localStorage.getItem('curator_digest_cache') || 'null');
+      const cached = JSON.parse(safeGetItem('curator_digest_cache') || 'null');
       return Array.isArray(cached?.items) ? cached.items : [];
     } catch {
       return [];
@@ -942,8 +913,8 @@ export default function App() {
   // First-run calibration flow for the semantic profile
   const [showSetupWizard, setShowSetupWizard] = useState<boolean>(() => {
     try {
-      if (localStorage.getItem('curator_setup_complete')) return false;
-      const savedFeedback = JSON.parse(localStorage.getItem('curator_semantic_feedback') || '[]');
+      if (safeGetItem('curator_setup_complete')) return false;
+      const savedFeedback = JSON.parse(safeGetItem('curator_semantic_feedback') || '[]');
       return !(Array.isArray(savedFeedback) && savedFeedback.length > 0);
     } catch {
       return true;
@@ -956,7 +927,7 @@ export default function App() {
   const [calibrationIndex, setCalibrationIndex] = useState<number>(0);
   const [calibrationVotes, setCalibrationVotes] = useState<number>(0);
   const [savedArticles, setSavedArticles] = useState<DigestItem[]>(() => {
-    const saved = localStorage.getItem('curator_saved_articles');
+    const saved = safeGetItem('curator_saved_articles');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -966,7 +937,7 @@ export default function App() {
     return [];
   });
   const [savedIds, setSavedIds] = useState<string[]>(() => {
-    const saved = localStorage.getItem('curator_saved_ids');
+    const saved = safeGetItem('curator_saved_ids');
     if (saved) {
       try { return JSON.parse(saved); } catch (e) { /* ignore */ }
     }
@@ -974,7 +945,7 @@ export default function App() {
   });
 
   const [weeklyHistory, setWeeklyHistory] = useState<WeeklyReadingItem[]>(() => {
-    const saved = localStorage.getItem('curator_weekly_history');
+    const saved = safeGetItem('curator_weekly_history');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -1019,7 +990,7 @@ export default function App() {
     more: string[];
     less: string[];
   }>(() => {
-    const saved = localStorage.getItem('curator_signals');
+    const saved = safeGetItem('curator_signals');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -1047,7 +1018,7 @@ export default function App() {
 
   const [semanticFeedback, setSemanticFeedback] = useState<SemanticFeedbackItem[]>(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem('curator_semantic_feedback') || '[]');
+      const saved = JSON.parse(safeGetItem('curator_semantic_feedback') || '[]');
       if (!Array.isArray(saved)) return [];
       return saved
         .filter((item: any) => item && typeof item.id === 'string' &&
@@ -1078,17 +1049,17 @@ export default function App() {
   const NOTICE_MS = 3500;
   const DIGEST_SLOW_HINT_MS = 20000;
   const [serendipityDial, setSerendipityDial] = useState<number>(() => {
-    const saved = localStorage.getItem('curator_serendipity');
+    const saved = safeGetItem('curator_serendipity');
     return saved ? Number(saved) : 25;
   });
   // When the digest on screen was actually curated, so the header can say so honestly.
   const [digestCuratedAt, setDigestCuratedAt] = useState<number>(() => {
-    const saved = Number(localStorage.getItem('curator_digest_curated_at'));
+    const saved = Number(safeGetItem('curator_digest_curated_at'));
     if (Number.isFinite(saved) && saved > 0) return saved;
     // Older caches only kept the timestamp inside the payload. Without it a days-old edition
     // has no age to show and the header would have to guess.
     try {
-      const cached = JSON.parse(localStorage.getItem('curator_digest_cache') || 'null');
+      const cached = JSON.parse(safeGetItem('curator_digest_cache') || 'null');
       const fallback = Number(cached?.curatedAt);
       return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
     } catch {
@@ -1096,7 +1067,7 @@ export default function App() {
     }
   });
   const [itemCount, setItemCount] = useState<number>(() => {
-    const saved = localStorage.getItem('curator_item_count');
+    const saved = safeGetItem('curator_item_count');
     if (!saved) return 8;
     const savedCount = Number(saved);
     if (DIGEST_ITEM_COUNTS.some(count => count === savedCount)) return savedCount;
@@ -1106,22 +1077,22 @@ export default function App() {
       8
     );
   });
-  const [compactCards, setCompactCards] = useState<boolean>(() => localStorage.getItem('curator_compact_cards') === '1');
+  const [compactCards, setCompactCards] = useState<boolean>(() => safeGetItem('curator_compact_cards') === '1');
   // Count, density and serendipity live behind one pill instead of filling the first screen
   const [showDigestSettings, setShowDigestSettings] = useState<boolean>(false);
   const [aiProvider, setAiProvider] = useState<string>(() => {
-    const saved = localStorage.getItem('curator_ai_provider');
+    const saved = safeGetItem('curator_ai_provider');
     if (saved === 'openai') return 'openai-compatible';
     if (saved === 'gemini') return 'deterministic';
     return saved || 'deterministic';
   });
-  const [customApiKey, setCustomApiKey] = useState<string>(() => localStorage.getItem('curator_custom_api_key') || '');
-  const [aiBaseUrl, setAiBaseUrl] = useState<string>(() => localStorage.getItem('curator_ai_base_url') || '');
-  const [aiModel, setAiModel] = useState<string>(() => localStorage.getItem('curator_ai_model') || '');
-  const [embeddingProvider, setEmbeddingProvider] = useState<string>(() => localStorage.getItem('curator_embedding_provider') || 'openai-compatible');
-  const [embeddingApiKey, setEmbeddingApiKey] = useState<string>(() => localStorage.getItem('curator_embedding_api_key') || '');
-  const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState<string>(() => localStorage.getItem('curator_embedding_base_url') || '');
-  const [embeddingModel, setEmbeddingModel] = useState<string>(() => localStorage.getItem('curator_embedding_model') || '');
+  const [customApiKey, setCustomApiKey] = useState<string>(() => safeGetItem('curator_custom_api_key') || '');
+  const [aiBaseUrl, setAiBaseUrl] = useState<string>(() => safeGetItem('curator_ai_base_url') || '');
+  const [aiModel, setAiModel] = useState<string>(() => safeGetItem('curator_ai_model') || '');
+  const [embeddingProvider, setEmbeddingProvider] = useState<string>(() => safeGetItem('curator_embedding_provider') || 'openai-compatible');
+  const [embeddingApiKey, setEmbeddingApiKey] = useState<string>(() => safeGetItem('curator_embedding_api_key') || '');
+  const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState<string>(() => safeGetItem('curator_embedding_base_url') || '');
+  const [embeddingModel, setEmbeddingModel] = useState<string>(() => safeGetItem('curator_embedding_model') || '');
   const embeddingKeyMatchesChatProvider =
     (embeddingProvider === 'gemini' && aiProvider === 'gemini') ||
     (embeddingProvider === 'openai-compatible' && aiProvider === 'openai-compatible');
@@ -1147,7 +1118,7 @@ export default function App() {
     if (typeof window === 'undefined') return false;
     try {
       return new URLSearchParams(window.location.search).has('debug')
-        || localStorage.getItem('curator_debug') === '1';
+        || safeGetItem('curator_debug') === '1';
     } catch {
       return false;
     }
@@ -1247,13 +1218,13 @@ export default function App() {
   });
   const [speechVoices, setSpeechVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [speechVoiceUri, setSpeechVoiceUri] = useState<string>(() => {
-    const saved = localStorage.getItem(SPEECH_VOICE_STORAGE_KEY);
+    const saved = safeGetItem(SPEECH_VOICE_STORAGE_KEY);
     if (saved) return saved;
-    const previous = localStorage.getItem('curator_speech_voice_v3');
+    const previous = safeGetItem('curator_speech_voice_v3');
     return previous && previous !== SPEECH_VOICE_AUTO ? previous : SPEECH_VOICE_JAMIE_DEFAULT;
   });
   const [speechRate, setSpeechRate] = useState<number>(() => {
-    const saved = Number(localStorage.getItem(SPEECH_RATE_STORAGE_KEY));
+    const saved = Number(safeGetItem(SPEECH_RATE_STORAGE_KEY));
     return Number.isFinite(saved) && saved >= SPEECH_RATE_MIN && saved <= SPEECH_RATE_MAX
       ? saved
       : SPEECH_RATE_DEFAULT;
@@ -1892,14 +1863,14 @@ export default function App() {
     try {
       let readingStats = {};
       try {
-        readingStats = JSON.parse(localStorage.getItem('curator_reading_stats') || '{}');
+        readingStats = JSON.parse(safeGetItem('curator_reading_stats') || '{}');
       } catch (e) { /* ignore */ }
 
       // Freshness history lives in this browser. The digest currently on screen is not
       // "already shown" — the server only down-weights pieces you have moved past.
       let shownHistory: Array<{ id: string; shownAt: number }> = [];
       try {
-        const savedHistory = JSON.parse(localStorage.getItem('curator_digest_history') || '[]');
+        const savedHistory = JSON.parse(safeGetItem('curator_digest_history') || '[]');
         if (Array.isArray(savedHistory)) {
           shownHistory = savedHistory
             .filter((entry: any) => entry && typeof entry.id === 'string' && Number.isFinite(entry.shownAt))
@@ -3783,9 +3754,9 @@ export default function App() {
                   <span className="reader-ink font-medium">By {selectedArticle.author}</span>
                 )}
                 {selectedArticle.publishedAt && (
-                  <span>{decodeArticleEntities(selectedArticle.publishedAt)}</span>
+                  <span>{decodeEntities(selectedArticle.publishedAt)}</span>
                 )}
-                <span>{decodeArticleEntities(selectedArticle.readTime || '')}</span>
+                <span>{decodeEntities(selectedArticle.readTime || '')}</span>
                 <span aria-hidden="true">·</span>
                 <button
                   type="button"
@@ -3851,7 +3822,7 @@ export default function App() {
 
             <footer className="reader-footer font-sans">
               <a
-                href={selectedArticle.url || '#'}
+                href={webUrlHref(selectedArticle.url) || '#'}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(event) => {
@@ -4307,11 +4278,11 @@ export default function App() {
                                   <span aria-hidden="true">·</span>
                                 </>
                               )}
-                              <span className="min-w-0">{decodeArticleEntities(item.publishedAt || '30m')}</span>
+                              <span className="min-w-0">{decodeEntities(item.publishedAt || '30m')}</span>
                               <span aria-hidden="true">·</span>
                               <span className="min-w-0">{displayFolder(item.folder)}</span>
                               <span aria-hidden="true">·</span>
-                              <span className="shrink-0 font-medium text-slate-300">{decodeArticleEntities(item.readTime || '')}</span>
+                              <span className="shrink-0 font-medium text-slate-300">{decodeEntities(item.readTime || '')}</span>
                             </div>
                           </div>
                         </div>
@@ -4399,7 +4370,7 @@ export default function App() {
                               Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                             </button>
                             <a
-                              href={item.url || '#'}
+                              href={webUrlHref(item.url) || '#'}
                               target="_blank"
                               rel="noopener noreferrer"
                               onClick={(e) => {
@@ -4545,13 +4516,13 @@ export default function App() {
                                   )}
                                   {item.publishedAt && (
                                     <>
-                                      <span className="min-w-0">{decodeArticleEntities(item.publishedAt)}</span>
+                                      <span className="min-w-0">{decodeEntities(item.publishedAt)}</span>
                                       <span aria-hidden="true">·</span>
                                     </>
                                   )}
                                   <span className="min-w-0">{displayFolder(item.folder)}</span>
                                   <span aria-hidden="true">·</span>
-                                  <span className="shrink-0 font-medium text-rose-300">{decodeArticleEntities(item.readTime || '')}</span>
+                                  <span className="shrink-0 font-medium text-rose-300">{decodeEntities(item.readTime || '')}</span>
                                 </div>
                               </div>
                             </div>
@@ -4628,7 +4599,7 @@ export default function App() {
                                   Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                                 </button>
                                 <a
-                                  href={item.url || '#'}
+                                  href={webUrlHref(item.url) || '#'}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   onClick={(e) => {
@@ -4779,7 +4750,7 @@ export default function App() {
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
                         <span title={item.source} className="font-semibold text-slate-200 min-w-0 truncate">{item.source}</span>
                         {item.author && <span className="min-w-0 truncate">By {item.author}</span>}
-                        {item.publishedAt && <span>{decodeArticleEntities(item.publishedAt)}</span>}
+                        {item.publishedAt && <span>{decodeEntities(item.publishedAt)}</span>}
                         <span>{item.readTime}</span>
                         <span className="text-amber-400 font-semibold inline-flex items-center gap-1">
                           <Bookmark className="w-3 h-3 fill-amber-400" /> Saved
@@ -4806,7 +4777,7 @@ export default function App() {
                             Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                           </button>
                           <a
-                            href={item.url || '#'}
+                            href={webUrlHref(item.url) || '#'}
                             target="_blank"
                             rel="noopener noreferrer"
                             onClick={(e) => {
@@ -4946,7 +4917,7 @@ export default function App() {
                           <div className="min-w-0 flex-1">
                             <span className="block text-sm font-medium text-slate-100 truncate">{src.title}</span>
                             <a
-                              href={feedUrlHref(src.feedUrl)}
+                              href={webUrlHref(src.feedUrl)}
                               target="_blank"
                               rel="noopener noreferrer"
                               title={`${src.feedUrl} (opens in a new window)`}
@@ -5088,7 +5059,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                               <span className="text-xs text-slate-400">· {item.folder}</span>
                             </div>
                             <a
-                              href={item.siteUrl}
+                              href={webUrlHref(item.siteUrl)}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="text-xs text-slate-400 hover:text-amber-400 transition inline-flex items-center gap-1 mt-0.5 break-all"
@@ -5160,7 +5131,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                             <div className="text-xs text-slate-400 font-mono truncate">
                               Feed:{' '}
                               <a
-                                href={feedUrlHref(item.feedUrl)}
+                                href={webUrlHref(item.feedUrl)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 title={`${item.feedUrl} (opens in a new window)`}
@@ -5188,7 +5159,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         {discoverGroundingLinks.map((link, idx) => (
                           <a
                             key={`${link.uri}-${idx}`}
-                            href={link.uri}
+                            href={webUrlHref(link.uri)}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-slate-400 hover:text-amber-400 underline truncate max-w-[240px]"
@@ -5254,7 +5225,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                             <div className="min-w-0 flex-1">
                               <span className="block text-sm font-medium text-slate-100 truncate leading-snug">{src.title}</span>
                               <a
-                                href={feedUrlHref(src.feedUrl)}
+                                href={webUrlHref(src.feedUrl)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 title={`${src.feedUrl} (opens in a new window)`}
@@ -6247,13 +6218,13 @@ Search for writers, publications, or topics. Curator checks whether each result 
                               )}
                               {item.publishedAt && (
                                 <>
-                                  <span className="min-w-0">{decodeArticleEntities(item.publishedAt)}</span>
+                                  <span className="min-w-0">{decodeEntities(item.publishedAt)}</span>
                                   <span aria-hidden="true">·</span>
                                 </>
                               )}
                               <span className="min-w-0">{displayFolder(item.folder)}</span>
                               <span aria-hidden="true">·</span>
-                              <span className="shrink-0 font-medium text-slate-300">{decodeArticleEntities(item.readTime || '')}</span>
+                              <span className="shrink-0 font-medium text-slate-300">{decodeEntities(item.readTime || '')}</span>
                             </div>
                           </div>
                         </div>
@@ -6333,7 +6304,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                               Read in Curator <ArrowRight className="w-3.5 h-3.5" />
                             </button>
                             <a
-                              href={item.url || '#'}
+                              href={webUrlHref(item.url) || '#'}
                               target="_blank"
                               rel="noopener noreferrer"
                               onClick={(e) => {
