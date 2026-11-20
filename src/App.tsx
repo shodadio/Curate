@@ -240,6 +240,18 @@ function formatFeedUrlForDisplay(url: string): string {
   }
 }
 
+// Only web addresses become links: a feed URL is user-supplied, and anything else
+// (javascript:, data:) must stay plain text.
+function feedUrlHref(url?: string | null): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function decodeArticleEntities(text: string): string {
   return (text || '')
     .replace(/&#x([0-9a-f]+);/gi, (entity, hex: string) => {
@@ -4932,9 +4944,16 @@ export default function App() {
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                           <div className="min-w-0 flex-1">
                             <span className="block text-sm font-medium text-slate-100 truncate">{src.title}</span>
-                            <span className="block text-xs text-slate-500 truncate" title={src.feedUrl}>
-                              {formatFeedUrlForDisplay(src.feedUrl)}
-                            </span>
+                            <a
+                              href={feedUrlHref(src.feedUrl)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title={`${src.feedUrl} (opens in a new window)`}
+                              className="inline-flex max-w-full items-center gap-1 text-xs text-slate-500 transition hover:text-amber-300"
+                            >
+                              <span className="truncate">{formatFeedUrlForDisplay(src.feedUrl)}</span>
+                              <ExternalLink className="w-3 h-3 shrink-0" />
+                            </a>
                             <span className="block text-xs text-slate-400 mt-1">
                               {src.lastSyncedAt
                                 ? `Last delivered stories ${formatLastDelivery(src.lastSyncedAt)}`
@@ -5138,7 +5157,16 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
                           {item.feedUrl && (
                             <div className="text-xs text-slate-400 font-mono truncate">
-                              Feed: {item.feedUrl}
+                              Feed:{' '}
+                              <a
+                                href={feedUrlHref(item.feedUrl)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title={`${item.feedUrl} (opens in a new window)`}
+                                className="text-slate-400 underline-offset-2 transition hover:text-amber-300 hover:underline"
+                              >
+                                {item.feedUrl}
+                              </a>
                             </div>
                           )}
 
@@ -5223,7 +5251,16 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
                             <div className="min-w-0 flex-1">
                               <span className="block text-sm font-medium text-slate-100 truncate leading-snug">{src.title}</span>
-                              <span title={src.feedUrl} className="block text-xs text-slate-500 truncate mt-0.5">{formatFeedUrlForDisplay(src.feedUrl)}</span>
+                              <a
+                                href={feedUrlHref(src.feedUrl)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title={`${src.feedUrl} (opens in a new window)`}
+                                className="mt-0.5 inline-flex max-w-full items-center gap-1 text-xs text-slate-500 transition hover:text-amber-300"
+                              >
+                                <span className="truncate">{formatFeedUrlForDisplay(src.feedUrl)}</span>
+                                <ExternalLink className="w-3 h-3 shrink-0" />
+                              </a>
                               {src.description?.trim() ? (
                                 <div className="mt-1.5">
                                   <p className={`text-xs text-slate-400 leading-relaxed ${descriptionOpen ? '' : 'line-clamp-2'}`}>
