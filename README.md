@@ -129,6 +129,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Standalone Display**: Configured via Web App Manifest for full-screen, app-like experience when added to the home screen.
 - **Icon Set**: Complete set of PWA assets (`favicon.ico`, `apple-touch-icon.png`, `pwa-192x192.png`, `pwa-512x512.png`).
 - **Offline Reliability**: Powered by `vite-plugin-pwa` with service worker asset caching.
+- **Update prompt**: When the server reports a build newer than the bundle a device is running, the app offers a one-tap **Reload** that releases the old service worker and loads the new bundle — so an installed app does not keep showing an old build stamp after a deploy.
 
 ---
 

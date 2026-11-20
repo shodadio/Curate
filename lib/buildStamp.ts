@@ -35,6 +35,18 @@ export function buildVersion(info: BuildStampInfo): string {
   return commit || generatedVersion(info.builtAt);
 }
 
+// Whether the server is running a later build than the bundle on this device. Build time is the
+// reliable direction: a rollback reports a different commit but an older time, and no prompt
+// should push a reader onto it.
+export function isNewerBuild(app: BuildStampInfo, server: BuildStampInfo): boolean {
+  const appAt = Date.parse(app.builtAt || '');
+  const serverAt = Date.parse(server.builtAt || '');
+  if (Number.isFinite(appAt) && Number.isFinite(serverAt)) return serverAt > appAt;
+  const appCommit = (app.commit || '').trim();
+  const serverCommit = (server.commit || '').trim();
+  return Boolean(appCommit && serverCommit && appCommit !== serverCommit);
+}
+
 // Every result names a version. The branch that lacks a commit is the build's last line of
 // defence, not a normal path: Settings must never read "Built <time>" with nothing to pin it to.
 export function formatBuildStamp(info: BuildStampInfo): string {

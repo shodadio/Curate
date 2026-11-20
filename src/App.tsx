@@ -17,6 +17,7 @@ import { FeedbackActions } from './components/FeedbackActions';
 import { DigestEmptyState } from './components/DigestEmptyState';
 import { SettingsSection } from './components/SettingsSection';
 import { SourceDescription } from './components/SourceDescription';
+import { NewBuildPrompt } from './components/NewBuildPrompt';
 import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
 import { safeGetItem, safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, type StorageFailure } from './storage';
 import { DEFAULT_FEEDS } from './defaultFeeds';
@@ -3561,6 +3562,10 @@ export default function App() {
           )}
         </div>
       )}
+
+      {/* Offers the new bundle when the server has moved on, so an installed app does not keep
+          showing an old build stamp after a deploy. */}
+      <NewBuildPrompt />
 
       {/* Reading View Modal */}
       {selectedArticle && (

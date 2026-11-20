@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatBuildStamp } from '../lib/buildStamp.ts';
+import { formatBuildStamp, isNewerBuild } from '../lib/buildStamp.ts';
 
 const REPO = 'shodadio/Curate';
 const BUILT_AT = '2026-11-20T07:23:00.000Z';
@@ -32,6 +32,33 @@ test('a missing repository still starts with the version', () => {
 test('a missing build time never removes the version', () => {
   assert.equal(formatBuildStamp({ commit: '', builtAt: '', repo: REPO }), `${REPO} · Build unstamped`);
   assert.equal(formatBuildStamp({ commit: 'abc1234', builtAt: 'not a date', repo: REPO }), `${REPO} · Build abc1234`);
+});
+
+test('a later server build is offered as an update', () => {
+  assert.equal(isNewerBuild(
+    { commit: '1111111', builtAt: BUILT_AT, repo: REPO },
+    { commit: '2222222', builtAt: '2026-11-20T08:00:00.000Z', repo: REPO },
+  ), true);
+});
+
+test('the build this device already runs is not an update', () => {
+  assert.equal(isNewerBuild(
+    { commit: '1111111', builtAt: BUILT_AT, repo: REPO },
+    { commit: '1111111', builtAt: BUILT_AT, repo: REPO },
+  ), false);
+});
+
+test('an older server build is not an update, even with a different commit', () => {
+  assert.equal(isNewerBuild(
+    { commit: '2222222', builtAt: '2026-11-20T08:00:00.000Z', repo: REPO },
+    { commit: '1111111', builtAt: BUILT_AT, repo: REPO },
+  ), false);
+});
+
+test('without build times, only a different known commit counts', () => {
+  assert.equal(isNewerBuild({ commit: '1111111', builtAt: '', repo: REPO }, { commit: '2222222', builtAt: '', repo: REPO }), true);
+  assert.equal(isNewerBuild({ commit: '1111111', builtAt: '', repo: REPO }, { commit: '1111111', builtAt: '', repo: REPO }), false);
+  assert.equal(isNewerBuild({ commit: '', builtAt: '', repo: REPO }, { commit: '2222222', builtAt: '', repo: REPO }), false);
 });
 
 test('blank values are treated as absent', () => {
