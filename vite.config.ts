@@ -6,17 +6,36 @@ import { execSync } from 'node:child_process';
 import {defineConfig} from 'vite';
 
 // Which build a device is running: the commit it came from, when it was made. Docker images
-// exclude .git, so a deploy can pass the commit in through SOURCE_COMMIT (or GITHUB_SHA) —
-// the build time alone still tells one deploy from another.
-// Cloud Build (what AI Studio deploys run on) supplies COMMIT_SHA and SHORT_SHA on its own.
-const commitFromEnv = process.env.SOURCE_COMMIT
-  || process.env.SHORT_SHA
-  || process.env.COMMIT_SHA
-  || process.env.GITHUB_SHA
-  || process.env.GIT_COMMIT
-  || '';
+// exclude .git, so the commit also comes from whichever host variable is set — the first one
+// below wins, and SOURCE_COMMIT remains the documented override.
+const commitEnvNames = [
+  'SOURCE_COMMIT',         // Docker --build-arg, the documented override
+  'GITHUB_SHA',            // GitHub Actions
+  'CI_COMMIT_SHA',         // GitLab CI
+  'COMMIT_SHA',            // Cloud Build (what AI Studio deploys run on)
+  'SHORT_SHA',             // Cloud Build
+  'COMMIT_REF',            // Netlify
+  'VERCEL_GIT_COMMIT_SHA', // Vercel
+  'RENDER_GIT_COMMIT',     // Render
+  'RAILWAY_GIT_COMMIT_SHA',// Railway
+  'CF_PAGES_COMMIT_SHA',   // Cloudflare Pages
+  'WORKERS_CI_COMMIT_SHA', // Cloudflare Workers Builds
+  'HEROKU_SLUG_COMMIT',    // Heroku
+  'BITBUCKET_COMMIT',      // Bitbucket Pipelines
+  'CIRCLE_SHA1',           // CircleCI
+  'TRAVIS_COMMIT',         // Travis CI
+  'BUILDKITE_COMMIT',      // Buildkite
+  'DRONE_COMMIT_SHA',      // Drone
+  'GIT_COMMIT',            // generic CI
+  'GIT_COMMIT_SHA',        // generic CI
+] as const;
+
+const commitFromEnv = commitEnvNames
+  .map(name => (process.env[name] || '').trim())
+  .find(Boolean) || '';
+
 const shortCommit = (() => {
-  if (commitFromEnv.trim()) return commitFromEnv.trim().slice(0, 7);
+  if (commitFromEnv) return commitFromEnv.slice(0, 7);
   try {
     return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
   } catch {
@@ -28,7 +47,16 @@ const shortCommit = (() => {
 // as its version. A GitHub build supplies this; local builds fall back to the project repo.
 const repository = process.env.GITHUB_REPOSITORY || 'shodadio/Curate';
 
-export default defineConfig(() => {
+export default defineConfig(({ command }) => {
+  // A version-less stamp is a support problem: a phone cannot say which build it runs.
+  // Say so where the operator will see it, before the bundle is written.
+  if (command === 'build' && !shortCommit) {
+    console.warn(
+      '\n\x1b[1;31m[Curator build] No commit found for the build stamp.\x1b[0m\n' +
+        '  Settings will show a generated build id instead of a version.\n' +
+        '  Pass SOURCE_COMMIT=<sha>, or build from a checkout with .git, to stamp the real commit.\n'
+    );
+  }
   return {
     define: {
       __BUILD_INFO__: JSON.stringify({ commit: shortCommit, builtAt: new Date().toISOString(), repo: repository }),
