@@ -190,16 +190,20 @@ function handleExternalClick(event: React.MouseEvent<HTMLAnchorElement>, url?: s
   openExternal(url);
 }
 
-// The build stamp Settings shows, so a device can be told apart from the one next to it.
-// Vite replaces these at build time; a development server stamps itself when it starts.
-function formatBuildStamp(info: { commit: string; builtAt: string }): string {
+// The build stamp Settings shows: the repository the bundle came from, the commit it was
+// built at and when. Vite replaces these at build time; a development server stamps itself
+// when it starts, so a device can be told apart from the one next to it.
+function formatBuildStamp(info: { commit: string; builtAt: string; repo: string }): string {
   const at = new Date(info.builtAt);
   const when = Number.isNaN(at.getTime())
     ? ''
     : at.toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   // A deploy that cannot name its commit still gets a time, rather than claiming to be local.
-  if (!info.commit) return when ? `Built ${when}` : 'Build time not recorded';
-  return when ? `Build ${info.commit} · ${when}` : `Build ${info.commit}`;
+  const version = info.commit
+    ? (when ? `Build ${info.commit} · ${when}` : `Build ${info.commit}`)
+    : (when ? `Built ${when}` : 'Build time not recorded');
+  const repo = (info.repo || '').trim();
+  return repo ? `${repo} · ${version}` : version;
 }
 
 // Duplicate detection compares feeds by address, not by the name a reader gave them.

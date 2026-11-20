@@ -24,10 +24,14 @@ const shortCommit = (() => {
   }
 })();
 
+// The repository this bundle came from, so the stamp in Settings names its source as well
+// as its version. A GitHub build supplies this; local builds fall back to the project repo.
+const repository = process.env.GITHUB_REPOSITORY || 'shodadio/Curate';
+
 export default defineConfig(() => {
   return {
     define: {
-      __BUILD_INFO__: JSON.stringify({ commit: shortCommit, builtAt: new Date().toISOString() }),
+      __BUILD_INFO__: JSON.stringify({ commit: shortCommit, builtAt: new Date().toISOString(), repo: repository }),
     },
     plugins: [
       react(),
