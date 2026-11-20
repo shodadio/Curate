@@ -44,3 +44,9 @@ jobs:
             echo '::error::The build emitted a config-loader warning; check vite.config.ts for CommonJS-only globals.'
             exit 1
           fi
+
+      # The build writes its identity next to the bundle for GET /api/version. A build without
+      # a commit cannot be confirmed from the running app, so fail the release instead of
+      # shipping one.
+      - name: Build names its commit
+        run: bun run check:stamp

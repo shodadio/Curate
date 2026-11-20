@@ -359,7 +359,7 @@ Returns a source's site icon, fetched server-side and cached in memory for seven
 ---
 
 ### `GET /api/version`
-Names the build this server is running: `{ "version": "abc1234", "commit": "abc1234", "builtAt": "…", "repo": "shodadio/Curate", "stamp": "shodadio/Curate · Build abc1234 · …" }`, with `Cache-Control: no-store`. The version and stamp match what Settings shows, so a deployment can be confirmed with one request instead of opening the app on a device. A build that could not name its commit reports a generated id rather than an empty version.
+Names the build this server is running: `{ "version": "abc1234", "commit": "abc1234", "builtAt": "…", "repo": "shodadio/Curate", "stamp": "shodadio/Curate · Build abc1234 · …" }`, with `Cache-Control: no-store`. The version and stamp match what Settings shows, so a deployment can be confirmed with one request instead of opening the app on a device. A build that could not name its commit reports a generated id rather than an empty version, but the release pipeline refuses such a build outright (see [Available Scripts](#available-scripts)), so an unstamped bundle cannot reach a host.
 
 ---
 
@@ -461,6 +461,7 @@ If you deploy behind a proxy, set `TRUST_PROXY=1` as described in [Environment V
 | :--- | :--- |
 | `bun run dev` | Starts the Express server with Vite middleware in development mode (`tsx server.ts`). |
 | `bun run build` | Builds the production client assets into `dist/` (`vite build`). |
+| `bun run check:stamp` | Fails when the build in `dist/` cannot name its commit; run by the release pipeline after `build`. |
 | `bun run start` | Runs `tsx server.ts`; add `NODE_ENV=production` to serve the built `dist/`. |
 | `bun run lint` | Runs the TypeScript compiler check (`tsc --noEmit`) to validate type safety. |
 | `bun run preview` | Serves the built bundle with `vite preview` (client only, no API routes). |
