@@ -166,6 +166,29 @@ const hasCuratorNote = (why?: string): boolean => {
   return Boolean(note) && !SUBSCRIPTION_ONLY_NOTE.test(note);
 };
 
+// A home-screen app carries no browser chrome to come back with, so a plain link can take the
+// reader off Curator and leave them with no way home. Asking for a new window hands the page to
+// the browser (or to an in-app sheet with its own Done control) and leaves Curator in place.
+function openExternal(url?: string) {
+  if (!url || url === '#') return;
+  // `noopener` in the feature string makes open() return null, which is indistinguishable
+  // from a blocked window — so the window is opened normally and its opener cut afterwards.
+  const opened = window.open(url, '_blank');
+  if (opened) {
+    try { opened.opener = null; } catch { /* cross-origin: already severed */ }
+    return;
+  }
+  // Only a genuinely blocked window falls back to leaving Curator in place.
+  window.location.assign(url);
+}
+
+// Modified clicks (a new tab, a new window, a download) keep the browser's own behaviour.
+function handleExternalClick(event: React.MouseEvent<HTMLAnchorElement>, url?: string) {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  openExternal(url);
+}
+
 // The build stamp Settings shows, so a device can be told apart from the one next to it.
 // Vite replaces these at build time; a development server stamps itself when it starts.
 function formatBuildStamp(info: { commit: string; builtAt: string }): string {
@@ -3818,7 +3841,8 @@ export default function App() {
                 href={selectedArticle.url || '#'}
                 target="_blank"
                 rel="noopener noreferrer"
-                onClick={() => {
+                onClick={(event) => {
+                  handleExternalClick(event, selectedArticle.url);
                   // Only a record of when it was opened: reading the rest happens in another
                   // app, which this one cannot see, so it must not claim the article was finished.
                   setReadingStats(prev => ({
@@ -4353,7 +4377,7 @@ export default function App() {
 
                         {/* Card Curation & Reading Actions */}
                         <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
-                          <div className="flex flex-wrap items-center gap-2">
+                          <div className="flex w-full flex-wrap items-center gap-2">
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); openArticle(item); }}
@@ -4367,10 +4391,11 @@ export default function App() {
                               rel="noopener noreferrer"
                               onClick={(e) => {
                                 e.stopPropagation();
+                                handleExternalClick(e, item.url);
                                 setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
                                 showToast('Opening original');
                               }}
-                              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
+                              className="ml-auto inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
                               title={`Read original on ${item.source} (opens external browser or app)`}
                               aria-label={`Read original on ${item.source}`}
                             >
@@ -4581,7 +4606,7 @@ export default function App() {
 
                             {/* Stretch Card Actions: Read more, More, Less */}
                             <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
-                              <div className="flex flex-wrap items-center gap-2">
+                              <div className="flex w-full flex-wrap items-center gap-2">
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); openArticle(item); }}
@@ -4594,11 +4619,12 @@ export default function App() {
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   onClick={(e) => {
-                                    e.stopPropagation();
-                                    setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                                    showToast('Opening original');
-                                  }}
-                                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-rose-400 hover:text-rose-300 transition-colors"
+                                e.stopPropagation();
+                                handleExternalClick(e, item.url);
+                                setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
+                                showToast('Opening original');
+                              }}
+                                  className="ml-auto inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-rose-400 hover:text-rose-300 transition-colors"
                                   title={`Read original on ${item.source} (opens external browser or app)`}
                                   aria-label={`Read original on ${item.source}`}
                                 >
@@ -4758,7 +4784,7 @@ export default function App() {
                       <p className="text-xs text-slate-400 line-clamp-2">{item.summary}</p>
 
                       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80 pt-3">
-                        <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex flex-1 flex-wrap items-center gap-2">
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); openArticle(item); }}
@@ -4771,11 +4797,12 @@ export default function App() {
                             target="_blank"
                             rel="noopener noreferrer"
                             onClick={(e) => {
-                              e.stopPropagation();
-                              setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                              showToast('Opening original');
-                            }}
-                            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
+                                e.stopPropagation();
+                                handleExternalClick(e, item.url);
+                                setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
+                                showToast('Opening original');
+                              }}
+                            className="ml-auto inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
                             title={`Read original on ${item.source} (opens external browser or app)`}
                             aria-label={`Read original on ${item.source}`}
                           >
@@ -6265,7 +6292,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         </div>
 
                         <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80">
-                          <div className="flex flex-wrap items-center gap-2">
+                          <div className="flex w-full flex-wrap items-center gap-2">
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); openArticle(item); }}
@@ -6279,10 +6306,11 @@ Search for writers, publications, or topics. Curator checks whether each result 
                               rel="noopener noreferrer"
                               onClick={(e) => {
                                 e.stopPropagation();
+                                handleExternalClick(e, item.url);
                                 setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
                                 showToast('Opening original');
                               }}
-                              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
+                              className="ml-auto inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
                               title={`Read original on ${item.source} (opens external browser or app)`}
                               aria-label={`Read original on ${item.source}`}
                             >
