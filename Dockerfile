@@ -4,7 +4,8 @@ FROM oven/bun:1 AS build
 
 WORKDIR /app
 
-# The image has no .git, so the commit is handed in at build time to stamp the app:
+# The build reads the commit to stamp the app, so the context keeps .git and the image drops it
+# again (see the build step below). A platform that builds without history can pass the commit:
 # docker build --build-arg SOURCE_COMMIT=$(git rev-parse --short HEAD) .
 ARG SOURCE_COMMIT=""
 ENV SOURCE_COMMIT=$SOURCE_COMMIT
@@ -13,7 +14,8 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 COPY . .
-RUN bun run build
+# The commit is read from .git during the build; the runtime image does not need the history.
+RUN bun run build && rm -rf .git
 
 FROM node:22-slim
 

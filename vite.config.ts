@@ -8,7 +8,13 @@ import {defineConfig} from 'vite';
 // Which build a device is running: the commit it came from, when it was made. Docker images
 // exclude .git, so a deploy can pass the commit in through SOURCE_COMMIT (or GITHUB_SHA) —
 // the build time alone still tells one deploy from another.
-const commitFromEnv = process.env.SOURCE_COMMIT || process.env.GIT_COMMIT || process.env.GITHUB_SHA || '';
+// Cloud Build (what AI Studio deploys run on) supplies COMMIT_SHA and SHORT_SHA on its own.
+const commitFromEnv = process.env.SOURCE_COMMIT
+  || process.env.SHORT_SHA
+  || process.env.COMMIT_SHA
+  || process.env.GITHUB_SHA
+  || process.env.GIT_COMMIT
+  || '';
 const shortCommit = (() => {
   if (commitFromEnv.trim()) return commitFromEnv.trim().slice(0, 7);
   try {
