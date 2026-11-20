@@ -10,6 +10,7 @@ import path from 'path';
 import fs from 'fs';
 import { DEFAULT_FEEDS } from './src/defaultFeeds';
 import { MAX_PAGE_BYTES, MAX_REDIRECTS, BlockedUrlError, assertPublicHttpUrl, guardedLookup } from './lib/ssrf';
+import { clientAddress, parseTrustedHops, type ProxyTrust } from './lib/clientAddress';
 import {
   blendSemanticScores,
   denseFeedbackScores,
@@ -37,6 +38,12 @@ dotenv.config();
 // abuse control at this scale and costs nothing per request.
 const ALLOW_SERVER_KEY = process.env.ALLOW_SERVER_KEY === '1';
 const RATE_WINDOW_MS = 60_000;
+// Rate limits key off the address the trusted proxy appended, never the caller-supplied
+// head of X-Forwarded-For. The hop arithmetic lives in lib/clientAddress.ts.
+const PROXY_TRUST: ProxyTrust = {
+  trustProxy: process.env.TRUST_PROXY === '1',
+  trustedHops: parseTrustedHops(process.env.TRUST_PROXY_HOPS),
+};
 
 interface RateBucket {
   used: number;
@@ -45,20 +52,10 @@ interface RateBucket {
 
 const rateBuckets = new Map<string, RateBucket>();
 
-// Cloud Run forwards the real client in X-Forwarded-For. Only believe it when the
-// deployment says the proxy is trusted — otherwise the header is client-controlled.
-function clientAddress(req: express.Request): string {
-  if (process.env.TRUST_PROXY === '1') {
-    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-    if (forwarded) return forwarded;
-  }
-  return req.socket.remoteAddress || 'unknown';
-}
-
 function rateLimit(scope: string, limit: number, windowMs = RATE_WINDOW_MS) {
   return (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const now = Date.now();
-    const key = `${scope}|${clientAddress(req)}`;
+    const key = `${scope}|${clientAddress(req, PROXY_TRUST)}`;
     const bucket = rateBuckets.get(key);
 
     if (!bucket || bucket.resetAt <= now) {
@@ -472,6 +469,18 @@ async function fetchPublicPage(targetUrl: string, timeoutMs = 4500): Promise<Pag
 }
 
 async function startServer() {
+  // A two-hop chain is only trustworthy when every request reaches us through both
+  // proxies. A caller who reaches the origin directly has their forged entries followed
+  // by their real address, so counting two from the right reads a forged one.
+  if (PROXY_TRUST.trustProxy && PROXY_TRUST.trustedHops > 1) {
+    console.warn(
+      `[Curator] Trusting ${PROXY_TRUST.trustedHops} proxy hops in X-Forwarded-For. ` +
+        'Keep that only while the origin is unreachable except through those proxies ' +
+        '(a Tunnel, an allowlist, or a CDN-added secret). If the origin URL answers directly, ' +
+        'set TRUST_PROXY_HOPS=1: a direct caller can put forged addresses in front of the real one.'
+    );
+  }
+
   const app = express();
   app.use(express.json({ limit: '25mb' }));
   // Count the calls the app makes into its own server (the usage route excludes itself)

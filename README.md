@@ -409,12 +409,16 @@ PORT=3000
 # (Cloud Run, Render, Fly, nginx, a load balancer).
 TRUST_PROXY=1
 
+# Number of trusted proxies in front of the server (default 1). Raise it to
+# 2 only when a CDN fronts the first proxy and the origin is locked to that CDN.
+TRUST_PROXY_HOPS=1
+
 # Set to 1 only to let public source discovery spend the server's own
 # GEMINI_API_KEY; otherwise it uses a key supplied by the browser.
 ALLOW_SERVER_KEY=1
 ```
 
-> **`TRUST_PROXY` matters on any deployment.** Rate limits are keyed by the requesting address. Unset, that address is the proxy's socket, so every visitor shares a single bucket and one busy client can trigger `429`s for everyone. Set it to `1` behind a trusted proxy — and only then, since `X-Forwarded-For` is client-controlled otherwise, which would let a caller mint a fresh bucket per request.
+> **`TRUST_PROXY` matters on any deployment.** Rate limits are keyed by the requesting address. Unset, that address is the proxy's socket, so every visitor shares a single bucket and one busy client can trigger `429`s for everyone. Set it to `1` behind a trusted proxy — and only then. With it on, the limiter reads the address the closest proxy appended to `X-Forwarded-For` (the last entry by default), not the caller-controlled start of the header, so a forged prefix cannot mint a fresh bucket per request. If a CDN fronts that proxy, set `TRUST_PROXY_HOPS` to the number of proxies in the chain — but only after locking the origin so it cannot be reached directly. Behind Cloudflare in front of Cloud Run, for example, the second hop is the visitor only while the `run.app` URL is closed off (a Tunnel, an IP allowlist, or a secret header Cloudflare adds). A caller who reaches the origin directly gets their forged entries followed by their real address, so a two-hop count would read the forged one and reopen the bypass; the server warns at startup whenever more than one hop is trusted.
 
 > **Note**: Other provider keys and OpenAI-compatible base URLs are configured in Curator's Settings and stored in this browser. Without an AI provider, Curator uses deterministic curation.
 
