@@ -440,12 +440,22 @@ Open your browser to [http://localhost:3000](http://localhost:3000), or whicheve
 
 ### Production Deployment
 
-1. Build the production client bundle into `dist/`:
+1. Build the production client bundle into `dist/`, naming the commit it was built from:
    ```bash
-   bun run build
+   SOURCE_COMMIT=$(git rev-parse --short HEAD) bun run build
+   bun run check:stamp
    ```
 
-2. Start the server with `NODE_ENV=production` so it serves `dist/` instead of mounting the Vite dev middleware:
+   A build that cannot name its commit still runs, but Settings and `GET /api/version` fall back to a build time, so a phone cannot tell you which commit it is showing. `check:stamp` turns that into a failed release instead. A checkout that still has `.git` supplies the commit on its own; the explicit variable matters when the build runs without history — a container image build, a CI job, or a host that copies the tree without `.git`.
+
+2. To deploy as a container, build the image with the same commit as a build argument:
+   ```bash
+   docker build --build-arg SOURCE_COMMIT=$(git rev-parse --short HEAD) -t curator .
+   ```
+
+   Rebuild the image for every release rather than redeploying the previous one: a redeploy keeps the original build time, so installed apps checking for a newer build find nothing to switch to. Hosts that already export `GITHUB_SHA`, `CI_COMMIT_SHA`, `COMMIT_SHA` or `SHORT_SHA` supply the commit without the flag.
+
+3. Start the server with `NODE_ENV=production` so it serves `dist/` instead of mounting the Vite dev middleware:
    ```bash
    NODE_ENV=production bun run start
    ```
