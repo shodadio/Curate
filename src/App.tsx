@@ -1751,13 +1751,15 @@ export default function App() {
       }
       setDigestError(null);
       setDigestOffline(false);
-      setDigestCuratedAt(Date.now());
       if (outcome.kind === 'empty') {
         if (options?.fresh) showToast(EMPTY_DIGEST_TOAST);
         return;
       }
       if (outcome.items.length > 0) {
         const builtAt = Date.now();
+        // Only an edition that actually arrives is stamped. "Nothing new" leaves the edition on
+        // screen as old as it was, so a later rebuild still treats its cards as history.
+        setDigestCuratedAt(builtAt);
         setDigest(outcome.items);
         safeSetJson('curator_digest_cache', { curatedAt: builtAt, items: outcome.items });
         // The edition that just arrived joins the archive, so tomorrow's miss is not a loss.
