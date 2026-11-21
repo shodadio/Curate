@@ -31,6 +31,7 @@ import {
 import { parseOpmlText } from './lib/opml';
 import { articleLooksIncomplete, cleanHtml, htmlToReadableText, trimSummaryFurniture } from './lib/markup';
 import { parseArticleAuthor, parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
+import { legacyStoryIdFor, storyIdFor } from './lib/storyId';
 
 dotenv.config();
 
@@ -1268,8 +1269,9 @@ async function startServer() {
         /\b(?:continue reading|read more)\b/i.test(fullRaw)
       );
 
-      const idHash = Buffer.from(link || title).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 16);
-      const id = `live_${idHash}`;
+      // Every story gets an id of its own. The first scheme hashed only the opening of the
+      // link, so all of a publication's articles shared one id.
+      const id = storyIdFor(link, title);
 
       items.push({
         id,
@@ -1739,6 +1741,13 @@ async function startServer() {
           ? req.body.actionedIds.filter((id: any) => typeof id === 'string').slice(0, 600)
           : []
       );
+      // Records written before per-story ids named a whole publication. They match no candidate
+      // id, so they travel on their own and are compared against each story's legacy id.
+      const legacyIds = new Set<string>(
+        Array.isArray(req.body.legacyIds)
+          ? req.body.legacyIds.filter((id: any) => typeof id === 'string').slice(0, 200)
+          : []
+      );
       const shownIds = new Set(recentlyShown.map(entry => entry.id));
       const exposurePenalty = buildExposurePenalty(recentlyShown);
 
@@ -1755,6 +1764,13 @@ async function startServer() {
       candidatePool = wantsFreshDigest
         ? freshCandidates(candidatePool, exclusions)
         : rebuildCandidates(candidatePool, exclusions);
+
+      if (legacyIds.size > 0) {
+        candidatePool = candidatePool.filter(item => {
+          const legacy = legacyStoryIdFor(String(item.url || ''), String(item.title || ''));
+          return !legacy || !legacyIds.has(legacy);
+        });
+      }
 
       // Provider-free semantic ranking: votes change the digest even with no API key.
       const semanticScores = new Map<string, number>();

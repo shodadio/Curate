@@ -71,6 +71,25 @@ test('a refresh names every action in the profile so nothing comes back twice', 
   assert.equal(payload.fresh, true);
 });
 
+test('records written before per-story ids are retired by their publication', () => {
+  const now = 10_000_000;
+  const payload = buildDigestRequest(input({
+    now,
+    currentDigestIds: [],
+    shownHistory: [
+      { id: 'live_aHR0cHM6Ly9hcnN0', shownAt: now - 60_000 },
+      { id: 'live_01ktjpk01u7b02', shownAt: now - 60_000 },
+      { id: 'live_aHR0cHM6Ly9zdHJh', shownAt: now - 48 * 60 * 60 * 1000 },
+    ],
+    readingStats: { live_aHR0cHM6Ly9tYXJn: { lastRead: now - 120_000 } },
+  }));
+  assert.deepEqual(
+    payload.legacyIds.slice().sort(),
+    ['live_aHR0cHM6Ly9hcnN0', 'live_aHR0cHM6Ly9tYXJn'].sort(),
+    'old ids inside the edition window are retired; per-story ids and older records are not',
+  );
+});
+
 test('the most recently read stories lead the actioned list, so a cap cannot drop them', () => {
   const payload = buildDigestRequest(input({
     signals: {},

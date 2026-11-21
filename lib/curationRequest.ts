@@ -2,6 +2,9 @@
 // told when nothing does. Keeping it here means the payload shape, the freshness history and
 // the wording of every failure can be tested without mounting the app.
 
+import { DIGEST_MAX_AGE_MS } from './ranking';
+import { isStoryId } from './storyId';
+
 export interface ShownEntry {
   id: string;
   shownAt: number;
@@ -45,6 +48,7 @@ export interface DigestRequestPayload {
   signals: Record<string, unknown>;
   feedback: unknown[];
   readingStats: Record<string, unknown>;
+  legacyIds: string[];
   serendipityDial: number;
   itemCount: number;
   provider: string;
@@ -63,6 +67,25 @@ export interface DigestRequestPayload {
 }
 
 export const DIGEST_HISTORY_LIMIT = 150;
+
+// An id from before per-story ids names a whole publication, so a record that still carries one
+// is retired by that id: its own story may no longer be stored, and the story it named must not
+// come back. Only records inside the window an edition draws from matter — an older story cannot
+// be a candidate whatever it was.
+function legacyIdsFor(input: DigestRequestInput, now: number, windowMs: number): string[] {
+  const ids: string[] = [];
+  const recent = (stamp: number): boolean => Number.isFinite(stamp) && now - stamp <= windowMs && now - stamp >= 0;
+  const add = (id: string): void => { if (id && !ids.includes(id)) ids.push(id); };
+
+  input.shownHistory.forEach(entry => {
+    if (recent(entry.shownAt) && !isStoryId(entry.id)) add(entry.id);
+  });
+  Object.entries(input.readingStats || {}).forEach(([id, stats]) => {
+    const lastRead = Number((stats as { lastRead?: unknown })?.lastRead);
+    if (recent(lastRead) && !isStoryId(id)) add(id);
+  });
+  return ids.slice(0, 200);
+}
 export const EMPTY_DIGEST_TOAST = 'Nothing new in 24 hours — older stories are in Feeds';
 
 // Only entries the app itself can act on are read back: a damaged history shortens freshness
@@ -144,6 +167,7 @@ export function buildDigestRequest(input: DigestRequestInput): DigestRequestPayl
     },
     feedback: input.feedback,
     readingStats: input.readingStats,
+    legacyIds: legacyIdsFor(input, now, DIGEST_MAX_AGE_MS),
     serendipityDial: input.serendipityDial,
     itemCount: input.itemCount,
     provider: input.model.provider,
