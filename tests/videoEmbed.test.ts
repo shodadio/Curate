@@ -85,6 +85,16 @@ test('a <video> element gives its file and the still that belongs with it', () =
     poster: 'https://cdn.example.com/clip.jpg',
   });
 
+  // Ars article clips use WordPress's wrapper and put the playable address on a <source> child.
+  // The reader fetches the article page and passes this original markup into the same finder.
+  assert.deepEqual(findVideoEmbed(
+    '<figure><div class="wp-video"><video id="video-2096324-1" class="wp-video-shortcode" controls><source src="https://cdn.arstechnica.net/wp-content/uploads/2025/05/clip.mp4?_=1" type="video/mp4"></video></div><figcaption>Video caption</figcaption></figure>',
+    'https://arstechnica.com/story/',
+  ), {
+    url: 'https://cdn.arstechnica.net/wp-content/uploads/2025/05/clip.mp4?_=1',
+    kind: 'file',
+  });
+
   // The file on the element itself, with no poster, is still a video.
   assert.deepEqual(findVideoEmbed('<video src="https://cdn.example.com/clip.webm"></video>'), {
     url: 'https://cdn.example.com/clip.webm',

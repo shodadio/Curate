@@ -220,9 +220,29 @@ test('htmlToReadableText keeps two label-like words in a row, which can be real 
   assert.equal(body, 'Links\n\nSize\n\nReal article text starts here.');
 });
 
+test('htmlToReadableText drops the settings widget when a page keeps each label with its options', () => {
+  // The same display controls on Ars Technica's own page. A feed hands over each row as its own
+  // paragraph; a page hands over the select box on the line of the label it belongs to, so the
+  // line reads "Size Small Standard Large" rather than four separate labels.
+  const body = htmlToReadableText([
+    '<div><span>Story text</span></div>',
+    '<div><label>Size</label><select><option>Small</option><option>Standard</option><option>Large</option></select></div>',
+    '<div><label>Width <span>*</span></label><select><option>Standard</option><option>Wide</option></select></div>',
+    '<div><label>Links</label><select><option>Standard</option><option>Orange</option></select></div>',
+    '<div><span>* Subscribers only</span><br><a href="https://example.com/subscribe">Learn more</a></div>',
+    '<p>Real article text starts here.</p>',
+  ].join(''));
+  assert.equal(body, 'Real article text starts here.');
+});
+
 test('htmlToReadableText drops paywall footnotes that arrive as paragraphs', () => {
   const body = htmlToReadableText('<p>* Subscribers only</p><p>Learn more</p><p>Real article text starts here.</p>');
   assert.equal(body, 'Real article text starts here.');
+  // On the page the offer sits on the footnote's own line, which still makes it a footnote.
+  const inline = htmlToReadableText(
+    '<p>* Subscribers only<br><a href="https://example.com/subscribe">Learn more</a></p><p>Real article text starts here.</p>',
+  );
+  assert.equal(inline, 'Real article text starts here.');
 });
 
 test('htmlToReadableText drops a byline paragraph from a teaser body', () => {
@@ -413,6 +433,23 @@ test('a feed teaser counts as an unfinished read', () => {
   assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: 'Short but whole piece.' }), true);
   // Nothing to fetch without an address, so the stored body is all there is.
   assert.equal(articleLooksIncomplete({ fullText: 'Short but whole piece.' }), false);
+});
+
+test('a teaser that ends by offering the rest of the piece is unfinished', () => {
+  // Ars Technica's feed stops after three paragraphs and closes with a linked "Read full article".
+  // The address follows the words, so the marker is the link, not the end of a sentence; treating
+  // it as the end of the piece left the reader with the teaser and nothing more.
+  const teaser = `${'A real sentence. '.repeat(60)}\n\n[Read full article](https://example.com/a)`;
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: teaser }), true);
+  // The same offer without a link, and the longer-worded forms publishers use.
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: `${'A real sentence. '.repeat(60)}\n\nRead full article` }), true);
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: `${'A real sentence. '.repeat(60)}\n\n[Continue reading](https://example.com/a)` }), true);
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: `${'A real sentence. '.repeat(60)}\n\nRead the full story` }), true);
+  // Some publishers put the destination in a plain-text sentence rather than a link.
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: `${'A real sentence. '.repeat(60)}\n\nRead the full story at https://example.com/a` }), true);
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: `${'A real sentence. '.repeat(60)}\n\nRead the full story at: https://example.com/a` }), true);
+  // A piece that merely mentions reading the whole of something is still a whole piece.
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: `${'A real sentence. '.repeat(60)}\n\nShe had read the full article twice.` }), false);
 });
 
 test('htmlToReadableText stops a paid preview at the subscriber offer', () => {

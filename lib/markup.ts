@@ -62,7 +62,10 @@ export const linkLabelsOnly = (paragraph: string): string =>
 // Standard Wide / Links / Standard Orange"), which then read as the opening of the article.
 // A single short "Links" paragraph can be genuine prose, so labels are only dropped when at
 // least three in a row match.
-const chromeLabel = /^(?:[•*·]\s*)?(?:story text|story text size|text size|font size|line height|size|small|small standard large|standard large|width\s*\*?|standard wide|wide|links?|standard (?:orange|blue|green|white|black)|dark mode|light mode|reader mode|reading mode)$/i;
+// The publisher's own page ships the same widget with each select box still on its label's line,
+// because the options are the words of the block they sit in ("Size Small Standard Large",
+// "Width * Standard Wide", "Links Standard Orange"). A label therefore carries its options.
+const chromeLabel = /^(?:[•*·]\s*)?(?:story text|story text size|text size|font size|line height|size|small|small standard large|standard large|width\s*\*?|standard wide|wide|links?|standard (?:orange|blue|green|white|black)|dark mode|light mode|reader mode|reading mode)(?:\s+(?:small|standard|large|wide|narrow|orange|blue|green|white|black))*$/i;
 
 const dropChromeRuns = (paragraphs: string[]): string[] => {
   const isLabel = (paragraph: string) => paragraph.length <= 30 && chromeLabel.test(paragraph);
@@ -444,8 +447,10 @@ export const htmlToReadableText = (html: string, baseUrl = ''): string => {
       const words = linkLabelsOnly(paragraph);
       return !(words.length < 180 && /^(click here|subscribe|sign up|follow me|read more|read on|learn more|share this|advertisement)\b/i.test(words));
     })
-    // "* Subscribers only" and its siblings are paywall footnotes, not article text.
-    .filter(paragraph => !/^\*?\s*(?:subscribers?|members?)\s*only\.?$/i.test(linkLabelsOnly(paragraph)))
+    // "* Subscribers only" and its siblings are paywall footnotes, not article text. The footnote's
+    // own offer ("Learn more") is glued to the line when it came from the page rather than a feed,
+    // so a trailing offer does not make the line part of the piece.
+    .filter(paragraph => !/^\*?\s*(?:subscribers?|members?)\s*only\.?(?:\s+learn more)?$/i.test(linkLabelsOnly(paragraph)))
     .filter(paragraph => {
       const words = linkLabelsOnly(paragraph);
       return !(words.length <= 60 && bylineParagraph.test(words));
@@ -635,7 +640,10 @@ export function articleNeedsLinkRefresh(item: {
 // A feed can carry only the opening of a piece: a short body, a sentence that runs out with an
 // ellipsis, or a "Read more" line where the rest should be. The reader then looks as if it cut
 // the story off mid-thought, so such a piece earns one page read when it is opened.
-const TEASER_TAIL = /(?:\.{3}|…|\[\s*…\s*\]|\[read more\]\([^)]*\)|read more|continue reading|read (?:the )?(?:full|complete) (?:article|story|post|piece))$/i;
+// The marker is often a link in the feed's markup ("[Read full article](https://…)"), or a plain
+// "Read the full story at https://…" sentence. In both forms the address belongs to the marker,
+// not to the article; treating it as the end of the piece leaves the reader with the teaser.
+const TEASER_TAIL = /(?:\.{3}|…|\[\s*…\s*\]|(?:\[\s*)?(?:read more|continue reading|read (?:the )?(?:full|complete) (?:article|story|post|piece))(?:\s+at\s*:?\s*https?:\/\/\S+)?\s*\]?(?:\([^)]*\))?)$/i;
 const TEASER_MIN_CHARS = 700;
 
 export function articleLooksIncomplete(item: { url?: string; fullText?: string }): boolean {
