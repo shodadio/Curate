@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshCw, X } from 'lucide-react';
 
-import { isNewerBuild, type BuildStampInfo } from '../../lib/buildStamp';
+import { isNewerBuild, normalizeNote, type BuildStampInfo } from '../../lib/buildStamp';
 
 // Installed apps keep the shell their service worker precached, so a deploy can go unnoticed
 // for days. The server names the build it is running at /api/version; when that is later than
@@ -16,7 +16,12 @@ function reportFrom(value: unknown): BuildStampInfo | null {
   const commit = typeof record.commit === 'string' ? record.commit.trim() : '';
   const builtAt = typeof record.builtAt === 'string' ? record.builtAt.trim() : '';
   if (!commit && !builtAt) return null;
-  return { commit, builtAt, repo: typeof record.repo === 'string' ? record.repo : '' };
+  return {
+    commit,
+    builtAt,
+    repo: typeof record.repo === 'string' ? record.repo : '',
+    note: normalizeNote(record.note),
+  };
 }
 
 export function NewBuildPrompt() {
@@ -89,7 +94,12 @@ export function NewBuildPrompt() {
     >
       <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-slate-900/95 px-3 py-2 text-xs text-slate-200 shadow-2xl backdrop-blur-md animate-fade-in">
         <RefreshCw className="h-3.5 w-3.5 shrink-0 text-amber-400" />
-        <span className="min-w-0 flex-1 leading-tight">A newer build is ready.</span>
+        <div className="min-w-0 flex-1 leading-tight">
+          <span className="block">A newer build is ready.</span>
+          {newer.note ? (
+            <span className="mt-0.5 line-clamp-2 block text-[11px] text-slate-400">{newer.note}</span>
+          ) : null}
+        </div>
         <button
           type="button"
           onClick={applyUpdate}

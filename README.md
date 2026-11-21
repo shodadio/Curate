@@ -467,6 +467,13 @@ The two paths below are alternatives: run one, not both. Either builds the same 
 
    `bun run start` executes `tsx server.ts`, the same entry point as development. Without `NODE_ENV=production` you get the development middleware and the built bundle is ignored, so set it in your process environment. `GET /api/version` on that server answers with the commit the build was stamped with.
 
+3. Optionally, give the release a one-line note for the people who will see the update notice:
+   ```bash
+   SOURCE_COMMIT=$(git rev-parse --short HEAD) RELEASE_NOTE="Faster morning digest" bun run build
+   ```
+
+   The note travels with the build and appears under the notice's "A newer build is ready" line. It is optional — without it the notice is unchanged — and a note longer than one short line is trimmed rather than allowed to grow the bar.
+
 **Container image**
 
 Build the image with the same commit as a build argument, then run it:
@@ -478,6 +485,8 @@ docker run --rm -p 8080:8080 curator
 Merges to `main` publish the image for you: the *Publish* workflow builds from the merged commit with that commit passed as the stamp and pushes it to GitHub Container Registry, tagged with the short SHA and `latest` (`ghcr.io/shodadio/curator`). Point the host at the tag and redeploy; `GET /api/version` on the new container names the commit it was built from.
 
 The image builds the bundle and runs the same release check before it finishes, so an image that cannot name its commit fails to build exactly where the local path does. The commit comes from `--build-arg SOURCE_COMMIT=…` when you pass it, from `.git` when the context still has history, and otherwise from a hash of the sources in the context — the case for a host such as Cloud Build, which copies the tree without history and cannot pass a build argument. That hash is reproducible, so the same tree always stamps the same version and a deploy can still be matched to the sources it shipped. The image also sets production mode and port 8080 on its own, so there is nothing else to run before or after it. Rebuild the image for every release rather than redeploying the previous one: a redeploy keeps the original build time, so installed apps checking for a newer build find nothing to switch to.
+
+Add `--build-arg RELEASE_NOTE="Faster morning digest"` to the build command to ship a release note the same way.
 
 If you deploy behind a proxy, set `TRUST_PROXY=1` as described in [Environment Variables](#environment-variables) — otherwise the per-client rate limits collapse into one shared bucket.
 

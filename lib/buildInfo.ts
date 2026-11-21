@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { buildVersion, formatBuildStamp, type BuildStampInfo } from './buildStamp.ts';
+import { buildVersion, formatBuildStamp, normalizeNote, type BuildStampInfo } from './buildStamp.ts';
 
 export const BUILD_INFO_FILE = 'build-info.json';
 export const DEFAULT_REPO = 'shodadio/Curate';
@@ -33,6 +33,12 @@ export const commitEnvNames = [
   'GIT_COMMIT_SHA',        // generic CI
 ] as const;
 
+// The one-line note a release can carry, baked into the build like the commit. Optional: a
+// release without one shows the plain "newer build" line.
+export function noteFromEnv(env: NodeJS.ProcessEnv = process.env): string {
+  return normalizeNote(env.RELEASE_NOTE || env.BUILD_NOTE);
+}
+
 export function commitFromEnv(env: NodeJS.ProcessEnv = process.env): string {
   for (const name of commitEnvNames) {
     const value = (env[name] || '').trim();
@@ -59,7 +65,7 @@ export function parseBuildInfo(raw: string): BuildStampInfo | null {
   const commit = text(record.commit);
   const builtAt = text(record.builtAt);
   if (!commit && !builtAt) return null;
-  return { commit, builtAt, repo: text(record.repo) || DEFAULT_REPO };
+  return { commit, builtAt, repo: text(record.repo) || DEFAULT_REPO, note: normalizeNote(record.note) };
 }
 
 export function readBuildInfo(distDir: string): BuildStampInfo | null {
@@ -82,6 +88,7 @@ export function versionReport(info: BuildStampInfo): VersionReport {
     commit: text(info.commit),
     builtAt: text(info.builtAt),
     repo: text(info.repo) || DEFAULT_REPO,
+    note: normalizeNote(info.note),
   };
   return { ...report, version: buildVersion(report), stamp: formatBuildStamp(report) };
 }

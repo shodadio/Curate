@@ -5,6 +5,19 @@ export interface BuildStampInfo {
   commit: string;
   builtAt: string;
   repo: string;
+  // Optional one line about what changed, shown in the update notice.
+  note?: string;
+}
+
+export const NOTE_MAX_LENGTH = 120;
+
+// A release note is a single short line. Folding it to one line keeps the notice one tap tall,
+// and the cut keeps a long changelog from turning it into a paragraph.
+export function normalizeNote(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const line = value.replace(/\s+/g, ' ').trim();
+  if (line.length <= NOTE_MAX_LENGTH) return line;
+  return `${line.slice(0, NOTE_MAX_LENGTH - 1).trimEnd()}…`;
 }
 
 function whenText(builtAt: string): string {
@@ -35,7 +48,8 @@ export function buildVersion(info: BuildStampInfo): string {
   return commit || generatedVersion(info.builtAt);
 }
 
-// Whether the server is running a later build than the bundle on this device. Build time is the
+// Whether the server is running a later build than the bundle on this device. The note is not
+// part of the comparison, so changed wording alone never offers an update. Build time is the
 // reliable direction: a rollback reports a different commit but an older time, and no prompt
 // should push a reader onto it.
 export function isNewerBuild(app: BuildStampInfo, server: BuildStampInfo): boolean {

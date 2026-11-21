@@ -10,6 +10,10 @@ WORKDIR /app
 ARG SOURCE_COMMIT=""
 ENV SOURCE_COMMIT=$SOURCE_COMMIT
 
+# An optional one-line release note, shown in the app's update notice. Empty is normal.
+ARG RELEASE_NOTE=""
+ENV RELEASE_NOTE=$RELEASE_NOTE
+
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 

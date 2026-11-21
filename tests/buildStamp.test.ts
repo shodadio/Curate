@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatBuildStamp, isNewerBuild } from '../lib/buildStamp.ts';
+import { formatBuildStamp, isNewerBuild, normalizeNote } from '../lib/buildStamp.ts';
 
 const REPO = 'shodadio/Curate';
 const BUILT_AT = '2026-11-20T07:23:00.000Z';
@@ -59,6 +59,26 @@ test('without build times, only a different known commit counts', () => {
   assert.equal(isNewerBuild({ commit: '1111111', builtAt: '', repo: REPO }, { commit: '2222222', builtAt: '', repo: REPO }), true);
   assert.equal(isNewerBuild({ commit: '1111111', builtAt: '', repo: REPO }, { commit: '1111111', builtAt: '', repo: REPO }), false);
   assert.equal(isNewerBuild({ commit: '', builtAt: '', repo: REPO }, { commit: '2222222', builtAt: '', repo: REPO }), false);
+});
+
+test('a release note is folded to one line', () => {
+  assert.equal(normalizeNote('  Faster digest\n\tand fewer  jumps '), 'Faster digest and fewer jumps');
+  assert.equal(normalizeNote(''), '');
+  assert.equal(normalizeNote(undefined), '');
+  assert.equal(normalizeNote(42), '');
+});
+
+test('a long release note is cut instead of growing the bar', () => {
+  const note = normalizeNote('x'.repeat(400));
+  assert.equal(note.length, 120);
+  assert.ok(note.endsWith('…'), note);
+});
+
+test('the note never decides whether a build is newer', () => {
+  assert.equal(isNewerBuild(
+    { commit: '1111111', builtAt: BUILT_AT, repo: REPO, note: 'old wording' },
+    { commit: '1111111', builtAt: BUILT_AT, repo: REPO, note: 'new wording' },
+  ), false);
 });
 
 test('blank values are treated as absent', () => {

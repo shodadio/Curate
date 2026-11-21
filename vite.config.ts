@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'path';
 import { execSync } from 'node:child_process';
 import {defineConfig, type Plugin, type ResolvedConfig} from 'vite';
-import { BUILD_INFO_FILE, commitFromEnv } from './lib/buildInfo.ts';
+import { BUILD_INFO_FILE, commitFromEnv, noteFromEnv } from './lib/buildInfo.ts';
 import type { BuildStampInfo } from './lib/buildStamp.ts';
 
 // Which build a device is running: the commit it came from, when it was made. The host-variable
@@ -57,6 +57,7 @@ export default defineConfig(({ command }) => {
     commit: shortCommit,
     builtAt: new Date().toISOString(),
     repo: repository,
+    note: noteFromEnv(),
   };
   return {
     define: {
