@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { backupFile, readBackupFile, restorePlan } from '../lib/backup.ts';
 import { STORY_ID_PREFIX, isStoryId, legacyStoryIdFor, storyIdFor } from '../lib/storyId.ts';
 import {
   DIGEST_CACHE_KEY,
@@ -106,6 +107,42 @@ test('an id from the new scheme survives even when its story is no longer stored
   const migrated = migrateStoryIds(stored);
   assert.equal(migrated.changed, false);
   assert.deepEqual(migrated.data, stored);
+});
+
+test('a backup written before per-story ids is converted when it is restored', () => {
+  const before = backupFile({
+    [DIGEST_CACHE_KEY]: JSON.stringify({
+      curatedAt: 1000,
+      items: [story(OLD_ARS, ARS_A, 'A'), story(OLD_ARS, ARS_B, 'B')],
+    }),
+    [DIGEST_HISTORY_KEY]: JSON.stringify([{ id: OLD_ARS, shownAt: 10 }]),
+    [READING_STATS_KEY]: JSON.stringify({ [OLD_ARS]: { maxDepth: 70, lastRead: 9 } }),
+    [SAVED_ARTICLES_KEY]: JSON.stringify([story(OLD_ARS, ARS_A, 'A')]),
+  });
+
+  const read = readBackupFile(JSON.stringify(before));
+  assert.equal(read.ok, true);
+  if (!read.ok) return;
+
+  // What the restore writes: the file's library, converted before it lands in storage.
+  const plan = restorePlan({}, migrateStoryIds(read.data).data);
+  const restored: Record<string, string> = {};
+  plan.write.forEach(entry => { restored[entry.key] = entry.value; });
+
+  const idA = storyIdFor(ARS_A, 'A');
+  const idB = storyIdFor(ARS_B, 'B');
+  const cached = JSON.parse(restored[DIGEST_CACHE_KEY]).items;
+  assert.deepEqual(cached.map((item: { id: string }) => item.id), [idA, idB], 'the restored edition holds two stories, not one publication');
+  assert.deepEqual(JSON.parse(restored[SAVED_ARTICLES_KEY]).map((item: { id: string }) => item.id), [idA]);
+  assert.deepEqual(
+    JSON.parse(restored[DIGEST_HISTORY_KEY]).map((entry: { id: string }) => entry.id).sort(),
+    [idA, idB].sort(),
+    'the shown record follows both stories the old id named',
+  );
+  assert.deepEqual(Object.keys(JSON.parse(restored[READING_STATS_KEY])).sort(), [idA, idB].sort());
+
+  // The file on disk is left as it was; only the copy written back is converted.
+  assert.deepEqual(read.data, before.data);
 });
 
 test('migrating twice changes nothing the second time', () => {
