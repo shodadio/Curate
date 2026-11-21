@@ -25,6 +25,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The update notice can say what changed. A repository variable names that line when it is
+      # set; otherwise the commit subject is used with its conventional prefix removed, so a
+      # merge ships something readable instead of an empty note or a "fix:" prefix.
+      - name: Read the release note
+        id: note
+        env:
+          CONFIGURED_NOTE: ${{ vars.RELEASE_NOTE }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          note="$CONFIGURED_NOTE"
+          if [ -z "$note" ]; then
+            message="$COMMIT_MESSAGE"
+            if [ -z "$message" ]; then message="$(git log -1 --pretty=%s)"; fi
+            note="${message%%$'\n'*}"
+            note="$(printf '%s' "$note" | sed -E 's/^(feat|fix|docs|build|ci|test|refactor|chore|perf)(\([^)]*\))?: //')"
+          fi
+          printf 'Release note: %s\n' "${note:-<none>}"
+          echo "note=$note" >> "$GITHUB_OUTPUT"
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -52,6 +71,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             SOURCE_COMMIT=${{ github.sha }}
+            RELEASE_NOTE=${{ steps.note.outputs.note }}
           # The build itself is the attestation that matters here; keyless signing of the
           # image would need an identity the private package cannot verify on pull.
           provenance: false
