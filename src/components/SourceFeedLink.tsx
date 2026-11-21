@@ -2,7 +2,8 @@ import type { SyntheticEvent } from 'react';
 import { ExternalLink } from 'lucide-react';
 
 interface SourceFeedLinkProps {
-  href?: string;
+  /** Opens this source's feed stream in the Feeds tab. */
+  onOpen: () => void;
   title: string;
   feedUrl?: string;
   /** The feed address as the reader sees it. */
@@ -13,11 +14,11 @@ interface SourceFeedLinkProps {
   className?: string;
 }
 
-// One link for a whole source row, shared by working and failed feeds alike: the avatar,
-// the name and the address all open that feed, so a reader gets one tab stop per feed
-// instead of two links to the same place.
+// One control for a whole source row, shared by working and failed feeds alike: the avatar,
+// the name and the address all open that source's feed stream, so a reader gets one tap stop
+// per feed instead of two links to the same place.
 export function SourceFeedLink({
-  href,
+  onOpen,
   title,
   feedUrl,
   address,
@@ -26,12 +27,11 @@ export function SourceFeedLink({
   className = '',
 }: SourceFeedLinkProps) {
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      title={`${feedUrl} (opens in a new window)`}
-      className={`group flex min-w-0 items-start gap-2.5 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 ${className}`}
+    <button
+      type="button"
+      onClick={onOpen}
+      title={`${feedUrl} (opens in Feeds)`}
+      className={`group w-full min-w-0 cursor-pointer text-left flex items-start gap-2.5 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 ${className}`}
     >
       <span className="w-9 h-9 rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden shrink-0 relative transition group-hover:border-amber-500/50">
         {avatarUrl ? (
@@ -60,6 +60,6 @@ export function SourceFeedLink({
           <ExternalLink className="w-3 h-3 shrink-0" />
         </span>
       </span>
-    </a>
+    </button>
   );
 }

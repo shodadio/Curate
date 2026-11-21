@@ -4913,7 +4913,7 @@ export default function App() {
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                           <div className="min-w-0 flex-1">
                             <SourceFeedLink
-                              href={webUrlHref(src.feedUrl)}
+                              onOpen={() => handleOpenFeedStream(src.title, src.id)}
                               title={src.title}
                               feedUrl={src.feedUrl}
                               address={formatFeedUrlForDisplay(src.feedUrl)}
@@ -5197,7 +5197,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                           <div className="p-3 sm:p-3.5">
                           <div className="flex items-start justify-between gap-2 sm:gap-3">
                             <SourceFeedLink
-                              href={webUrlHref(src.feedUrl)}
+                              onOpen={() => handleOpenFeedStream(src.title, src.id)}
                               title={src.title}
                               feedUrl={src.feedUrl}
                               address={formatFeedUrlForDisplay(src.feedUrl)}
