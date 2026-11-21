@@ -23,7 +23,7 @@ import { safeGetItem, safeSetItem, safeSetJson, subscribeToStorageFailures, down
 import { readBackupFile, restorePlan } from '../lib/backup';
 import { migrateStoryIds } from '../lib/storyIdMigration';
 import { MAX_EDITIONS, editionDayLabel, editionMinutes as editionMinutesFor, readEditions, recordEdition, type Edition } from '../lib/editions';
-import { formatBytes, measureStorage, pruneArticleBodies, type StorageReport } from '../lib/storageHealth';
+import { formatBytes, measureStorage, pruneArticleBodies, pruneReadingStats, type StorageReport } from '../lib/storageHealth';
 import { activeSources, applyFeedFailures, resumeFeed } from '../lib/sourceRetirement';
 import {
   REFRESH_ALL_TRANSPORT_TOAST,
@@ -545,6 +545,22 @@ function storedReaderSize(): number {
   return (READER_SIZES as readonly number[]).includes(saved) ? saved : READER_SIZE_DEFAULT;
 }
 
+// Reading progress is kept for the recent slice of stories, plus whatever is still in front of the
+// reader — the edition on screen and the pieces they saved — whose progress they can see again.
+function idsInFrontOfReader(): string[] {
+  const ids: string[] = [];
+  const push = (value: unknown) => { if (typeof value === 'string' && value) ids.push(value); };
+  try {
+    const cache = JSON.parse(safeGetItem('curator_digest_cache') || 'null');
+    if (Array.isArray(cache && cache.items)) cache.items.forEach((item: { id?: unknown }) => push(item && item.id));
+  } catch (e) { /* ignore */ }
+  try {
+    const saved = JSON.parse(safeGetItem('curator_saved_articles') || '[]');
+    if (Array.isArray(saved)) saved.forEach((item: { id?: unknown }) => push(item && item.id));
+  } catch (e) { /* ignore */ }
+  return ids;
+}
+
 export default function App() {
   // Navigation & View state
   const [activeTab, setActiveTab] = useState<'today' | 'saved' | 'sources' | 'settings' | 'feeds'>('today');
@@ -584,7 +600,8 @@ export default function App() {
   const [readingStats, setReadingStats] = useState<Record<string, { maxDepth?: number; finished?: boolean; lastRead?: number }>>(() => {
     try {
       const raw = safeGetItem('curator_reading_stats');
-      return raw ? JSON.parse(raw) : {};
+      const stored = raw ? JSON.parse(raw) : {};
+      return pruneReadingStats(stored, { keepIds: idsInFrontOfReader() }).stats;
     } catch (e) {
       return {};
     }
@@ -1515,7 +1532,9 @@ export default function App() {
   }, [readArticleIds]);
 
   useEffect(() => {
-    safeSetJson('curator_reading_stats', readingStats);
+    // Pruned on the way out: the session keeps everything it has been reading, but the stored
+    // profile cannot grow one record per story for as long as the reader keeps reading.
+    safeSetJson('curator_reading_stats', pruneReadingStats(readingStats, { keepIds: idsInFrontOfReader() }).stats);
   }, [readingStats]);
 
   useEffect(() => {
