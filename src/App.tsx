@@ -25,7 +25,7 @@ import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, ty
 import { safeGetItem, safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, readAppData, type StorageFailure } from './storage';
 import { readBackupFile, restorePlan } from '../lib/backup';
 import { migrateStoryIds } from '../lib/storyIdMigration';
-import { MAX_EDITIONS, editionDayLabel, editionMinutes as editionMinutesFor, readEditions, recordEdition, type Edition } from '../lib/editions';
+import { MAX_EDITIONS, editionDayLabel, editionMinutes as editionMinutesFor, editionStoryCount, readEditions, recordEdition, type Edition } from '../lib/editions';
 import { formatBytes, measureStorage, pruneArticleBodies, pruneReadingStats, type StorageReport } from '../lib/storageHealth';
 import { activeSources, applyFeedFailures, resumeFeed } from '../lib/sourceRetirement';
 import {
@@ -3338,6 +3338,7 @@ export default function App() {
     : mutedDigestItems.length > 0
       ? `${digest.length} ${digest.length === 1 ? 'story' : 'stories'} · ${mutedDigestItems.length} hidden`
       : `${digest.length} ${digest.length === 1 ? 'story' : 'stories'} worth your time`;
+  const archivedStoryCount = editionStoryCount(editions);
 
   const restoreAllMutedCards = () => {
     const restoredIds = mutedDigestItems.map(item => item.id);
@@ -4009,7 +4010,7 @@ export default function App() {
                     Earlier editions
                   </span>
                   <span className="text-slate-500">
-                    {editions.length === 1 ? '1 kept' : `${editions.length} kept`}
+                    {archivedStoryCount} {archivedStoryCount === 1 ? 'story' : 'stories'}
                     <ChevronDown className="ml-1 inline w-3.5 h-3.5 transition-transform group-open:rotate-180" />
                   </span>
                 </summary>

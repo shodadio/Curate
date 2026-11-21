@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MAX_EDITIONS, editionDayLabel, editionItem, editionMinutes, readEditions, recordEdition, type EditionItem } from '../lib/editions.ts';
+import { MAX_EDITIONS, editionDayLabel, editionItem, editionMinutes, editionStoryCount, readEditions, recordEdition, type EditionItem } from '../lib/editions.ts';
 
 const item = (id: string, extra: Record<string, unknown> = {}) => ({
   id,
@@ -67,4 +67,12 @@ test('the day label names today and yesterday in words', () => {
 
 test('an edition reports its reading time', () => {
   assert.equal(editionMinutes([{ ...item('a'), readTime: '4 min read' }, { ...item('b'), readTime: '11 min read' }]), 15);
+});
+
+test('archive count reports saved stories rather than edition groups', () => {
+  const editions = [
+    { curatedAt: at('2026-11-20T07:00:00Z'), items: [item('a'), item('b'), item('c')] },
+    { curatedAt: at('2026-11-19T07:00:00Z'), items: [item('d'), item('e')] },
+  ];
+  assert.equal(editionStoryCount(editions), 5);
 });
