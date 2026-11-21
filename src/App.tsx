@@ -895,6 +895,9 @@ export default function App() {
     );
   });
   const [compactCards, setCompactCards] = useState<boolean>(() => safeGetItem('curator_compact_cards') === '1');
+  // Bumped when the reader clears their votes, so the edition is built again against the cleared
+  // profile instead of keeping cards ranked by votes that no longer exist.
+  const [profileResetAt, setProfileResetAt] = useState<number>(0);
   // Count, density and serendipity live behind one pill instead of filling the first screen
   const [showDigestSettings, setShowDigestSettings] = useState<boolean>(false);
   const [aiProvider, setAiProvider] = useState<string>(() => {
@@ -956,6 +959,10 @@ export default function App() {
   const digestRequestRef = React.useRef(0);
   // The request in flight, so a retry or a timeout can actually cancel it
   const digestAbortRef = React.useRef<AbortController | null>(null);
+  // A "search for a new set" in flight owns the edition until it answers: a settings edit that
+  // debounces into a build of its own must not cancel it and drop an ordinary edition in its
+  // place, which is the previous cards all over again.
+  const freshRoundPendingRef = React.useRef(false);
   const feedStreamRequestRef = React.useRef(0);
   // Set when the reader hands off to a feed, so the stream opens at its newest entry
   const scrollFeedStreamTopRef = React.useRef(false);
@@ -1520,10 +1527,16 @@ export default function App() {
   useEffect(() => {
     // While setup is open, calibration votes accumulate first and one digest is built at the end.
     if (showSetupWizard) return;
-    // Debounced so dragging the serendipity slider or tapping counts issues one request, not dozens
-    const timer = setTimeout(() => { generateDigest(); }, 450);
+    // Debounced so dragging the serendipity slider or tapping counts issues one request, not dozens.
+    // Votes are deliberately not a trigger: a build started by a vote replaces the edition the
+    // reader is part-way through, and the rebuild is allowed to pick already-read cards again.
+    // A vote is a note for the next edition, as the toast says, so it only changes the payload.
+    const timer = setTimeout(() => {
+      if (freshRoundPendingRef.current) return;
+      generateDigest();
+    }, 450);
     return () => clearTimeout(timer);
-  }, [itemCount, serendipityDial, signals, semanticFeedback, interests, showSetupWizard]);
+  }, [itemCount, serendipityDial, interests, showSetupWizard, profileResetAt]);
   useEffect(() => {
     if (activeTab === 'feeds') {
       fetchFeedStream(selectedFeedSource || 'all');
@@ -1671,6 +1684,7 @@ export default function App() {
       return;
     }
     const requestId = ++digestRequestRef.current;
+    if (options?.fresh) freshRoundPendingRef.current = true;
     // A retry must cancel the request it replaces, and a request that never answers has to
     // end in a retryable state rather than an endless "Synthesizing…".
     digestAbortRef.current?.abort();
@@ -1754,6 +1768,7 @@ export default function App() {
       window.clearTimeout(slowHint);
       if (digestAbortRef.current === controller) digestAbortRef.current = null;
       if (requestId === digestRequestRef.current) {
+        if (options?.fresh) freshRoundPendingRef.current = false;
         setLoadingDigest(false);
         setDigestSlow(false);
       }
@@ -3242,8 +3257,8 @@ export default function App() {
   // rather than wherever the finished edition had scrolled to. Only move when the edition
   // actually changed: a "nothing new" answer should leave them beside the button and its notice.
   const freshRoundStartRef = React.useRef<DigestItem[] | null>(null);
-  // Its own flag, not the shared digest spinner: a vote can start a background re-rank that
-  // must not make this button claim it is searching for a new set.
+  // Its own flag, not the shared digest spinner: a settings change can start a background build
+  // that must not make this button claim it is searching for a new set.
   const [startingFreshRound, setStartingFreshRound] = useState(false);
   const searchAnotherRound = () => {
     freshRoundStartRef.current = digest;
@@ -5858,6 +5873,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       setPendingReset(false);
                       setSemanticFeedback([]);
                       setSignals({ moreTopics: [], lessTopics: [], moreIds: [], lessIds: [], more: [], less: [] });
+                      // Rebuild after the cleared state has landed, so the request carries the
+                      // emptied profile rather than the votes it just removed.
+                      setProfileResetAt(Date.now());
                       showToast('Reading preferences reset');
                     }}
                     className={`text-xs transition shrink-0 ${
