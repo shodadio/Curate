@@ -7,8 +7,12 @@
 // back, and hiding the other stories the archive remembers from that publication is a one-time
 // cost paid for it. An old id with no story on file is dropped: its story is beyond the
 // 24-hour window an edition draws from, so no build could hand it back.
+//
+// A vote is different. It holds the title of the one story it was cast on, so it is moved to
+// that story when the story is still on file, and its words are kept without an id when it is
+// not: the ranking can still learn from them, but no record keeps naming a publication.
 
-import { isStoryId, storyIdFor } from './storyId';
+import { isStoryId, legacyStoryIdFor, storyIdFor } from './storyId';
 
 export const DIGEST_CACHE_KEY = 'curator_digest_cache';
 export const EDITIONS_KEY = 'curator_editions';
@@ -17,6 +21,8 @@ export const DIGEST_HISTORY_KEY = 'curator_digest_history';
 export const READING_STATS_KEY = 'curator_reading_stats';
 export const READ_ARTICLES_KEY = 'curator_read_articles';
 export const SAVED_IDS_KEY = 'curator_saved_ids';
+export const SEMANTIC_FEEDBACK_KEY = 'curator_semantic_feedback';
+export const SIGNALS_KEY = 'curator_signals';
 
 export interface StoryIdMigration {
   data: Record<string, string>;
@@ -41,9 +47,18 @@ const isRecord = (value: unknown): value is Json =>
 
 const storyIdOf = (item: Json): string => storyIdFor(text(item.url), text(item.title));
 
+// What a stored story can tell a vote: its own id, the title the vote recorded, and the old
+// publication-wide id it used to be filed under. The last is recomputed from the link, because
+// a library converted by an earlier run no longer stores the old id itself.
+interface StoryRef {
+  id: string;
+  title: string;
+  legacy: string;
+}
+
 // Every story still held in full, under the id it was stored with. Old ids are wide (one per
 // publication), so an id can name several stories.
-const collectStories = (items: unknown, into: Map<string, string[]>): void => {
+const collectStories = (items: unknown, into: Map<string, string[]>, catalogue: StoryRef[]): void => {
   if (!Array.isArray(items)) return;
   for (const item of items) {
     if (!isRecord(item)) continue;
@@ -53,8 +68,31 @@ const collectStories = (items: unknown, into: Map<string, string[]>): void => {
     const known = into.get(storedId) || [];
     if (!known.includes(nextId)) known.push(nextId);
     into.set(storedId, known);
+    catalogue.push({
+      id: nextId,
+      title: text(item.title),
+      legacy: legacyStoryIdFor(text(item.url), text(item.title)),
+    });
   }
 };
+
+const normalizeTitle = (value: string): string =>
+  value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+
+// The one story on file from this publication whose title the vote recorded. A title alone is
+// not enough — round-ups repeat across publications — so the old id has to agree too. Two
+// different stories sharing a title under the same publication cannot both be meant.
+function storyForVote(storedId: string, title: string, catalogue: StoryRef[]): string {
+  const wanted = normalizeTitle(title);
+  if (!storedId || !wanted) return '';
+  const ids = new Set<string>();
+  for (const story of catalogue) {
+    if (!story.legacy || story.legacy !== storedId) continue;
+    if (normalizeTitle(story.title) !== wanted) continue;
+    ids.add(story.id);
+  }
+  return ids.size === 1 ? [...ids][0] : '';
+}
 
 // Rewrites a list of stories to their own ids, dropping duplicates the old scheme collapsed.
 const rewriteStories = (items: unknown): { items: Json[]; changed: boolean } => {
@@ -88,13 +126,14 @@ export function migrateStoryIds(data: Record<string, string>): StoryIdMigration 
 
   // 1. The stories the browser can still name: the edition on screen, the kept editions, saves.
   const stories = new Map<string, string[]>();
+  const catalogue: StoryRef[] = [];
   const cache = parse(next[DIGEST_CACHE_KEY]);
-  if (isRecord(cache)) collectStories(cache.items, stories);
+  if (isRecord(cache)) collectStories(cache.items, stories, catalogue);
   const editions = parse(next[EDITIONS_KEY]);
   if (Array.isArray(editions)) {
-    editions.forEach(entry => { if (isRecord(entry)) collectStories(entry.items, stories); });
+    editions.forEach(entry => { if (isRecord(entry)) collectStories(entry.items, stories, catalogue); });
   }
-  collectStories(parse(next[SAVED_ARTICLES_KEY]), stories);
+  collectStories(parse(next[SAVED_ARTICLES_KEY]), stories, catalogue);
 
   // 2. Give each of those stories its own id.
   if (isRecord(cache) && Array.isArray(cache.items)) {
@@ -138,7 +177,55 @@ export function migrateStoryIds(data: Record<string, string>): StoryIdMigration 
     return known.length > 0 ? known : [storedId];
   };
 
-  // 3. The id-only records: what was shown, read and saved, carried across by the stories above.
+  // 3. The votes. Each one names its publication in the id and its story in the title; the
+  // matching story gets the vote back, so the boost or down-rank it taught is no longer wasted
+  // on an id no story has. A vote whose story is not on file keeps its words but loses the id.
+  const storyIdByLegacyVote = new Map<string, string>();
+  const feedback = parse(next[SEMANTIC_FEEDBACK_KEY]);
+  if (Array.isArray(feedback)) {
+    let feedbackChanged = false;
+    const rewrittenFeedback = feedback.map(entry => {
+      if (!isRecord(entry)) return entry;
+      const storedId = text(entry.id);
+      if (isStoryId(storedId)) return entry;
+      const id = storyForVote(storedId, text(entry.title), catalogue);
+      if (id) storyIdByLegacyVote.set(storedId, id);
+      if (id === storedId) return entry;
+      feedbackChanged = true;
+      return { ...entry, id };
+    });
+    if (feedbackChanged) {
+      next[SEMANTIC_FEEDBACK_KEY] = JSON.stringify(rewrittenFeedback);
+      changed = true;
+    }
+  }
+
+  // The same votes also live as two lists of ids. Only the votes above can say which story an
+  // old id meant, so a list entry no vote accounts for is retired rather than left naming a
+  // whole publication.
+  const signals = parse(next[SIGNALS_KEY]);
+  if (isRecord(signals)) {
+    let signalsChanged = false;
+    const rewriteVoteIds = (value: unknown[]): string[] => {
+      const ids: string[] = [];
+      for (const entry of value) {
+        const storedId = text(entry);
+        const id = isStoryId(storedId) ? storedId : storyIdByLegacyVote.get(storedId) || '';
+        if (id && !ids.includes(id)) ids.push(id);
+      }
+      if (!same(ids, value)) signalsChanged = true;
+      return ids;
+    };
+    const nextSignals: Json = { ...signals };
+    if (Array.isArray(signals.moreIds)) nextSignals.moreIds = rewriteVoteIds(signals.moreIds);
+    if (Array.isArray(signals.lessIds)) nextSignals.lessIds = rewriteVoteIds(signals.lessIds);
+    if (signalsChanged) {
+      next[SIGNALS_KEY] = JSON.stringify(nextSignals);
+      changed = true;
+    }
+  }
+
+  // 4. The id-only records: what was shown, read and saved, carried across by the stories above.
   const history = parse(next[DIGEST_HISTORY_KEY]);
   if (Array.isArray(history)) {
     const shown = new Map<string, number>();

@@ -11,6 +11,8 @@ import {
   READING_STATS_KEY,
   SAVED_ARTICLES_KEY,
   SAVED_IDS_KEY,
+  SEMANTIC_FEEDBACK_KEY,
+  SIGNALS_KEY,
   migrateStoryIds,
 } from '../lib/storyIdMigration.ts';
 
@@ -24,6 +26,14 @@ const ARS_B = 'https://arstechnica.com/tech/2026/11/b/';
 const STRA = 'https://stratechery.com/2026/down-in-dc/';
 
 const story = (id: string, url: string, title: string) => ({ id, url, title, source: 'A publication' });
+
+const vote = (id: string, title: string, choice: 'like' | 'dislike' = 'like') => ({
+  id,
+  vote: choice,
+  title,
+  text: `${title} — the body the ranking learns from`,
+  timestamp: 100,
+});
 
 test('two stories from one publication get ids of their own', () => {
   const first = storyIdFor(ARS_A, 'A');
@@ -100,6 +110,80 @@ test('stored ids become per-story and the records follow them', () => {
   assert.deepEqual(JSON.parse(migrated.data[SAVED_IDS_KEY]).sort(), [idA, idB].sort());
 });
 
+test('a vote is moved onto the story whose title it carries', () => {
+  const migrated = migrateStoryIds({
+    [DIGEST_CACHE_KEY]: JSON.stringify({
+      curatedAt: 1000,
+      items: [story(OLD_ARS, ARS_A, 'A'), story(OLD_ARS, ARS_B, 'B')],
+    }),
+    [SEMANTIC_FEEDBACK_KEY]: JSON.stringify([
+      vote(OLD_ARS, 'B', 'like'),
+      vote(OLD_GONE, 'A story that is no longer on file', 'dislike'),
+    ]),
+    [SIGNALS_KEY]: JSON.stringify({ moreIds: [OLD_ARS], lessIds: [OLD_GONE], moreTopics: [] }),
+  });
+
+  assert.equal(migrated.changed, true);
+  const votes = JSON.parse(migrated.data[SEMANTIC_FEEDBACK_KEY]);
+  assert.equal(votes[0].id, storyIdFor(ARS_B, 'B'), 'the like now boosts the story it was cast on');
+  assert.equal(votes[0].vote, 'like');
+  assert.equal(votes[1].id, '', 'a vote with no story on file names nothing');
+  assert.equal(votes[1].vote, 'dislike', 'its words still teach the ranking');
+  assert.equal(votes[1].text, 'A story that is no longer on file — the body the ranking learns from');
+
+  const signals = JSON.parse(migrated.data[SIGNALS_KEY]);
+  assert.deepEqual(signals.moreIds, [storyIdFor(ARS_B, 'B')], 'the vote list follows the story too');
+  assert.deepEqual(signals.lessIds, [], 'an id no vote accounts for stops naming a publication');
+  assert.deepEqual(signals.moreTopics, []);
+});
+
+test('a vote is re-pointed even when the library was converted before the vote was', () => {
+  const idA = storyIdFor(ARS_A, 'A');
+  const idB = storyIdFor(ARS_B, 'B');
+  // A library converted by the first release no longer stores the old id, so the publication
+  // has to be recognised from the story's link instead.
+  const migrated = migrateStoryIds({
+    [DIGEST_CACHE_KEY]: JSON.stringify({
+      curatedAt: 1000,
+      items: [story(idA, ARS_A, 'A'), story(idB, ARS_B, 'B')],
+    }),
+    [SEMANTIC_FEEDBACK_KEY]: JSON.stringify([vote(OLD_ARS, 'B')]),
+    [SIGNALS_KEY]: JSON.stringify({ moreIds: [OLD_ARS], lessIds: [] }),
+  });
+
+  assert.equal(JSON.parse(migrated.data[SEMANTIC_FEEDBACK_KEY])[0].id, idB);
+  assert.deepEqual(JSON.parse(migrated.data[SIGNALS_KEY]).moreIds, [idB]);
+});
+
+test('a vote is not moved to another publication that ran the same title', () => {
+  const migrated = migrateStoryIds({
+    [DIGEST_CACHE_KEY]: JSON.stringify({
+      curatedAt: 1000,
+      items: [story(OLD_ARS, ARS_A, 'Weekly Roundup'), story(OLD_STRA, STRA, 'Weekly Roundup')],
+    }),
+    [SEMANTIC_FEEDBACK_KEY]: JSON.stringify([
+      vote(OLD_ARS, 'Weekly Roundup', 'like'),
+      vote(OLD_GONE, 'Weekly Roundup', 'dislike'),
+    ]),
+    [SIGNALS_KEY]: JSON.stringify({ moreIds: [OLD_ARS], lessIds: [OLD_GONE] }),
+  });
+
+  const votes = JSON.parse(migrated.data[SEMANTIC_FEEDBACK_KEY]);
+  assert.equal(votes[0].id, storyIdFor(ARS_A, 'Weekly Roundup'), 'the old id says which publication meant it');
+  assert.equal(votes[1].id, '', 'a title shared with another publication does not re-point a vote');
+});
+
+test('a vote already on a story id, and a vote that names nothing, are left alone', () => {
+  const already = storyIdFor(ARS_A, 'A');
+  const stored = {
+    [DIGEST_CACHE_KEY]: JSON.stringify({ curatedAt: 1000, items: [story(already, ARS_A, 'A')] }),
+    [SEMANTIC_FEEDBACK_KEY]: JSON.stringify([vote(already, 'A'), vote('', '')]),
+  };
+  const migrated = migrateStoryIds(stored);
+  assert.equal(migrated.changed, false);
+  assert.deepEqual(migrated.data, stored);
+});
+
 test('an id from the new scheme survives even when its story is no longer stored', () => {
   const stored = {
     [READING_STATS_KEY]: JSON.stringify({ live_01ktjpk01u7b02: { maxDepth: 80, lastRead: 5 } }),
@@ -118,6 +202,8 @@ test('a backup written before per-story ids is converted when it is restored', (
     [DIGEST_HISTORY_KEY]: JSON.stringify([{ id: OLD_ARS, shownAt: 10 }]),
     [READING_STATS_KEY]: JSON.stringify({ [OLD_ARS]: { maxDepth: 70, lastRead: 9 } }),
     [SAVED_ARTICLES_KEY]: JSON.stringify([story(OLD_ARS, ARS_A, 'A')]),
+    [SEMANTIC_FEEDBACK_KEY]: JSON.stringify([vote(OLD_ARS, 'B', 'like')]),
+    [SIGNALS_KEY]: JSON.stringify({ moreIds: [OLD_ARS], lessIds: [] }),
   });
 
   const read = readBackupFile(JSON.stringify(before));
@@ -140,6 +226,8 @@ test('a backup written before per-story ids is converted when it is restored', (
     'the shown record follows both stories the old id named',
   );
   assert.deepEqual(Object.keys(JSON.parse(restored[READING_STATS_KEY])).sort(), [idA, idB].sort());
+  assert.equal(JSON.parse(restored[SEMANTIC_FEEDBACK_KEY])[0].id, idB, 'the restored vote names its story');
+  assert.deepEqual(JSON.parse(restored[SIGNALS_KEY]).moreIds, [idB]);
 
   // The file on disk is left as it was; only the copy written back is converted.
   assert.deepEqual(read.data, before.data);
@@ -150,6 +238,8 @@ test('migrating twice changes nothing the second time', () => {
     [DIGEST_CACHE_KEY]: JSON.stringify({ curatedAt: 1000, items: [story(OLD_ARS, ARS_A, 'A')] }),
     [DIGEST_HISTORY_KEY]: JSON.stringify([{ id: OLD_ARS, shownAt: 10 }]),
     [READ_ARTICLES_KEY]: JSON.stringify([OLD_ARS]),
+    [SEMANTIC_FEEDBACK_KEY]: JSON.stringify([vote(OLD_ARS, 'A'), vote(OLD_GONE, 'Gone')]),
+    [SIGNALS_KEY]: JSON.stringify({ moreIds: [OLD_ARS, OLD_GONE], lessIds: [] }),
   });
   const twice = migrateStoryIds(once.data);
   assert.equal(twice.changed, false);
