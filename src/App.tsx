@@ -5197,40 +5197,42 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         <div key={src.id} className="rounded-xl bg-slate-900/30 border border-slate-900/80 w-full max-w-full overflow-hidden">
                           <div className="p-3 sm:p-3.5">
                           <div className="flex items-start justify-between gap-2 sm:gap-3">
-                            <div className="flex items-start gap-2.5 min-w-0 flex-1">
-                            <div className="w-9 h-9 rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden shrink-0 relative">
-                              {avatarUrl ? (
-                                <img 
-                                  src={avatarUrl} 
-                                  alt={src.title} loading="lazy" 
-                                  className="w-full h-full object-cover rounded-full"
-                                  onLoad={markTinyIcon}
-                                  onError={(e) => {
-                                    (e.currentTarget as HTMLElement).style.display = 'none';
-                                    const fallback = e.currentTarget.parentElement?.querySelector('.src-list-initials');
-                                    if (fallback) fallback.classList.remove('hidden');
-                                  }}
-                                />
-                              ) : null}
-                              <span className={`src-list-initials text-xs font-bold text-amber-400 ${avatarUrl ? 'hidden' : ''}`}>
-                                {src.title.slice(0, 2).toUpperCase()}
+                            {/* One link for the whole row: the avatar is what a reader reaches
+                                for, and a second link to the same feed would only add a tab stop. */}
+                            <a
+                              href={webUrlHref(src.feedUrl)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title={`${src.feedUrl} (opens in a new window)`}
+                              className="group flex min-w-0 flex-1 items-start gap-2.5 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60"
+                            >
+                              <span className="w-9 h-9 rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden shrink-0 relative transition group-hover:border-amber-500/50">
+                                {avatarUrl ? (
+                                  <img 
+                                    src={avatarUrl} 
+                                    alt="" loading="lazy" 
+                                    className="w-full h-full object-cover rounded-full"
+                                    onLoad={markTinyIcon}
+                                    onError={(e) => {
+                                      (e.currentTarget as HTMLElement).style.display = 'none';
+                                      const fallback = e.currentTarget.parentElement?.querySelector('.src-list-initials');
+                                      if (fallback) fallback.classList.remove('hidden');
+                                    }}
+                                  />
+                                ) : null}
+                                <span className={`src-list-initials text-xs font-bold text-amber-400 ${avatarUrl ? 'hidden' : ''}`}>
+                                  {src.title.slice(0, 2).toUpperCase()}
+                                </span>
                               </span>
-                            </div>
 
-                            <div className="min-w-0 flex-1">
-                              <span className="block text-sm font-medium text-slate-100 truncate leading-snug">{src.title}</span>
-                              <a
-                                href={webUrlHref(src.feedUrl)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                title={`${src.feedUrl} (opens in a new window)`}
-                                className="mt-0.5 inline-flex max-w-full items-center gap-1 text-xs text-slate-500 transition hover:text-amber-300"
-                              >
-                                <span className="truncate">{formatFeedUrlForDisplay(src.feedUrl)}</span>
-                                <ExternalLink className="w-3 h-3 shrink-0" />
-                              </a>
-                            </div>
-                          </div>
+                              <span className="min-w-0 flex-1">
+                                <span className="block text-sm font-medium text-slate-100 truncate leading-snug">{src.title}</span>
+                                <span className="mt-0.5 flex max-w-full items-center gap-1 text-xs text-slate-500 transition group-hover:text-amber-300">
+                                  <span className="truncate">{formatFeedUrlForDisplay(src.feedUrl)}</span>
+                                  <ExternalLink className="w-3 h-3 shrink-0" />
+                                </span>
+                              </span>
+                            </a>
 
                           <div className="flex items-center gap-1 shrink-0">
                             {src.paused && (
