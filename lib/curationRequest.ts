@@ -97,15 +97,13 @@ export function readReadingStats(raw: string | null): Record<string, unknown> {
   }
 }
 
-// A refresh must not hand back what the reader already dealt with, so every action in the
-// profile is named. An ordinary build sends none: freshness is judged by what was shown, and
-// down-weighting the whole profile on every run would empty the edition.
 function signalIds(signals: object): { moreIds?: string[]; lessIds?: string[] } {
   return (signals || {}) as { moreIds?: string[]; lessIds?: string[] };
 }
 
+// Every action in the profile is named, so no build — refresh or ordinary — can hand back a
+// story the reader already saved, opened, voted on or hid.
 function actionedIdsFor(input: DigestRequestInput): string[] {
-  if (!input.fresh) return [];
   const signalVotes = signalIds(input.signals);
   const readingIds = Object.keys(input.readingStats || {});
   return Array.from(new Set([

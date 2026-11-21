@@ -23,6 +23,7 @@ import {
   scoreCandidates,
   selectDiverse,
   freshCandidates,
+  rebuildCandidates,
   stableJitter,
   withinDigestWindow,
   type SemanticVoteExample,
@@ -1743,14 +1744,17 @@ async function startServer() {
 
       // A refresh builds a genuinely new edition: actioned pieces never come back, and pieces
       // this browser already showed are skipped. If that leaves nothing, the honest answer is
-      // an empty edition — never the same stories shuffled into a fresh-looking list.
-      if (wantsFreshDigest) {
-        candidatePool = freshCandidates(candidatePool, {
-          previousDigestIds: [...previousDigestIds],
-          shownIds: [...shownIds],
-          actionedIds: [...actionedIds],
-        });
-      }
+      // an empty edition — never the same stories shuffled into a fresh-looking list. An
+      // ordinary build may keep the cards on screen, but it still never reaches back to a story
+      // the reader dealt with or saw in an earlier edition.
+      const exclusions = {
+        previousDigestIds: [...previousDigestIds],
+        shownIds: [...shownIds],
+        actionedIds: [...actionedIds],
+      };
+      candidatePool = wantsFreshDigest
+        ? freshCandidates(candidatePool, exclusions)
+        : rebuildCandidates(candidatePool, exclusions);
 
       // Provider-free semantic ranking: votes change the digest even with no API key.
       const semanticScores = new Map<string, number>();

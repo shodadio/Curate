@@ -898,6 +898,9 @@ export default function App() {
   // Bumped when the reader clears their votes, so the edition is built again against the cleared
   // profile instead of keeping cards ranked by votes that no longer exist.
   const [profileResetAt, setProfileResetAt] = useState<number>(0);
+  // Bumped when a settings change had to wait for a fresh search, so the auto-build effect runs
+  // again once that edition is on screen.
+  const [deferredRebuildTick, setDeferredRebuildTick] = useState<number>(0);
   // Count, density and serendipity live behind one pill instead of filling the first screen
   const [showDigestSettings, setShowDigestSettings] = useState<boolean>(false);
   const [aiProvider, setAiProvider] = useState<string>(() => {
@@ -963,6 +966,9 @@ export default function App() {
   // debounces into a build of its own must not cancel it and drop an ordinary edition in its
   // place, which is the previous cards all over again.
   const freshRoundPendingRef = React.useRef(false);
+  // A setting changed while that search ran is not thrown away. It waits for the fresh edition,
+  // then builds against the cards actually on screen.
+  const deferredRebuildRef = React.useRef(false);
   const feedStreamRequestRef = React.useRef(0);
   // Set when the reader hands off to a feed, so the stream opens at its newest entry
   const scrollFeedStreamTopRef = React.useRef(false);
@@ -1532,11 +1538,16 @@ export default function App() {
     // reader is part-way through, and the rebuild is allowed to pick already-read cards again.
     // A vote is a note for the next edition, as the toast says, so it only changes the payload.
     const timer = setTimeout(() => {
-      if (freshRoundPendingRef.current) return;
+      // A fresh search owns the edition until it answers; a setting changed meanwhile is built
+      // straight after that edition lands.
+      if (freshRoundPendingRef.current) {
+        deferredRebuildRef.current = true;
+        return;
+      }
       generateDigest();
     }, 450);
     return () => clearTimeout(timer);
-  }, [itemCount, serendipityDial, interests, showSetupWizard, profileResetAt]);
+  }, [itemCount, serendipityDial, interests, showSetupWizard, profileResetAt, deferredRebuildTick]);
   useEffect(() => {
     if (activeTab === 'feeds') {
       fetchFeedStream(selectedFeedSource || 'all');
@@ -1768,7 +1779,14 @@ export default function App() {
       window.clearTimeout(slowHint);
       if (digestAbortRef.current === controller) digestAbortRef.current = null;
       if (requestId === digestRequestRef.current) {
-        if (options?.fresh) freshRoundPendingRef.current = false;
+        if (options?.fresh) {
+          freshRoundPendingRef.current = false;
+          // The setting that was waiting now builds against the edition that just arrived.
+          if (deferredRebuildRef.current) {
+            deferredRebuildRef.current = false;
+            setDeferredRebuildTick(Date.now());
+          }
+        }
         setLoadingDigest(false);
         setDigestSlow(false);
       }

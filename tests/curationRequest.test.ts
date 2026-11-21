@@ -57,9 +57,9 @@ test('the edition on screen is not counted as already shown', () => {
   assert.deepEqual(payload.previousDigestIds, ['onScreen']);
 });
 
-test('an ordinary build sends no actioned ids and a stable seed', () => {
+test('an ordinary build names every actioned story too, and keeps the stable seed', () => {
   const payload = buildDigestRequest(input());
-  assert.deepEqual(payload.actionedIds, []);
+  assert.deepEqual(payload.actionedIds.slice().sort(), ['a', 'b', 'muted', 'read', 'saved']);
   assert.equal(payload.seed, 'stable');
   assert.equal(payload.fresh, false);
 });

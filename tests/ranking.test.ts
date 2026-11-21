@@ -22,6 +22,7 @@ import {
   semanticTokens,
   sparseCosine,
   freshCandidates,
+  rebuildCandidates,
   stableJitter,
   stretchTargetFor,
   withinDigestWindow,
@@ -530,6 +531,25 @@ test('a refresh returns nothing rather than reshuffling the old edition', () => 
 test('a refresh keeps every unseen story, including ones from another source', () => {
   const pool = [{ id: 'x' }, { id: 'y' }, { id: 'z' }];
   assert.deepEqual(freshCandidates(pool, { previousDigestIds: ['y'] }).map(item => item.id), ['x', 'z']);
+});
+
+test('an ordinary build keeps the edition on screen but never an older story', () => {
+  const pool = [{ id: 'onScreen' }, { id: 'saved' }, { id: 'shown' }, { id: 'new' }];
+  const kept = rebuildCandidates(pool, {
+    previousDigestIds: ['onScreen'],
+    actionedIds: ['saved', 'onScreen'],
+    shownIds: ['shown'],
+  });
+  assert.deepEqual(kept.map(item => item.id), ['onScreen', 'new']);
+});
+
+test('an ordinary build drops a story the reader read in an earlier edition', () => {
+  assert.deepEqual(rebuildCandidates([{ id: 'read' }, { id: 'unread' }], { actionedIds: ['read'] }).map(item => item.id), ['unread']);
+});
+
+test('an ordinary build returns nothing rather than repeating the last edition', () => {
+  const pool = [{ id: 'a' }, { id: 'b' }];
+  assert.deepEqual(rebuildCandidates(pool, { shownIds: ['a'], actionedIds: ['b'] }), []);
 });
 
 test('buildDeterministicDigest never returns more than the requested edition size', () => {

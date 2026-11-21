@@ -520,6 +520,17 @@ export function freshCandidates<T extends { id: string }>(pool: T[], exclusions:
   );
 }
 
+// An ordinary build replaces the edition on screen. The cards in that edition may stay, but
+// nothing the reader already dealt with, or saw in an earlier edition, may come back.
+export function rebuildCandidates<T extends { id: string }>(pool: T[], exclusions: FreshPoolExclusions): T[] {
+  const keepIds = new Set(exclusions.previousDigestIds || []);
+  const shownIds = new Set(exclusions.shownIds || []);
+  const actionedIds = new Set(exclusions.actionedIds || []);
+  return pool.filter(item =>
+    keepIds.has(item.id) || (!shownIds.has(item.id) && !actionedIds.has(item.id))
+  );
+}
+
 export interface DigestSelectionOptions {
   itemCount: number;
   serendipityDial: number;
