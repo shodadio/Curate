@@ -108,6 +108,10 @@ body {
   /* The page behind the reader is dark, so scrolling must not chain out to it and show a
      slate band above a cream page. */
   overscroll-behavior: contain;
+  /* `overflow-y: auto` alone would leave the other axis scrollable too, so one long address
+     in the body would let the whole page — header and masthead included — slide sideways.
+     The reader is a page you scroll down, never across. */
+  overflow-x: hidden;
   /* Fade the page in with opacity alone: a transform here would become the containing block
      for the floating listening bar, which would then scroll away with the article. */
   animation: reader-fade 220ms ease-out both;
@@ -262,6 +266,7 @@ body {
    2.5rem is the side padding inside the column's border box. */
 .reader-column {
   max-width: calc(62ch + 2.5rem);
+  width: 100%;
   margin-inline: auto;
   font-size: 1.125rem;
 }
@@ -327,6 +332,13 @@ body {
 
 .reader-body p { margin-bottom: 1.45em; }
 .reader-body > p:last-child { margin-bottom: 0; }
+
+/* A pasted address or an unspaced token has nowhere to break, so it used to push the column
+   past the edge of the phone. Break inside the word instead of moving the page. */
+.reader-heading,
+.reader-body p {
+  overflow-wrap: anywhere;
+}
 
 /* Aloud controls sit above the page, reachable from any scroll position, and clear of the
    phone's home indicator. */
