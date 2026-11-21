@@ -320,6 +320,118 @@ body {
   border-top: 1px solid var(--reader-line);
 }
 
+/* A video the piece carries. It keeps the article's measure and its corners, so a player reads
+   as part of the page rather than as a box pasted into it. The frame and the still share one
+  16:9 box, because a player that changes the page's height when it loads moves the words under
+   the reader's eye. */
+.reader-video {
+  margin-inline: 0;
+}
+
+.reader-video video,
+.reader-video-frame {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 0;
+  border-radius: 0.35rem;
+  background-color: var(--reader-track);
+}
+
+.reader-video video {
+  object-fit: contain;
+}
+
+.reader-video-frame iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: inherit;
+}
+
+.reader-video-still {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0.35rem;
+  background-color: var(--reader-track);
+  box-shadow: inset 0 0 0 1px var(--reader-line);
+  color: var(--reader-ink);
+  cursor: pointer;
+}
+
+.reader-video-still:hover { box-shadow: inset 0 0 0 1px var(--reader-accent); }
+
+.reader-video-still img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.7;
+}
+
+.reader-video-play {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 999px;
+  background-color: var(--reader-accent);
+  color: var(--reader-bg);
+  padding-left: 0.15rem;
+}
+
+/* Without a still from the publisher the still is a plain slide, so the label carries the row. */
+.reader-video-caption {
+  position: absolute;
+  bottom: 0.75rem;
+  left: 0.9rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--reader-ink);
+  opacity: 0.75;
+}
+
+.reader-video-fallback {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  border-radius: 0.35rem;
+  border: 1px solid var(--reader-line);
+  padding-inline: 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--reader-ink);
+  text-decoration: none;
+}
+
+.reader-video-fallback:hover { border-color: var(--reader-accent); color: var(--reader-accent); }
+
+.reader-video-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--reader-muted);
+  text-decoration: none;
+}
+
+.reader-video-open:hover { color: var(--reader-accent); }
+
 .reader-listen-trigger { color: var(--reader-accent); }
 .reader-listen-trigger:hover { color: var(--reader-ink); }
 
@@ -338,6 +450,14 @@ body {
 .reader-heading,
 .reader-body p {
   overflow-wrap: anywhere;
+}
+
+/* Opening a piece moves focus to the headline, so a screen reader starts at the top. The page's
+   focus ring then draws a box around the title, which reads as a mistake rather than a focus
+   cue — a headline is not a control — so the heading alone gives the ring up. Every control on
+   the page keeps its own. */
+.reader-heading:focus-visible {
+  outline: none;
 }
 
 /* The full-screen sheets and the settings screen are read top to bottom like a page, so they

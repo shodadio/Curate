@@ -32,6 +32,7 @@ import { parseOpmlText } from './lib/opml';
 import { articleLooksIncomplete, cleanHtml, htmlToReadableText, trimSummaryFurniture } from './lib/markup';
 import { parseArticleAuthor, parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
 import { legacyStoryIdFor, storyIdFor } from './lib/storyId';
+import { findVideoEmbed, videoEmbedFromUrl, type VideoEmbed } from './lib/videoEmbed';
 
 dotenv.config();
 
@@ -1233,14 +1234,22 @@ async function startServer() {
       }
 
       let bannerImage: string | undefined;
+      // A feed that ships its video as an enclosure names it beside the image, so the same tags
+      // are read for both: the picture becomes the lead frame, the video becomes the player.
+      let enclosureVideoUrl = '';
       const mediaTags = block.match(/<media:(?:content|thumbnail)\b[^>]*>/gi) || [];
       for (const tag of mediaTags) {
         const urlMatch = tag.match(/\burl\s*=\s*["']([^"']+)["']/i);
+        if (!urlMatch) continue;
+        if (!enclosureVideoUrl &&
+          (/\bmedium\s*=\s*["']video["']/i.test(tag) || /\btype\s*=\s*["']video\/[^"']+["']/i.test(tag))) {
+          enclosureVideoUrl = urlMatch[1];
+        }
         const isImage = /<media:thumbnail\b/i.test(tag) ||
           /\bmedium\s*=\s*["']image["']/i.test(tag) ||
           /\btype\s*=\s*["']image\/[^"']+["']/i.test(tag) ||
-          (urlMatch && /\.(?:avif|gif|jpe?g|png|webp)(?:[?#]|$)/i.test(urlMatch[1]));
-        if (isImage && urlMatch) {
+          /\.(?:avif|gif|jpe?g|png|webp)(?:[?#]|$)/i.test(urlMatch[1]);
+        if (isImage) {
           bannerImage = urlMatch[1];
           break;
         }
@@ -1252,12 +1261,25 @@ async function startServer() {
         if (enclosureMatch && enclosureMatch[1]) bannerImage = enclosureMatch[1];
       }
 
+      if (!enclosureVideoUrl) {
+        const videoEnclosure = block.match(/<enclosure\b[^>]*url\s*=\s*["']([^"']+)["'][^>]*type\s*=\s*["']video\/[^"']+["'][^>]*>/i) ||
+          block.match(/<enclosure\b[^>]*type\s*=\s*["']video\/[^"']+["'][^>]*url\s*=\s*["']([^"']+)["'][^>]*>/i);
+        if (videoEnclosure && videoEnclosure[1]) enclosureVideoUrl = videoEnclosure[1];
+      }
+
       if (!bannerImage) {
         const imgMatch = fullRaw.match(/<img\b[^>]*src\s*=\s*["'](https?:\/\/[^"']+)["'][^>]*>/i);
         if (imgMatch && imgMatch[1] && !imgMatch[1].includes('feedburner') && !imgMatch[1].includes('tracking') && !imgMatch[1].includes('spacer')) {
           bannerImage = imgMatch[1];
         }
       }
+
+      // The item's own video: a player embedded in its body, an enclosure of type video, or — for
+      // a channel feed — the story's link being the video's own page. Only an address the reader
+      // can play is kept, so an article that merely links to a video stays a plain article.
+      const video: VideoEmbed | null = findVideoEmbed(fullRaw, link) ||
+        (enclosureVideoUrl ? videoEmbedFromUrl(enclosureVideoUrl, link) : null) ||
+        videoEmbedFromUrl(link);
 
       const words = cleanFull.split(/\s+/).filter(Boolean).length;
       const minutes = Math.max(2, Math.round(words / 200));
@@ -1284,7 +1306,11 @@ async function startServer() {
         summary,
         readTime,
         url: link,
-        fullText: cleanFull.length > 120 ? cleanFull : (summary + '\n\n' + 'Read the complete article directly at: ' + link),
+        fullText: cleanFull.length > 120
+          ? cleanFull
+          // A piece with a player is not missing its body: the video is the piece, so the reader
+          // gets the summary and the player instead of a line pointing at the video's own page.
+          : (video ? summary : (summary + '\n\n' + 'Read the complete article directly at: ' + link)),
         // This text came from the cleaner that keeps a link's address, so a reader holding it
         // needs no refresh. Saves written before that change lack the flag and are refreshed.
         linksCleaned: true,
@@ -1292,6 +1318,7 @@ async function startServer() {
         publishedAt,
         publishedAtMs: Number.isFinite(publishedAtMs) ? publishedAtMs : undefined,
         bannerImage,
+        video: video || undefined,
         isOutOfBubble: false,
         why: `From your ${sourceTitle} subscription.`
       });
@@ -1302,16 +1329,24 @@ async function startServer() {
   interface ArticleTextCacheEntry {
     timestamp: number;
     text: string;
+    video: VideoEmbed | null;
   }
   const articleTextCache = new Map<string, ArticleTextCacheEntry>();
   const ARTICLE_TEXT_CACHE_TTL = 24 * 60 * 60 * 1000;
   const ARTICLE_TEXT_FAILURE_TTL = 10 * 60 * 1000;
   const MAX_ARTICLE_TEXT_CACHE_ENTRIES = 300;
 
-  const extractArticleBody = (html: string, baseUrl = ''): string => {
+  // The part of a page that is the piece itself. Both the text and the video are read from it, so
+  // a player in the site's sidebar is never mistaken for the article's own.
+  const articleRegion = (html: string): string => {
     const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
-    const mainMatch = articleMatch ? null : html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
-    let body = articleMatch?.[1] || mainMatch?.[1] || '';
+    if (articleMatch?.[1]) return articleMatch[1];
+    const mainMatch = html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
+    return mainMatch?.[1] || '';
+  };
+
+  const extractArticleBody = (html: string, baseUrl = ''): string => {
+    let body = articleRegion(html);
     if (!body) return '';
 
     body = body
@@ -1347,27 +1382,34 @@ async function startServer() {
     return text;
   };
 
-  const fetchArticleBody = async (targetUrl: string): Promise<string | null> => {
+  const fetchArticleBody = async (targetUrl: string): Promise<{ text: string; video: VideoEmbed | null }> => {
     let cacheKey = '';
     try {
       const parsedUrl = new URL(targetUrl);
       parsedUrl.hash = '';
       cacheKey = parsedUrl.toString();
     } catch {
-      return null;
+      return { text: '', video: null };
     }
 
     const cached = articleTextCache.get(cacheKey);
     const cacheTtl = cached?.text ? ARTICLE_TEXT_CACHE_TTL : ARTICLE_TEXT_FAILURE_TTL;
-    if (cached && Date.now() - cached.timestamp < cacheTtl) return cached.text || null;
+    if (cached && Date.now() - cached.timestamp < cacheTtl) {
+      return { text: cached.text || '', video: cached.video || null };
+    }
     if (cached) articleTextCache.delete(cacheKey);
 
     let text = '';
+    let video: VideoEmbed | null = null;
     try {
       // Reuse the same public-host, redirect, timeout, and response-size checks as feed fetching.
       const page = await fetchPublicPage(cacheKey, 6000);
       if (page.ok && (!page.contentType || /(?:text\/html|application\/xhtml\+xml)/i.test(page.contentType))) {
-        text = extractArticleBody(page.text, page.url || cacheKey);
+        const pageUrl = page.url || cacheKey;
+        text = extractArticleBody(page.text, pageUrl);
+        // The page often carries a player the feed never mentioned, so the video is looked for
+        // here too. A page with no article region is a video page of its own, read whole.
+        video = findVideoEmbed(articleRegion(page.text) || page.text, pageUrl);
       }
     } catch {
       // Preserve the feed excerpt when an article is unavailable, blocked, or fails extraction.
@@ -1377,8 +1419,8 @@ async function startServer() {
       const oldestKey = articleTextCache.keys().next().value;
       if (oldestKey) articleTextCache.delete(oldestKey);
     }
-    articleTextCache.set(cacheKey, { timestamp: Date.now(), text });
-    return text || null;
+    articleTextCache.set(cacheKey, { timestamp: Date.now(), text, video });
+    return { text, video };
   };
 
   // A piece saved before the reader credited writers has no author on it. Its own page still
@@ -1436,7 +1478,9 @@ async function startServer() {
     await Promise.all(Array.from({ length: workerCount }, async () => {
       while (nextTarget < targets.length) {
         const item = targets[nextTarget++];
-        const articleText = await fetchArticleBody(item.url);
+        const { text: articleText, video } = await fetchArticleBody(item.url);
+        // A player on the page is the item's video even when its text is no fuller than the feed's.
+        if (video && !item.video) item.video = video;
         // A page that still stops at a teaser (a paywall, or a stub the publisher never expanded)
         // is no fuller than the feed's own text, so the stored body stays.
         if (!articleText || articleLooksIncomplete({ url: item.url, fullText: articleText })) continue;
@@ -2093,10 +2137,10 @@ CURATION RULES:
       return;
     }
     try {
-      const text = await fetchArticleBody(target);
-      res.json({ text: text || '' });
+      const { text, video } = await fetchArticleBody(target);
+      res.json({ text: text || '', video: video || null });
     } catch {
-      res.status(200).json({ text: '' });
+      res.status(200).json({ text: '', video: null });
     }
   });
 
@@ -2116,7 +2160,7 @@ CURATION RULES:
         if (!id || !target) continue;
         let text = '';
         try {
-          text = (await fetchArticleBody(target)) || '';
+          text = (await fetchArticleBody(target)).text || '';
         } catch {
           // A story that cannot be read now keeps its stored body and can be retried later.
         }
