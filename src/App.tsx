@@ -895,12 +895,9 @@ export default function App() {
     );
   });
   const [compactCards, setCompactCards] = useState<boolean>(() => safeGetItem('curator_compact_cards') === '1');
-  // Bumped when the reader clears their votes, so the edition is built again against the cleared
-  // profile instead of keeping cards ranked by votes that no longer exist.
-  const [profileResetAt, setProfileResetAt] = useState<number>(0);
-  // Bumped when a settings change had to wait for a fresh search, so the auto-build effect runs
-  // again once that edition is on screen.
-  const [deferredRebuildTick, setDeferredRebuildTick] = useState<number>(0);
+  // Bumped when an edition has to be built again outside the auto-build's own triggers: the
+  // reader cleared their votes, or a settings change had to wait for a fresh search.
+  const [rebuildTick, setRebuildTick] = useState<number>(0);
   // Count, density and serendipity live behind one pill instead of filling the first screen
   const [showDigestSettings, setShowDigestSettings] = useState<boolean>(false);
   const [aiProvider, setAiProvider] = useState<string>(() => {
@@ -1547,7 +1544,7 @@ export default function App() {
       generateDigest();
     }, 450);
     return () => clearTimeout(timer);
-  }, [itemCount, serendipityDial, interests, showSetupWizard, profileResetAt, deferredRebuildTick]);
+  }, [itemCount, serendipityDial, interests, showSetupWizard, rebuildTick]);
   useEffect(() => {
     if (activeTab === 'feeds') {
       fetchFeedStream(selectedFeedSource || 'all');
@@ -1712,6 +1709,13 @@ export default function App() {
       // Freshness history and the reading tally live in this browser; the request module turns
       // them, the profile and the provider settings into the payload the server ranks against.
       const shownHistory = readShownHistory(safeGetItem('curator_digest_history'));
+      // A cached edition from an earlier day is not the edition the reader is in: its cards are
+      // history, so they are neither kept nor treated as unseen. A build made today keeps its
+      // own cards, which is what stops a settings change from emptying the page being read.
+      const currentDigestIds = digest.length > 0 && digestCuratedAt > 0
+        && new Date(digestCuratedAt).toDateString() !== new Date().toDateString()
+        ? []
+        : digest.map(item => item.id);
       const payload = buildDigestRequest({
         sources: activeSources(sources),
         signals,
@@ -1719,7 +1723,7 @@ export default function App() {
         feedback: semanticFeedback,
         readingStats: readReadingStats(safeGetItem('curator_reading_stats')),
         shownHistory,
-        currentDigestIds: digest.map(item => item.id),
+        currentDigestIds,
         savedIds,
         mutedIds: Object.keys(mutedCards),
         serendipityDial,
@@ -1784,7 +1788,7 @@ export default function App() {
           // The setting that was waiting now builds against the edition that just arrived.
           if (deferredRebuildRef.current) {
             deferredRebuildRef.current = false;
-            setDeferredRebuildTick(Date.now());
+            setRebuildTick(tick => tick + 1);
           }
         }
         setLoadingDigest(false);
@@ -5893,7 +5897,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       setSignals({ moreTopics: [], lessTopics: [], moreIds: [], lessIds: [], more: [], less: [] });
                       // Rebuild after the cleared state has landed, so the request carries the
                       // emptied profile rather than the votes it just removed.
-                      setProfileResetAt(Date.now());
+                      setRebuildTick(tick => tick + 1);
                       showToast('Reading preferences reset');
                     }}
                     className={`text-xs transition shrink-0 ${

@@ -71,6 +71,16 @@ test('a refresh names every action in the profile so nothing comes back twice', 
   assert.equal(payload.fresh, true);
 });
 
+test('the most recently read stories lead the actioned list, so a cap cannot drop them', () => {
+  const payload = buildDigestRequest(input({
+    signals: {},
+    savedIds: [],
+    mutedIds: [],
+    readingStats: { older: { lastRead: 1 }, newest: { lastRead: 900 }, middle: { lastRead: 500 } },
+  }));
+  assert.deepEqual(payload.actionedIds, ['newest', 'middle', 'older']);
+});
+
 test('the freshness history merges by id, keeps the newest and is capped', () => {
   const merged = shownHistoryAfter([{ id: 'same', shownAt: 1 }, { id: 'older', shownAt: 2 }], [{ id: 'same' }], 99);
   assert.deepEqual(merged, [{ id: 'older', shownAt: 2 }, { id: 'same', shownAt: 99 }]);

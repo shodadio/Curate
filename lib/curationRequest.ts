@@ -101,11 +101,23 @@ function signalIds(signals: object): { moreIds?: string[]; lessIds?: string[] } 
   return (signals || {}) as { moreIds?: string[]; lessIds?: string[] };
 }
 
+// The server caps this list and an edition only draws on the last day of publishing, so the most
+// recently read stories come first: one read an hour ago must survive the cap ahead of one read
+// weeks ago.
+function readingIdsByRecency(readingStats: Record<string, unknown>): string[] {
+  const lastReadAt = (id: string): number => {
+    const stats = readingStats[id];
+    const stamp = stats && typeof stats === 'object' ? Number((stats as { lastRead?: unknown }).lastRead) : 0;
+    return Number.isFinite(stamp) ? stamp : 0;
+  };
+  return Object.keys(readingStats).sort((a, b) => lastReadAt(b) - lastReadAt(a));
+}
+
 // Every action in the profile is named, so no build — refresh or ordinary — can hand back a
 // story the reader already saved, opened, voted on or hid.
 function actionedIdsFor(input: DigestRequestInput): string[] {
   const signalVotes = signalIds(input.signals);
-  const readingIds = Object.keys(input.readingStats || {});
+  const readingIds = readingIdsByRecency(input.readingStats || {});
   return Array.from(new Set([
     ...input.savedIds,
     ...input.mutedIds,
