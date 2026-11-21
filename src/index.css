@@ -340,6 +340,14 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* The full-screen sheets and the settings screen are read top to bottom like a page, so they
+   scroll that way only: a long address or unspaced token breaks inside the panel rather than
+   widening it, which is what let a phone drag the reading view sideways. */
+.no-sideways {
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+}
+
 /* Aloud controls sit above the page, reachable from any scroll position, and clear of the
    phone's home indicator. */
 .reader-listen {

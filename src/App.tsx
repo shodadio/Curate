@@ -5392,7 +5392,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
         {/* TAB 4: SETTINGS */}
         {activeTab === 'settings' && (
-          <div className="space-y-4 animate-fade-in">
+          <div className="no-sideways space-y-4 animate-fade-in">
             <div>
               <h2 className="text-xl font-semibold tracking-tight text-slate-100">Settings</h2>
             </div>
@@ -6473,7 +6473,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
       </nav>
 
       {showStartupApiPrompt && createPortal(
-        <div className="fixed inset-0 z-[110] bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 safe-modal">
+        <div className="no-sideways fixed inset-0 z-[110] bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 safe-modal">
           <div
             role="alertdialog"
             aria-modal="true"
@@ -6521,7 +6521,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
       {/* Add Source Modal — portalled as well, so it paints above the setup wizard */}
       {showAddSourceModal && createPortal(
-        <div className="fixed inset-0 z-[85] bg-slate-950/85 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
+        <div className="no-sideways fixed inset-0 z-[85] bg-slate-950/85 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
           <div
             ref={addSourceOverlayRef}
             role="dialog"
@@ -6625,7 +6625,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
       {/* First-run semantic setup — portalled to <body> so the overlay always covers
           the whole screen (header and dock included), whichever tab opened it */}
       {showSetupWizard && createPortal(
-        <div className="fixed inset-0 z-[80] bg-slate-950/90 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
+        <div className="no-sideways fixed inset-0 z-[80] bg-slate-950/90 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
           <div
             ref={wizardOverlayRef}
             role="dialog"
@@ -6844,7 +6844,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
       {/* OPML Import Modal */}
       {showImportModal && createPortal(
-        <div className="fixed inset-0 z-[85] bg-slate-950/85 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
+        <div className="no-sideways fixed inset-0 z-[85] bg-slate-950/85 backdrop-blur-md flex items-start justify-center p-4 safe-modal overflow-y-auto overscroll-contain">
           <div
             ref={importOverlayRef}
             role="dialog"
@@ -7015,7 +7015,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
           onClick={() => setShowDigestSettings(false)}
         >
           <div
-            className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl border border-slate-800 bg-slate-900 p-5 pb-[calc(1.5rem+env(safe-area-inset-bottom))] space-y-5 shadow-2xl"
+            className="no-sideways w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl border border-slate-800 bg-slate-900 p-5 pb-[calc(1.5rem+env(safe-area-inset-bottom))] space-y-5 shadow-2xl"
             onClick={event => event.stopPropagation()}
           >
             <div className="flex items-start justify-between gap-3">

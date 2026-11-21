@@ -183,7 +183,7 @@ export function WeeklyReviewModal({
         role="dialog"
         aria-modal="true"
         aria-label="Weekly Reading Review"
-        className="w-full max-w-2xl max-h-[calc(100dvh-1.5rem)] overflow-y-auto overscroll-contain bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl my-auto relative text-slate-100"
+        className="no-sideways w-full max-w-2xl max-h-[calc(100dvh-1.5rem)] overflow-y-auto overscroll-contain bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl my-auto relative text-slate-100"
         onClick={e => e.stopPropagation()}
       >
         {/* Subtle warm ambient header banner */}
@@ -408,7 +408,7 @@ export function WeeklyReviewModal({
               <span className="text-xs text-slate-400">{recentItems.length} articles</span>
             </div>
 
-            <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+            <div className="no-sideways space-y-2 max-h-56 overflow-y-auto pr-1">
               {recentItems.map(item => (
                 <div 
                   key={item.id}
