@@ -62,7 +62,10 @@ export const linkLabelsOnly = (paragraph: string): string =>
 // Standard Wide / Links / Standard Orange"), which then read as the opening of the article.
 // A single short "Links" paragraph can be genuine prose, so labels are only dropped when at
 // least three in a row match.
-const chromeLabel = /^(?:[•*·]\s*)?(?:story text|story text size|text size|font size|line height|size|small|small standard large|standard large|width\s*\*?|standard wide|wide|links?|standard (?:orange|blue|green|white|black)|dark mode|light mode|reader mode|reading mode)$/i;
+// The publisher's own page ships the same widget with each select box still on its label's line,
+// because the options are the words of the block they sit in ("Size Small Standard Large",
+// "Width * Standard Wide", "Links Standard Orange"). A label therefore carries its options.
+const chromeLabel = /^(?:[•*·]\s*)?(?:story text|story text size|text size|font size|line height|size|small|small standard large|standard large|width\s*\*?|standard wide|wide|links?|standard (?:orange|blue|green|white|black)|dark mode|light mode|reader mode|reading mode)(?:\s+(?:small|standard|large|wide|narrow|orange|blue|green|white|black))*$/i;
 
 const dropChromeRuns = (paragraphs: string[]): string[] => {
   const isLabel = (paragraph: string) => paragraph.length <= 30 && chromeLabel.test(paragraph);
@@ -117,6 +120,26 @@ export const isMediaCreditParagraph = (paragraph: string): boolean => {
   return text.length <= 240 && mediaCreditLabel.test(text) &&
     (mediaCreditWords.test(text) || mediaCreditName.test(text));
 };
+
+// A player's own controls reach the clean text as paragraphs, because a player is not one of the
+// tags the cleaner strips: Substack ships its podcast player's labels as "Playback speed",
+// "Share post", "Share post at current time", "Share from 0:00" and a bare "0:00", and they land
+// in the reader exactly where the player should be. None of them is prose, and each has to be the
+// whole of a short paragraph, so a sentence that merely uses the words is left alone.
+const playerChrome = /^(?:playback (?:speed|rate)|share post(?: at (?:current time|\d{1,2}:\d{2}(?::\d{2})?))?|share from \d{1,2}:\d{2}(?::\d{2})?|download (?:audio|video|episode|transcript)|(?:show|hide|view) transcript|\d{1,2}:\d{2}(?::\d{2})?)$/i;
+
+/** True for a line that is one of a media player's controls rather than part of the article. */
+export const isPlayerChrome = (paragraph: string): boolean =>
+  paragraph.length <= 40 && playerChrome.test(paragraph.trim());
+
+// A cleaner older than this build separated the digits of a large number ("74, 000", "1. 79"),
+// and bodies saved by it still carry that damage. Only the shapes that bug produced are rejoined:
+// a three-digit thousands group and a two-digit decimal. Anything else keeps its space, so a date
+// ("On December 15, 2026") is two numbers and stays that way.
+export const repairSplitDigits = (text: string): string =>
+  text
+    .replace(/(\d), (\d{3})(?!\d)/g, '$1,$2')
+    .replace(/(\d)\. (\d{2})(?!\d)/g, '$1.$2');
 
 // Some publishers print a quotation and the attribution that follows it as two paragraphs
 // (“… more in the user,” / “said Jackson G. Lu, PhD, an associate professor…”), so the reader
@@ -200,6 +223,13 @@ const toolLink = /^(?:rss feed|print|email|e-mail|share|comments?|permalink|twit
 // A related-reading block opens with a heading and then runs to the end of the page.
 const relatedHeading = /^(?:more by\s+\p{Lu}[\p{L}'’.-]*(?:\s+\p{Lu}[\p{L}'’.-]*){0,3}|related(?: (?:stories|articles|posts|reading|content|coverage))?|read (?:next|more)|you (?:might|may) also like|recommended(?: for you)?)$/iu;
 
+// A podcast page ends with its own player furniture: "Discussion about this video", the show's
+// blurb, "Listen on Substack App / Apple Podcasts", "Appears in episode" and a list of recent
+// episodes. Feeds carry the whole block, so the reader got a column of episode links where the
+// piece ended. The names are specific enough that a real article almost never uses one as a
+// heading, so the first of them closes the piece.
+const podcastFurnitureHeading = /^(?:discussion about this (?:video|episode|podcast)|appears in episode|recent episodes)$/i;
+
 // The site's own sidebar, which most publishers repeat under the piece: a previous-article
 // arrow, a membership block, then sections of links under headings and dates. Each line on
 // its own looks harmless, so the run is only cut when it holds a date or a "View All" link.
@@ -258,6 +288,18 @@ export const dropEndingFurniture = (paragraphs: string[]): string[] => {
   for (let index = kept.length - 1; index >= Math.floor(kept.length / 2); index--) {
     const text = wordsOf(kept[index]);
     if (text.length <= 80 && relatedHeading.test(text)) {
+      end = index;
+      break;
+    }
+  }
+
+  // The podcast player's furniture opens partway through that block, so the first of its headings
+  // is the cut: later ones ("Recent Episodes") sit after it and would leave the show's blurb
+  // behind. Unlike a related-reading heading, this one is trusted anywhere in the piece, because
+  // a podcast page prints its episode list under exactly one of these names.
+  for (let index = 1; index < end; index++) {
+    const text = wordsOf(kept[index]);
+    if (text.length <= 60 && podcastFurnitureHeading.test(text)) {
       end = index;
       break;
     }
@@ -405,8 +447,10 @@ export const htmlToReadableText = (html: string, baseUrl = ''): string => {
       const words = linkLabelsOnly(paragraph);
       return !(words.length < 180 && /^(click here|subscribe|sign up|follow me|read more|read on|learn more|share this|advertisement)\b/i.test(words));
     })
-    // "* Subscribers only" and its siblings are paywall footnotes, not article text.
-    .filter(paragraph => !/^\*?\s*(?:subscribers?|members?)\s*only\.?$/i.test(linkLabelsOnly(paragraph)))
+    // "* Subscribers only" and its siblings are paywall footnotes, not article text. The footnote's
+    // own offer ("Learn more") is glued to the line when it came from the page rather than a feed,
+    // so a trailing offer does not make the line part of the piece.
+    .filter(paragraph => !/^\*?\s*(?:subscribers?|members?)\s*only\.?(?:\s+learn more)?$/i.test(linkLabelsOnly(paragraph)))
     .filter(paragraph => {
       const words = linkLabelsOnly(paragraph);
       return !(words.length <= 60 && bylineParagraph.test(words));
@@ -416,6 +460,8 @@ export const htmlToReadableText = (html: string, baseUrl = ''): string => {
     .filter(paragraph => !/^\[[^\]\n]{0,80}\]$/.test(paragraph))
     // "Watch on Aeon" is the player's call to action, left behind when the video is dropped.
     .filter(paragraph => !/^(?:[Ww]atch|[Ll]isten|[Vv]iew|[Pp]lay|[Rr]ead|[Ss]ee)\s+(?:on|at|in|via)\s+[\p{Lu}][\p{L}\s.&’']{1,30}$/u.test(paragraph))
+    // The player's own controls are the player's, not the article's.
+    .filter(paragraph => !isPlayerChrome(linkLabelsOnly(paragraph).trim()))
     // A caption that is nothing but a hashtag ("#nofilter") is image furniture.
     .filter(paragraph => !/^#[\p{L}\d_]{2,30}$/u.test(paragraph))
     .filter(paragraph => !/^the post .+ appeared first on /i.test(linkLabelsOnly(paragraph)));
@@ -594,7 +640,10 @@ export function articleNeedsLinkRefresh(item: {
 // A feed can carry only the opening of a piece: a short body, a sentence that runs out with an
 // ellipsis, or a "Read more" line where the rest should be. The reader then looks as if it cut
 // the story off mid-thought, so such a piece earns one page read when it is opened.
-const TEASER_TAIL = /(?:\.{3}|…|\[\s*…\s*\]|\[read more\]\([^)]*\)|read more|continue reading|read (?:the )?(?:full|complete) (?:article|story|post|piece))$/i;
+// The marker is often a link in the feed's markup ("[Read full article](https://…)"), or a plain
+// "Read the full story at https://…" sentence. In both forms the address belongs to the marker,
+// not to the article; treating it as the end of the piece leaves the reader with the teaser.
+const TEASER_TAIL = /(?:\.{3}|…|\[\s*…\s*\]|(?:\[\s*)?(?:read more|continue reading|read (?:the )?(?:full|complete) (?:article|story|post|piece))(?:\s+at\s*:?\s*https?:\/\/\S+)?\s*\]?(?:\([^)]*\))?)$/i;
 const TEASER_MIN_CHARS = 700;
 
 export function articleLooksIncomplete(item: { url?: string; fullText?: string }): boolean {

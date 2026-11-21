@@ -18,12 +18,14 @@ import { DigestEmptyState } from './components/DigestEmptyState';
 import { SettingsSection } from './components/SettingsSection';
 import { SourceDescription } from './components/SourceDescription';
 import { SourceFeedLink } from './components/SourceFeedLink';
+import { ReaderVideo } from './components/ReaderVideo';
 import { NewBuildPrompt } from './components/NewBuildPrompt';
+import { readVideoEmbed, type VideoEmbed } from '../lib/videoEmbed';
 import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
 import { safeGetItem, safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, readAppData, type StorageFailure } from './storage';
 import { readBackupFile, restorePlan } from '../lib/backup';
 import { migrateStoryIds } from '../lib/storyIdMigration';
-import { MAX_EDITIONS, editionDayLabel, editionMinutes as editionMinutesFor, readEditions, recordEdition, type Edition } from '../lib/editions';
+import { MAX_EDITIONS, editionDayLabel, editionMinutes as editionMinutesFor, editionStoryCount, readEditions, recordEdition, type Edition } from '../lib/editions';
 import { formatBytes, measureStorage, pruneArticleBodies, pruneReadingStats, type StorageReport } from '../lib/storageHealth';
 import { activeSources, applyFeedFailures, resumeFeed } from '../lib/sourceRetirement';
 import {
@@ -68,7 +70,7 @@ import {
   splitIntoSentences,
 } from '../lib/speech';
 import { formatBuildStamp } from '../lib/buildStamp';
-import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, joinContinuedParagraphs, linkLabelsOnly, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, isPlayerChrome, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
 
 // One-click provider addresses: the popular OpenAI-compatible services, so a working setup
 // starts with a name and a key rather than a copied URL and a guessed model ID.
@@ -165,6 +167,9 @@ interface DigestItem {
   fullText: string;
   isOutOfBubble: boolean;
   bannerImage?: string;
+  // A video the feed or the piece's own page carried, played inside the reader instead of
+  // sending the reader out to the publisher to watch it.
+  video?: VideoEmbed;
   avatar?: string;
   publishedAt?: string;
   quote?: string;
@@ -301,9 +306,8 @@ function buildArticleParagraphs(text: string): string[] {
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/\u00a0/g, ' ')
     .replace(/<[^>]+>/g, ' ')
-    // Articles stored before the cleaner was fixed still carry a space inside "U. S.",
-    // "1. 79" and "74, 000"; repair them here so old saves read correctly too
-    .replace(/(\d)([.,])\s+(\d)/g, '$1$2$3')
+    // Articles stored before the cleaner was fixed still carry "U. S." for "U.S."; only the
+    // dotted-abbreviation shape is rejoined here, so real prose keeps its spaces.
     .replace(/\b(?:[A-Za-z]\.\s+){1,}[A-Za-z]\./g, run => run.replace(/\s+/g, ''))
     .replace(/[ \t]+/g, ' ')
     .replace(/ *\n */g, '\n')
@@ -314,7 +318,7 @@ function buildArticleParagraphs(text: string): string[] {
     .replace(/([a-z])([.!?])(?=[A-Z][a-z])/g, '$1$2 ')
     .replace(/\n{3,}/g, '\n\n');
 
-  const paragraphs = clean
+  const paragraphs = repairSplitDigits(clean)
     .split(/\n{2,}/)
     .map(paragraph => {
       let next = paragraph
@@ -344,6 +348,9 @@ function buildArticleParagraphs(text: string): string[] {
     .filter(paragraph => !/^\[[^\]\n]{0,80}\]$/.test(paragraph))
     // "Watch on Aeon" is the player's call to action, left behind when the video is dropped.
     .filter(paragraph => !/^(?:[Ww]atch|[Ll]isten|[Vv]iew|[Pp]lay|[Rr]ead|[Ss]ee)\s+(?:on|at|in|via)\s+[\p{Lu}][\p{L}\s.&’']{1,30}$/u.test(paragraph))
+    // A stored body can still carry a player's controls ("Playback speed", "Share post"), which
+    // are the player's words rather than the article's.
+    .filter(paragraph => !isPlayerChrome(linkLabelsOnly(paragraph).trim()))
     // A caption that is nothing but a hashtag ("#nofilter") is image furniture.
     .filter(paragraph => !/^#[\p{L}\d_]{2,30}$/u.test(paragraph))
     .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph));
@@ -2934,6 +2941,9 @@ export default function App() {
       if (!response.ok) return;
       const data = await response.json().catch(() => ({}));
       const text = typeof data?.text === 'string' ? data.text : '';
+      // The page may carry the video the feed only pointed at, so a piece opened before this
+      // build can gain its player along with its citations.
+      const video = readVideoEmbed(data?.video);
       // Short text means the extractor found the page's chrome rather than the piece, so the
       // stored body stays the better read. A page that still stops at a teaser (a paywall, or a
       // feed excerpt the publisher never expanded) is no fuller than what is already stored.
@@ -2941,7 +2951,7 @@ export default function App() {
       if (articleLooksIncomplete(item) && articleLooksIncomplete({ url: item.url, fullText: text })) return;
       const refreshedAt = Date.now();
       const upgrade = (entry: DigestItem): DigestItem => entry.id === item.id
-        ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt }
+        ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt, video: entry.video || video || undefined }
         : entry;
       setSelectedArticle(prev => (prev && prev.id === item.id ? upgrade(prev) : prev));
       setSavedArticles(prev => prev.map(upgrade));
@@ -3328,6 +3338,7 @@ export default function App() {
     : mutedDigestItems.length > 0
       ? `${digest.length} ${digest.length === 1 ? 'story' : 'stories'} · ${mutedDigestItems.length} hidden`
       : `${digest.length} ${digest.length === 1 ? 'story' : 'stories'} worth your time`;
+  const archivedStoryCount = editionStoryCount(editions);
 
   const restoreAllMutedCards = () => {
     const restoredIds = mutedDigestItems.map(item => item.id);
@@ -3359,6 +3370,14 @@ export default function App() {
   };
   const currentCalibrationItem = calibrationCandidates[calibrationIndex];
   const articleParagraphs = selectedArticle ? buildArticleParagraphs(selectedArticle.fullText) : [];
+  // A video read back from storage is checked again before the reader plays it, so a damaged save
+  // or a hand-edited backup cannot put an arbitrary page in a frame.
+  const articleVideo = selectedArticle ? readVideoEmbed(selectedArticle.video) : null;
+  // A piece with a video gives the video the lead slot: a picture above the player would show the
+  // same frame twice, so the feed's own still becomes the player's still instead.
+  const articleVideoWithPoster = articleVideo
+    ? { ...articleVideo, poster: articleVideo.poster || selectedArticle?.bannerImage }
+    : null;
   const readAloudActive = Boolean(selectedArticle && speechArticleId === selectedArticle.id);
   // The tick on the progress line marks the furthest point this piece has been read to, so
   // scrolling back up does not wipe out where the reader actually got to.
@@ -3670,7 +3689,7 @@ export default function App() {
               </div>
             </div>
 
-            {selectedArticle.bannerImage && (
+            {!articleVideoWithPoster && selectedArticle.bannerImage && (
               <figure className="reader-figure font-sans mt-7">
                 <img
                   src={selectedArticle.bannerImage}
@@ -3680,6 +3699,10 @@ export default function App() {
                   onError={(event) => { (event.currentTarget.parentElement as HTMLElement).style.display = 'none'; }}
                 />
               </figure>
+            )}
+
+            {articleVideoWithPoster && (
+              <ReaderVideo video={articleVideoWithPoster} title={selectedArticle.title} />
             )}
 
             {hasCuratorNote(selectedArticle.why) && (
@@ -3987,7 +4010,7 @@ export default function App() {
                     Earlier editions
                   </span>
                   <span className="text-slate-500">
-                    {editions.length === 1 ? '1 kept' : `${editions.length} kept`}
+                    {archivedStoryCount} {archivedStoryCount === 1 ? 'story' : 'stories'}
                     <ChevronDown className="ml-1 inline w-3.5 h-3.5 transition-transform group-open:rotate-180" />
                   </span>
                 </summary>

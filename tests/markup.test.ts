@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { articleLooksIncomplete, articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, splitDenseParagraph, splitSentences, trimSummaryFurniture } from '../lib/markup.ts';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, repairSplitDigits, splitDenseParagraph, splitSentences, trimSummaryFurniture } from '../lib/markup.ts';
 
 test('only a piece saved before links were kept is refreshed', () => {
   assert.equal(articleNeedsLinkRefresh({ url: 'https://example.com/story' }), true);
@@ -220,9 +220,29 @@ test('htmlToReadableText keeps two label-like words in a row, which can be real 
   assert.equal(body, 'Links\n\nSize\n\nReal article text starts here.');
 });
 
+test('htmlToReadableText drops the settings widget when a page keeps each label with its options', () => {
+  // The same display controls on Ars Technica's own page. A feed hands over each row as its own
+  // paragraph; a page hands over the select box on the line of the label it belongs to, so the
+  // line reads "Size Small Standard Large" rather than four separate labels.
+  const body = htmlToReadableText([
+    '<div><span>Story text</span></div>',
+    '<div><label>Size</label><select><option>Small</option><option>Standard</option><option>Large</option></select></div>',
+    '<div><label>Width <span>*</span></label><select><option>Standard</option><option>Wide</option></select></div>',
+    '<div><label>Links</label><select><option>Standard</option><option>Orange</option></select></div>',
+    '<div><span>* Subscribers only</span><br><a href="https://example.com/subscribe">Learn more</a></div>',
+    '<p>Real article text starts here.</p>',
+  ].join(''));
+  assert.equal(body, 'Real article text starts here.');
+});
+
 test('htmlToReadableText drops paywall footnotes that arrive as paragraphs', () => {
   const body = htmlToReadableText('<p>* Subscribers only</p><p>Learn more</p><p>Real article text starts here.</p>');
   assert.equal(body, 'Real article text starts here.');
+  // On the page the offer sits on the footnote's own line, which still makes it a footnote.
+  const inline = htmlToReadableText(
+    '<p>* Subscribers only<br><a href="https://example.com/subscribe">Learn more</a></p><p>Real article text starts here.</p>',
+  );
+  assert.equal(inline, 'Real article text starts here.');
 });
 
 test('htmlToReadableText drops a byline paragraph from a teaser body', () => {
@@ -250,6 +270,63 @@ test('htmlToReadableText drops bracket-only footnote debris', () => {
 
 test('htmlToReadableText drops a player call to action', () => {
   assert.equal(htmlToReadableText('<p>Body text here.</p><p>Watch on Aeon</p>'), 'Body text here.');
+});
+
+test('htmlToReadableText drops the controls a media player ships as labels', () => {
+  // Substack's podcast player, as its page hands it over: the controls are paragraphs, and the
+  // player itself is not a tag the cleaner can strip.
+  const body = htmlToReadableText(
+    '<p>Real article text starts here.</p><p>Playback speed</p><p>Share post</p><p>Share post at current time</p><p>Share from 0:00</p><p>0:00</p><p>Real article text continues.</p>',
+  );
+  assert.equal(body, 'Real article text starts here.\n\nReal article text continues.');
+});
+
+test('htmlToReadableText keeps prose that happens to use a player button\u2019s words', () => {
+  const prose = 'The playback speed of the tape matters more than the machine that plays it.';
+  assert.equal(htmlToReadableText(`<p>${prose}</p>`), prose);
+  // A sentence that merely mentions sharing a post is a sentence; only the bare label goes.
+  const sharing = 'Share post at current time is the button that copies a link at this second of the episode.';
+  assert.equal(htmlToReadableText(`<p>${sharing}</p>`), sharing);
+});
+
+test('htmlToReadableText drops a bare timestamp, which is a control and never a paragraph', () => {
+  assert.equal(htmlToReadableText('<p>12:34</p><p>Real article text.</p>'), 'Real article text.');
+  assert.equal(htmlToReadableText('<p>1:02:03</p><p>Real article text.</p>'), 'Real article text.');
+});
+
+test('split digits are rejoined where the old cleaner split them, and nowhere else', () => {
+  assert.equal(repairSplitDigits('about 74, 000 readers'), 'about 74,000 readers');
+  assert.equal(repairSplitDigits('a ratio of 1. 79 to one'), 'a ratio of 1.79 to one');
+  // A date is two numbers, not one broken number: welding it reads as "15,2026".
+  assert.equal(repairSplitDigits('On December 15, 2026 we flew.'), 'On December 15, 2026 we flew.');
+  assert.equal(repairSplitDigits('See page 15, 2026 was the year.'), 'See page 15, 2026 was the year.');
+  // A space after a comma in prose is prose.
+  assert.equal(repairSplitDigits('the total, 500 of them'), 'the total, 500 of them');
+});
+
+test('htmlToReadableText ends the piece before a podcast player\u2019s episode list', () => {
+  // The tail of a Substack podcast post: a heading, the show's blurb, where else to listen,
+  // and seven recent episodes, all of it the page's furniture rather than the piece.
+  const body = htmlToReadableText(
+    '<p>Real article text starts here.</p>' +
+      '<p>Real article text continues.</p>' +
+      '<p>Discussion about this video</p>' +
+      '<p>Geopolitics Unplugged is a daily intelligence briefing on geopolitics, oil and energy markets.</p>' +
+      '<p>Listen on</p>' +
+      '<p>[Substack App](https://open.substack.com/pub/example) [Apple Podcasts](https://podcasts.apple.com/example)</p>' +
+      '<p>Appears in episode</p>' +
+      '<p>Recent Episodes</p>' +
+      '<p>[Iran War Traps Natural Gas as Oil Floods the Market](https://example.com/episode)</p>' +
+      '<p>Nov 14 \u00b7 GeopoliticsUnplugged</p>',
+  );
+  assert.equal(body, 'Real article text starts here.\n\nReal article text continues.');
+});
+
+test('a piece that merely mentions the podcast furniture keeps its own ending', () => {
+  const body = htmlToReadableText(
+    '<p>Real article text starts here.</p><p>The show lists recent episodes on its own page, not here.</p>',
+  );
+  assert.equal(body, 'Real article text starts here.\n\nThe show lists recent episodes on its own page, not here.');
 });
 
 test('htmlToReadableText keeps a word clear of the parameter that followed it', () => {
@@ -356,6 +433,23 @@ test('a feed teaser counts as an unfinished read', () => {
   assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: 'Short but whole piece.' }), true);
   // Nothing to fetch without an address, so the stored body is all there is.
   assert.equal(articleLooksIncomplete({ fullText: 'Short but whole piece.' }), false);
+});
+
+test('a teaser that ends by offering the rest of the piece is unfinished', () => {
+  // Ars Technica's feed stops after three paragraphs and closes with a linked "Read full article".
+  // The address follows the words, so the marker is the link, not the end of a sentence; treating
+  // it as the end of the piece left the reader with the teaser and nothing more.
+  const teaser = `${'A real sentence. '.repeat(60)}\n\n[Read full article](https://example.com/a)`;
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: teaser }), true);
+  // The same offer without a link, and the longer-worded forms publishers use.
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: `${'A real sentence. '.repeat(60)}\n\nRead full article` }), true);
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: `${'A real sentence. '.repeat(60)}\n\n[Continue reading](https://example.com/a)` }), true);
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: `${'A real sentence. '.repeat(60)}\n\nRead the full story` }), true);
+  // Some publishers put the destination in a plain-text sentence rather than a link.
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: `${'A real sentence. '.repeat(60)}\n\nRead the full story at https://example.com/a` }), true);
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: `${'A real sentence. '.repeat(60)}\n\nRead the full story at: https://example.com/a` }), true);
+  // A piece that merely mentions reading the whole of something is still a whole piece.
+  assert.equal(articleLooksIncomplete({ url: 'https://example.com/a', fullText: `${'A real sentence. '.repeat(60)}\n\nShe had read the full article twice.` }), false);
 });
 
 test('htmlToReadableText stops a paid preview at the subscriber offer', () => {

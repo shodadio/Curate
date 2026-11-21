@@ -120,6 +120,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
   - Live progress bar with paragraph and sentence position, the spoken paragraph highlighted, and tap-any-paragraph to listen from that point.
   - Feed debris — URLs, footnote marks, bracket asides, "Read more" furniture, abbreviations and currency — is normalised out of the text before it reaches the voice.
 - **Scroll Depth Tracker**: Automatically tracks reading progress and marks articles as finished once the user scrolls past 85% depth.
+- **Video in the reader**: a piece that carries a video plays it where the article is, above the prose. A video file (mp4, webm, or HLS) plays in the page's own player; a YouTube or Vimeo piece is a still with a play button until the reader taps it, so the video host is never contacted on their behalf. Publishers that refuse to be framed fall back to one link out, and a piece with no video is unchanged.
 
 ### 9. Mobile & iOS Safari Viewport Hardening
 - **Zero Horizontal Bleed**: `overflow-x: clip`, `width: 100%`, and `background-color: #020617` enforced across `html`, `body`, `#root`, and layout wrappers. Clipping avoids creating an overflow scroll container that can interrupt the sticky header.
@@ -284,7 +285,7 @@ Re-extracts one article's body on demand. A piece saved before the reader kept i
 
 **Request Body:** `{ "url": "https://example.com/story" }`
 
-**Response:** `{ "text": "…" }`, with each citation carried as a `[label](url)` marker. An empty string means the article could not be read, and the reader keeps the copy it already had.
+**Response:** `{ "text": "…", "video": { "url": "…", "kind": "embed" } }`, with each citation carried as a `[label](url)` marker. An empty string means the article could not be read, and the reader keeps the copy it already had. `video` is the player the page carried, or `null`.
 
 ---
 
@@ -511,7 +512,7 @@ If you deploy behind a proxy, set `TRUST_PROXY=1` as described in [Environment V
 Curator is built local-first:
 - **No Remote User Accounts**: Subscriptions, reading stats, saved articles, and signal preferences are stored exclusively in your browser's `localStorage`.
 - **No Trackers**: No analytics SDKs, advertising pixels, or telemetry services are included. Source icons are fetched by the Curator server (`GET /api/favicon`) and cached there, so your browser never asks a favicon provider about the feeds you read.
-- **What still talks to publishers**: article thumbnails load from each publication's own image CDN, and opening "Read original" obviously visits them. That reveals your IP to that publisher — the same exposure as subscribing in any RSS reader — but nothing else about your reading is shared.
+- **What still talks to publishers**: article thumbnails load from each publication's own image CDN, and opening "Read original" obviously visits them. That reveals your IP to that publisher — the same exposure as subscribing in any RSS reader — but nothing else about your reading is shared. A video from YouTube or Vimeo is only loaded when the reader presses play, through the no-tracking hosts (`youtube-nocookie.com`, `player.vimeo.com?dnt=1`), so a piece nobody watches tells the video host nothing.
 - **Your Data Remains Yours**: Export your entire reading library at any time using standard OPML.
 
 ---

@@ -119,3 +119,7 @@ export function editionDayLabel(curatedAt: number, now: number = Date.now()): st
 export function editionMinutes(items: EditionItem[]): number {
   return items.reduce((total, item) => total + (parseInt(item.readTime || '', 10) || 0), 0);
 }
+
+export function editionStoryCount(editions: Edition[]): number {
+  return editions.reduce((total, edition) => total + edition.items.length, 0);
+}
