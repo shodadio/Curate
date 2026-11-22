@@ -313,12 +313,20 @@ Proves a feed URL works before it is added to the watch list, using the same out
 ### `POST /api/discover-sources`
 Performs a grounded search using Google Search to discover publications, assess RSS availability, and extract sample headlines.
 
+Without a Gemini key (the caller's own, or the server's when `ALLOW_SERVER_KEY=1`) the route answers from Curator's built-in publication directory instead, matched to the search terms: each directory entry names the subjects it covers, the query's words are scored against those subjects, its title, folder and summary, and the best six come back. A query the directory knows nothing about returns no results rather than an unrelated list. `aiAssisted` in the response says which path answered, and the app tells the reader when a list came from the directory.
+
+Feeds the reader already follows are left out, by host, so a search never offers the same publications again.
+
 **Request Body:**
 ```json
 {
-  "query": "Byzantine history"
+  "query": "Byzantine history",
+  "apiKey": "optional Gemini key, spent only on this search",
+  "existing": ["https://marginalrevolution.com/feed", "https://stratechery.com/feed/"]
 }
 ```
+
+**Response:** `{ "results": [...], "aiAssisted": false, "webSearchQueries": [], "groundingLinks": [] }`. Each result carries `title`, `siteUrl`, `folder`, `summary`, `feedUrl`, `feedFormat`, `rssStatus` (`native`, `generatable` or `none`), `sampleTitles` and an `investigationNote`.
 
 ---
 

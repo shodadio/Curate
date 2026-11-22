@@ -184,6 +184,10 @@ interface DigestItem {
   // The cleaner drops that line, so the excerpt alone can look whole; the flag keeps the fact
   // that the publisher said there is more, and the reader fetches the rest once when it opens.
   teaser?: boolean;
+  // The page was read and gave up no article: none on it at all, a paywalled preview, or nothing
+  // fuller than the feed's excerpt. The card stops offering a reader view then, and the way to the
+  // piece is the publisher's own link.
+  articleUnavailable?: boolean;
   // A saved piece from before the reader credited writers asks the server for its byline once;
   // the stamp keeps a page that names nobody from being asked again on every launch.
   authorCheckedAt?: number;
@@ -1129,6 +1133,12 @@ export default function App() {
   const [discoverError, setDiscoverError] = useState<string | null>(null);
   const [discoverResults, setDiscoverResults] = useState<DiscoveredSource[]>([]);
   const [discoverGroundingLinks, setDiscoverGroundingLinks] = useState<Array<{ title: string; uri: string }>>([]);
+  // Whether the last search reached Google or answered from Curator's own directory. The screen
+  // says which, so a reader without a key understands why the results are limited.
+  const [discoverAiAssisted, setDiscoverAiAssisted] = useState<boolean | null>(null);
+  // True when the only publications the search matched are already followed here, which is not the
+  // same answer as a search that found nothing.
+  const [discoverAllInLibrary, setDiscoverAllInLibrary] = useState<boolean>(false);
   const [hasSearchedSources, setHasSearchedSources] = useState<boolean>(false);
 
   // Reading view timer & depth tracking
@@ -2378,20 +2388,27 @@ export default function App() {
       const res = await fetch('/api/discover-sources', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q, apiKey: customApiKey })
+        // The library goes along with the search so the same feeds are never offered again.
+        body: JSON.stringify({ query: q, apiKey: customApiKey, existing: sources.map(s => s.feedUrl) })
       });
       const data = await res.json();
       if (!res.ok) {
         setDiscoverError(data.error || 'Search failed.');
         setDiscoverResults([]);
         setDiscoverGroundingLinks([]);
+        setDiscoverAiAssisted(null);
+        setDiscoverAllInLibrary(false);
         return;
       }
       setDiscoverResults(Array.isArray(data.results) ? data.results : []);
       setDiscoverGroundingLinks(Array.isArray(data.groundingLinks) ? data.groundingLinks : []);
+      setDiscoverAiAssisted(typeof data.aiAssisted === 'boolean' ? data.aiAssisted : null);
+      setDiscoverAllInLibrary(data.allMatchesAlreadyFollowed === true);
     } catch (err) {
       setDiscoverError('Could not reach the search service.');
       setDiscoverResults([]);
+      setDiscoverAiAssisted(null);
+      setDiscoverAllInLibrary(false);
     } finally {
       setIsDiscovering(false);
     }
@@ -3037,16 +3054,36 @@ export default function App() {
       // The page may carry the video the feed only pointed at, so a piece opened before this
       // build can gain its player along with its citations.
       const video = readVideoEmbed(data?.video);
+      // The card offered a reader view; when the page has no article to show, it says so instead of
+      // promising one. The story keeps its excerpt and its link to the publisher either way.
+      const noteUnavailable = () => {
+        const mark = (entry: DigestItem): DigestItem => (entry.id === item.id && !entry.articleUnavailable
+          ? { ...entry, articleUnavailable: true }
+          : entry);
+        setSelectedArticle(prev => (prev ? mark(prev) : prev));
+        setSavedArticles(prev => prev.map(mark));
+        setDigest(prev => prev.map(mark));
+        setFeedStreamArticles(prev => prev.map(mark));
+      };
       // Short text means the extractor found the page's chrome rather than the piece, so the
       // stored body stays the better read. A page that still stops at a teaser (a paywall, or a
       // feed excerpt the publisher never expanded) is no fuller than what is already stored.
-      if (text.length < 200) return;
-      if (articleLooksIncomplete(item) && articleLooksIncomplete({ url: item.url, fullText: text })) return;
+      if (text.length < 200) {
+        noteUnavailable();
+        return;
+      }
+      if (articleLooksIncomplete(item) && articleLooksIncomplete({ url: item.url, fullText: text })) {
+        noteUnavailable();
+        return;
+      }
       // A teaser is worth opening a page for only if the page gives more than the excerpt did.
-      if (item.teaser && text.length <= item.fullText.length) return;
+      if (item.teaser && text.length <= item.fullText.length) {
+        noteUnavailable();
+        return;
+      }
       const refreshedAt = Date.now();
       const upgrade = (entry: DigestItem): DigestItem => entry.id === item.id
-        ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt, teaser: false, video: entry.video || video || undefined }
+        ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt, teaser: false, articleUnavailable: false, video: entry.video || video || undefined }
         : entry;
       setSelectedArticle(prev => (prev && prev.id === item.id ? upgrade(prev) : prev));
       setSavedArticles(prev => prev.map(upgrade));
@@ -4290,18 +4327,21 @@ export default function App() {
                   return (
                     <article 
                       key={item.id}
-                      onClick={() => openArticle(item)}
+                      onClick={() => { if (!item.articleUnavailable) openArticle(item); }}
                       // A card is a reading surface, not a button: a short name, and the four actions
                       // inside it stay separately announced instead of being flattened into one label.
+                      // A story whose page gave up no article is not a reading surface at all, so it
+                      // stops opening the reader and the publisher's link is the way in.
                       aria-label={`${item.title} — ${item.source}`}
-                      tabIndex={0}
+                      tabIndex={item.articleUnavailable ? -1 : 0}
                       onKeyDown={(event) => {
+                        if (item.articleUnavailable) return;
                         if (event.key === 'Enter' || event.key === ' ') {
                           event.preventDefault();
                           openArticle(item);
                         }
                       }}
-                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative ${
+                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 overflow-hidden relative ${item.articleUnavailable ? 'cursor-default' : 'cursor-pointer'} ${
                         actions.hasAnyAction
                           ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
                           : 'bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.12)] hover:border-amber-500/60 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(245,158,11,0.35)]'
@@ -4428,13 +4468,21 @@ export default function App() {
                         {/* Card Curation & Reading Actions */}
                         <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
                           <div className="flex w-full flex-wrap items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); openArticle(item); }}
-                              className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-amber-300 hover:text-amber-200 transition"
-                            >
-                              Read in Curator <ArrowRight className="w-3.5 h-3.5" />
-                            </button>
+                            {item.articleUnavailable ? (
+                              // No article came back for this piece, so the card stops offering a reader
+                              // view: the note stands where the button was, and the publisher's link reads it.
+                              <span className="inline-flex min-h-11 items-center rounded-lg px-1 text-xs font-medium text-slate-500">
+                                No article or available content
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                                className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-amber-300 hover:text-amber-200 transition"
+                              >
+                                Read in Curator <ArrowRight className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                             <a
                               href={webUrlHref(item.url) || '#'}
                               target="_blank"
@@ -4529,18 +4577,21 @@ export default function App() {
                       return (
                         <article 
                           key={item.id}
-                          onClick={() => openArticle(item)}
+                          onClick={() => { if (!item.articleUnavailable) openArticle(item); }}
                           // A card is a reading surface, not a button: a short name, and the four actions
                           // inside it stay separately announced instead of being flattened into one label.
+                          // A story whose page gave up no article is not a reading surface at all, so it
+                          // stops opening the reader and the publisher's link is the way in.
                           aria-label={`${item.title} — ${item.source}`}
-                          tabIndex={0}
+                          tabIndex={item.articleUnavailable ? -1 : 0}
                           onKeyDown={(event) => {
+                            if (item.articleUnavailable) return;
                             if (event.key === 'Enter' || event.key === ' ') {
                               event.preventDefault();
                               openArticle(item);
                             }
                           }}
-                          className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative ${
+                          className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 overflow-hidden relative ${item.articleUnavailable ? 'cursor-default' : 'cursor-pointer'} ${
                             actions.hasAnyAction
                               ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
                               : 'bg-slate-900/95 border-2 border-rose-600/70 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(244,63,94,0.3)] hover:border-rose-500 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(244,63,94,0.45)]'
@@ -4657,13 +4708,21 @@ export default function App() {
                             {/* Stretch Card Actions: Read more, More, Less */}
                             <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
                               <div className="flex w-full flex-wrap items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); openArticle(item); }}
-                                  className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-rose-300 hover:text-rose-200 transition"
-                                >
-                                  Read in Curator <ArrowRight className="w-3.5 h-3.5" />
-                                </button>
+                                {item.articleUnavailable ? (
+                                  // No article came back for this piece, so the card stops offering a
+                                  // reader view: the note stands where the button was.
+                                  <span className="inline-flex min-h-11 items-center rounded-lg px-1 text-xs font-medium text-slate-500">
+                                    No article or available content
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                                    className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-rose-300 hover:text-rose-200 transition"
+                                  >
+                                    Read in Curator <ArrowRight className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
                                 <a
                                   href={webUrlHref(item.url) || '#'}
                                   target="_blank"
@@ -5102,6 +5161,8 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       setHasSearchedSources(false);
                       setDiscoverResults([]);
                       setDiscoverGroundingLinks([]);
+                      setDiscoverAiAssisted(null);
+                      setDiscoverAllInLibrary(false);
                       setDiscoverError(null);
                     }}
                     className="inline-flex min-h-11 shrink-0 items-center px-2 -mr-2 text-xs text-slate-400 hover:text-slate-200"
@@ -5150,7 +5211,17 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
               {hasSearchedSources && !isDiscovering && !discoverError && discoverResults.length === 0 && (
                 <p className="text-xs text-slate-400 py-2">
-                  No matching publications found for those search terms. Try broader keywords.
+                  {discoverAllInLibrary
+                    ? 'Everything Curator matched for those terms is already in your library. Try a different subject.'
+                    : discoverAiAssisted === false
+                      ? 'Nothing in Curator’s built-in directory matches those terms. Add a Gemini API key in Settings to search the wider web.'
+                      : 'No matching publications found for those search terms. Try broader keywords.'}
+                </p>
+              )}
+
+              {discoverAiAssisted === false && discoverResults.length > 0 && (
+                <p className="text-xs text-slate-400 pb-1">
+                  Matched from Curator’s built-in directory. Add a Gemini API key in Settings to search the wider web.
                 </p>
               )}
 

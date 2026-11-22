@@ -1314,6 +1314,10 @@ async function startServer() {
         // This text came from the cleaner that keeps a link's address, so a reader holding it
         // needs no refresh. Saves written before that change lack the flag and are refreshed.
         linksCleaned: true,
+        // The feed carried no body: a paid post, an image-only issue, or a feed of descriptions.
+        // Such a story only earns a slot in an edition if its page can be read, so the card is
+        // not one the reader cannot open.
+        stub: cleanFull.length <= 120,
         // The feed's own body ended by offering the rest of the piece. The cleaner removes that
         // line, so the excerpt alone can read as complete; the flag tells the reader there is
         // more, and it fetches the page once when the piece is opened.
@@ -1494,14 +1498,22 @@ async function startServer() {
         // A player on the page is the item's video even when its text is no fuller than the feed's.
         if (video && !item.video) item.video = video;
         // A page that still stops at a teaser (a paywall, or a stub the publisher never expanded)
-        // is no fuller than the feed's own text, so the stored body stays.
-        if (!articleText || articleLooksIncomplete({ url: item.url, fullText: articleText })) continue;
+        // is no fuller than the feed's own text, so the stored body stays — and the story is marked
+        // as having no article to read, which is what its card then says.
+        if (!articleText || articleLooksIncomplete({ url: item.url, fullText: articleText })) {
+          item.articleUnavailable = true;
+          continue;
+        }
         // A teaser is worth replacing only by something longer than the excerpt the feed gave;
         // a page that yields less is the same cut, reached a different way.
-        if (item.teaser && articleText.length <= String(item.fullText || '').length) continue;
+        if (item.teaser && articleText.length <= String(item.fullText || '').length) {
+          item.articleUnavailable = true;
+          continue;
+        }
         item.fullText = articleText;
         // The page gave up the rest, so the reader no longer has to ask for it.
         item.teaser = false;
+        item.articleUnavailable = false;
         const words = articleText.split(/\s+/).filter(Boolean).length;
         item.readTime = `${Math.max(2, Math.round(words / 200))} min read`;
       }
@@ -1892,7 +1904,36 @@ async function startServer() {
         });
       });
 
-      const rankedItems = scoredPool.map(({ _score, _semantic, _interest, _less, ...rest }: any) => rest);
+      let rankedItems = scoredPool.map(({ _score, _semantic, _interest, _less, ...rest }: any) => rest);
+
+      // A story whose feed carried no text can only earn a place in the edition if its page can be
+      // read: a paid post would otherwise take a slot behind a card with nothing in it. The stub
+      // candidates near the top of the ranking are read here, before a slot is spent on them, and
+      // the ones with nothing behind the summary are dropped from the pool. The reads land in the
+      // same 24-hour cache the digest's own enrichment uses, so nothing is fetched twice.
+      const stubCandidates = rankedItems.filter((item: any) => item.stub && item.url).slice(0, 8);
+      if (stubCandidates.length > 0) {
+        let nextStub = 0;
+        await Promise.all(Array.from({ length: Math.min(3, stubCandidates.length) }, async () => {
+          while (nextStub < stubCandidates.length) {
+            const item = stubCandidates[nextStub++];
+            const { text, video } = await fetchArticleBody(item.url);
+            if (video && !item.video) item.video = video;
+            // The extractor only returns a body it could find and that is not a paywall's face,
+            // so anything it returns is readable; nothing means the page gave nothing.
+            if (!text) {
+              item.articleUnavailable = true;
+              continue;
+            }
+            item.fullText = text;
+            item.teaser = false;
+            item.articleUnavailable = false;
+            const words = text.split(/\s+/).filter(Boolean).length;
+            item.readTime = `${Math.max(2, Math.round(words / 200))} min read`;
+          }
+        }));
+        rankedItems = rankedItems.filter((item: any) => !(item.stub && item.articleUnavailable));
+      }
 
       const distinctSources = new Set(
         rankedItems.map(item => item.source).filter((value): value is string => Boolean(value))
@@ -2632,12 +2673,115 @@ CURATION RULES:
     };
   };
 
+  // Curator's own publication directory, used when no search key is available. Each entry names the
+  // subjects it covers so a query can be matched against it: the old list answered every search with
+  // the same five names, because a query only matched when it appeared word for word in one record.
+  interface DirectoryEntry {
+    title: string;
+    siteUrl: string;
+    folder: string;
+    summary: string;
+    topics: string[];
+  }
+  const discoveryDirectory: DirectoryEntry[] = [
+    { title: 'Stratechery', siteUrl: 'https://stratechery.com', folder: 'Tech & Strategy', summary: 'Ben Thompson on the business, strategy and impact of technology.', topics: ['tech', 'strategy', 'business', 'platforms', 'semiconductors'] },
+    { title: 'Marginal Revolution', siteUrl: 'https://marginalrevolution.com', folder: 'Economics', summary: 'Tyler Cowen and Alex Tabarrok on economics, growth and culture.', topics: ['economics', 'growth', 'markets', 'policy', 'books'] },
+    { title: 'Dan Luu', siteUrl: 'https://danluu.com', folder: 'Engineering', summary: 'Data-heavy essays on software, hardware and engineering practice.', topics: ['engineering', 'software', 'performance', 'hardware', 'careers'] },
+    { title: 'Simon Willison', siteUrl: 'https://simonwillison.net', folder: 'Software & AI', summary: 'Notes on large language models and the craft of building software with them.', topics: ['ai', 'llms', 'software', 'python', 'tools'] },
+    { title: 'Ars Technica', siteUrl: 'https://arstechnica.com', folder: 'Tech & Policy', summary: 'Deep reporting on technology, science and the policies that shape them.', topics: ['tech', 'science', 'policy', 'security', 'space'] },
+    { title: 'A List Apart', siteUrl: 'https://alistapart.com', folder: 'Design & Code', summary: 'Long-form essays on web design, content and the craft of the web.', topics: ['design', 'web', 'css', 'accessibility', 'writing'] },
+    { title: 'Smashing Magazine', siteUrl: 'https://www.smashingmagazine.com', folder: 'Design & Code', summary: 'Practical articles on design, front-end development and user experience.', topics: ['design', 'frontend', 'ux', 'css', 'accessibility'] },
+    { title: 'Aeon', siteUrl: 'https://aeon.co', folder: 'Philosophy & Culture', summary: 'Essays on philosophy, psychology, society and the sciences.', topics: ['philosophy', 'psychology', 'science', 'culture', 'essays'] },
+    { title: 'Noema', siteUrl: 'https://www.noemamag.com', folder: 'Ideas', summary: 'A magazine about the transformations shaping the twenty-first century.', topics: ['ideas', 'technology', 'climate', 'philosophy', 'society'] },
+    { title: 'The Point', siteUrl: 'https://thepointmag.com', folder: 'Philosophy & Culture', summary: 'Essays where philosophy meets ordinary life.', topics: ['philosophy', 'culture', 'essays', 'psychology'] },
+    { title: 'The Marginalian', siteUrl: 'https://www.themarginalian.org', folder: 'Culture', summary: 'Maria Popova on literature, science and the search for meaning.', topics: ['culture', 'books', 'science', 'philosophy', 'poetry'] },
+    { title: '3 Quarks Daily', siteUrl: 'https://3quarksdaily.com', folder: 'Ideas', summary: 'A daily digest of essays across science, art and philosophy.', topics: ['ideas', 'science', 'art', 'philosophy'] },
+    { title: 'Rest of World', siteUrl: 'https://restofworld.org', folder: 'Global Tech', summary: 'Reporting on the impact of technology outside the Western bubble.', topics: ['global', 'tech', 'startups', 'labour', 'asia', 'africa'] },
+    { title: 'Quanta Magazine', siteUrl: 'https://www.quantamagazine.org', folder: 'Science', summary: 'Mathematics, physics, biology and computer science from the research front.', topics: ['science', 'maths', 'physics', 'biology', 'research'] },
+    { title: 'Nautilus', siteUrl: 'https://nautil.us', folder: 'Science & Culture', summary: 'Science writing with a literary bent.', topics: ['science', 'culture', 'nature', 'mind'] },
+    { title: 'The Conversation', siteUrl: 'https://theconversation.com', folder: 'Research', summary: 'Academics writing for the public about their own research.', topics: ['research', 'science', 'academia', 'explainer', 'health'] },
+    { title: 'Science-Based Medicine', siteUrl: 'https://sciencebasedmedicine.org', folder: 'Health', summary: 'Evidence and scepticism about medicine and health claims.', topics: ['health', 'medicine', 'scepticism', 'science'] },
+    { title: 'Works in Progress', siteUrl: 'https://worksinprogress.co', folder: 'Policy & Progress', summary: 'Essays on progress, building things and the policy that blocks them.', topics: ['progress', 'policy', 'housing', 'energy', 'economics'] },
+    { title: 'Noahpinion', siteUrl: 'https://www.noahpinion.blog', folder: 'Economics', summary: 'Noah Smith on macroeconomics, technology and political economy.', topics: ['economics', 'macro', 'technology', 'politics'] },
+    { title: 'ProMarket', siteUrl: 'https://www.promarket.org', folder: 'Economics & Policy', summary: 'The Stigler Center on markets, competition and regulation.', topics: ['economics', 'competition', 'regulation', 'policy'] },
+    { title: 'Global Inequality', siteUrl: 'https://glineq.blogspot.com', folder: 'Economics', summary: 'Branko Milanovic on inequality, history and political economy.', topics: ['economics', 'inequality', 'history'] },
+    { title: 'Chris Blattman', siteUrl: 'https://chrisblattman.com', folder: 'Global Development', summary: 'Development, conflict and policy, read through the evidence.', topics: ['development', 'conflict', 'policy', 'africa', 'economics'] },
+    { title: 'Lawfare', siteUrl: 'https://www.lawfaremedia.org', folder: 'Law & Policy', summary: 'Analysis of law, national security and the courts.', topics: ['law', 'policy', 'security', 'courts', 'government'] },
+    { title: 'Tech Policy Press', siteUrl: 'https://www.techpolicy.press', folder: 'Tech Policy', summary: 'Reporting and commentary on technology policy and its consequences.', topics: ['policy', 'platforms', 'privacy', 'regulation', 'ai'] },
+    { title: 'EFF Deeplinks', siteUrl: 'https://www.eff.org/deeplinks', folder: 'Privacy & Rights', summary: 'The Electronic Frontier Foundation on surveillance, privacy and digital rights.', topics: ['privacy', 'rights', 'surveillance', 'security', 'law'] },
+    { title: 'ProPublica', siteUrl: 'https://www.propublica.org', folder: 'Investigations', summary: 'Investigative journalism in the public interest.', topics: ['investigation', 'politics', 'health', 'justice'] },
+    { title: 'Carbon Brief', siteUrl: 'https://www.carbonbrief.org', folder: 'Climate', summary: 'Science, policy and data on climate change.', topics: ['climate', 'energy', 'environment', 'policy', 'science'] },
+    { title: 'Inside Climate News', siteUrl: 'https://insideclimatenews.org', folder: 'Climate', summary: 'Investigative reporting on climate, energy and the environment.', topics: ['climate', 'investigation', 'energy', 'environment'] },
+    { title: 'The Public Domain Review', siteUrl: 'https://publicdomainreview.org', folder: 'History & Art', summary: 'Curious works from the history of art, literature and ideas.', topics: ['history', 'art', 'literature', 'archive', 'books'] },
+    { title: 'History Today', siteUrl: 'https://www.historytoday.com', folder: 'History', summary: 'History written for readers who want the long view.', topics: ['history', 'politics', 'culture', 'war'] },
+    { title: 'Literary Hub', siteUrl: 'https://lithub.com', folder: 'Books', summary: 'News, criticism and essays about books and writers.', topics: ['books', 'literature', 'writing', 'criticism'] },
+    { title: 'Public Books', siteUrl: 'https://www.publicbooks.org', folder: 'Books & Ideas', summary: 'Scholars writing about books, culture and public life.', topics: ['books', 'academia', 'culture', 'criticism'] },
+    { title: 'Colossal', siteUrl: 'https://www.thisiscolossal.com', folder: 'Art & Design', summary: 'Contemporary art, craft and visual culture from around the world.', topics: ['art', 'craft', 'design', 'photography'] },
+    { title: 'Strange Horizons', siteUrl: 'https://strangehorizons.com', folder: 'Fiction', summary: 'Speculative fiction, poetry and criticism.', topics: ['fiction', 'scifi', 'poetry', 'criticism'] },
+    { title: 'Import AI', siteUrl: 'https://importai.substack.com', folder: 'AI', summary: "Jack Clark's weekly briefing on AI research, policy and industry.", topics: ['ai', 'research', 'policy', 'industry'] },
+    { title: 'Interconnects', siteUrl: 'https://www.interconnects.ai', folder: 'AI', summary: 'Nathan Lambert on open models, training and evaluation.', topics: ['ai', 'models', 'training', 'evaluation'] },
+    { title: 'Julia Evans', siteUrl: 'https://jvns.ca', folder: 'Engineering', summary: 'Zines and essays that explain how computers actually work.', topics: ['engineering', 'systems', 'networking', 'debugging'] },
+    { title: 'Rachel by the Bay', siteUrl: 'https://rachelbythebay.com/w/', folder: 'Engineering', summary: 'Blunt field notes on running large systems.', topics: ['engineering', 'systems', 'operations', 'careers'] },
+    { title: 'Daring Fireball', siteUrl: 'https://daringfireball.net', folder: 'Apple & Tech', summary: 'John Gruber on Apple, products and the press.', topics: ['apple', 'products', 'tech', 'media'] },
+    { title: 'Farnam Street', siteUrl: 'https://fs.blog', folder: 'Thinking & Learning', summary: 'Mental models, decision-making and learning how to learn.', topics: ['thinking', 'learning', 'books', 'decision', 'productivity'] },
+    { title: 'Ness Labs', siteUrl: 'https://nesslabs.com', folder: 'Mind & Productivity', summary: 'Evidence-based notes on thinking, habits and creative work.', topics: ['productivity', 'habits', 'neuroscience', 'creativity'] },
+    { title: 'Smitten Kitchen', siteUrl: 'https://smittenkitchen.com', folder: 'Food', summary: 'Home cooking, tested and written up in detail.', topics: ['food', 'recipes', 'cooking', 'baking'] },
+    { title: 'Serious Eats', siteUrl: 'https://www.seriouseats.com', folder: 'Food', summary: 'Food science and rigorously tested recipes.', topics: ['food', 'recipes', 'science', 'technique'] },
+    { title: 'David Lebovitz', siteUrl: 'https://www.davidlebovitz.com', folder: 'Food', summary: 'A pastry chef on cooking, baking and living in Paris.', topics: ['food', 'baking', 'paris', 'recipes'] },
+  ];
+
+  // Words too common to say what a search is about; they would match half the directory.
+  const discoveryStopWords = new Set([
+    'the', 'and', 'for', 'with', 'about', 'from', 'into', 'that', 'this', 'any', 'all', 'new',
+    'best', 'good', 'great', 'top', 'some', 'more', 'most', 'publications', 'publication', 'blog',
+    'blogs', 'newsletter', 'newsletters', 'site', 'sites', 'writer', 'writers', 'writing', 'find',
+    'independent', 'quality',
+  ]);
+  const discoveryQueryTokens = (query: string): string[] => Array.from(new Set(
+    query.toLowerCase().split(/[^a-z0-9]+/).filter(token => token.length >= 2 && !discoveryStopWords.has(token)),
+  ));
+  // Two words match when they are equal or when one begins the other, so "econ" finds "economics"
+  // and "psychology" finds "psychology" without a stemming library.
+  const discoveryTokenMatches = (token: string, word: string): boolean =>
+    word === token ||
+    (token.length >= 4 && word.startsWith(token)) ||
+    (word.length >= 4 && token.startsWith(word));
+  const scoreDiscoveryEntry = (entry: DirectoryEntry, tokens: string[]): number => {
+    const titleWords = entry.title.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const folderWords = entry.folder.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const summaryWords = entry.summary.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    let score = 0;
+    for (const token of tokens) {
+      if (entry.topics.some(topic => discoveryTokenMatches(token, topic))) score += 3;
+      if (titleWords.some(word => discoveryTokenMatches(token, word))) score += 4;
+      if (folderWords.some(word => discoveryTokenMatches(token, word))) score += 2;
+      if (summaryWords.some(word => discoveryTokenMatches(token, word))) score += 1;
+    }
+    return score;
+  };
+
   // Google Search Grounding + RSS Feed Investigation endpoint
   app.post('/api/discover-sources', rateLimit('discover-sources', 6), requestBudget('Source discovery', 45_000), async (req, res) => {
     try {
-      const { query, apiKey: clientApiKey } = req.body;
+      const { query, apiKey: clientApiKey, existing } = req.body;
       if (!query || typeof query !== 'string' || !query.trim()) {
         return res.status(400).json({ error: 'Search terms are required.' });
+      }
+
+      // What the reader already follows, by host, so a search never offers the same publications
+      // again: rediscovering the five feeds in the library is what made the screen feel stuck.
+      const discoveryHostOf = (url: string): string => {
+        try {
+          return new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+        } catch {
+          return '';
+        }
+      };
+      const excludedHosts = new Set<string>();
+      for (const feedUrl of Array.isArray(existing) ? existing : []) {
+        if (typeof feedUrl !== 'string' || !feedUrl.trim()) continue;
+        const host = discoveryHostOf(feedUrl.trim());
+        if (host) excludedHosts.add(host);
       }
 
       const trimmedClientKey = typeof clientApiKey === 'string' ? clientApiKey.trim() : '';
@@ -2672,6 +2816,9 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
         folder?: string;
         summary?: string;
       }> = [];
+      // True when the directory knew the search but every publication it matched is already in the
+      // reader's library, which needs saying: it is not the same as a search that found nothing.
+      let allMatchesAlreadyFollowed = false;
 
       const isValidCandidate = (item: any) =>
         Boolean(item && typeof item.title === 'string' && typeof item.siteUrl === 'string');
@@ -2738,25 +2885,29 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
         }
       }
 
-      // If AI search was unavailable or yielded no results, use curated directory
+      // A grounded search can name a publication the reader already follows, which would only
+      // repeat what is already in the library.
+      parsedCandidates = parsedCandidates.filter(candidate =>
+        !excludedHosts.has(discoveryHostOf(candidate.siteUrl)) &&
+        !(candidate.guessedFeedUrl && excludedHosts.has(discoveryHostOf(candidate.guessedFeedUrl))));
+
+      // Without a search key the reader picks from Curator's own directory. The query decides which
+      // publications come back — the same five names for every search is not a search — and a query
+      // the directory knows nothing about answers with nothing, which the screen says plainly.
       if (parsedCandidates.length === 0) {
-        const directory = [
-          { title: 'Stratechery by Ben Thompson', siteUrl: 'https://stratechery.com', folder: 'Tech & Strategy', summary: 'On the business, strategy, and impact of technology.' },
-          { title: 'Marginal Revolution', siteUrl: 'https://marginalrevolution.com', folder: 'Economics', summary: 'Small steps toward a much better world by Tyler Cowen and Alex Tabarrok.' },
-          { title: 'Dan Luu', siteUrl: 'https://danluu.com', folder: 'Engineering', summary: 'Rigorous engineering retrospective essays and systems analysis.' },
-          { title: 'The Anthropic Stack', siteUrl: 'https://anthropic.com', folder: 'Tech & AI', summary: 'Research on frontier models, steering, and constitutional intelligence.' },
-          { title: 'Rest of World', siteUrl: 'https://restofworld.org', folder: 'Global Tech', summary: 'Reporting on the impact of technology outside the Western bubble.' },
-          { title: 'Long Now Foundation', siteUrl: 'https://longnow.org', folder: 'Philosophy', summary: 'Fostering long-term thinking and deep responsibility for the next 10,000 years.' },
-          { title: 'Prospect Magazine', siteUrl: 'https://prospectmagazine.co.uk', folder: 'Culture & Ideas', summary: 'In-depth essays on politics, economics, and contemporary philosophy.' },
-          { title: 'A List Apart', siteUrl: 'https://alistapart.com', folder: 'Design & Code', summary: 'Explores the design, development, and meaning of web content.' }
-        ];
-        const q = query.trim().toLowerCase();
-        const matches = directory.filter(d => 
-          d.title.toLowerCase().includes(q) || 
-          d.folder.toLowerCase().includes(q) || 
-          d.summary.toLowerCase().includes(q)
-        );
-        parsedCandidates = matches.length > 0 ? matches : directory.slice(0, 5);
+        const tokens = discoveryQueryTokens(query);
+        const matches = discoveryDirectory
+          .map(entry => ({ entry, score: scoreDiscoveryEntry(entry, tokens) }))
+          .filter(row => row.score > 0)
+          .sort((a, b) => b.score - a.score || a.entry.title.localeCompare(b.entry.title));
+        const fresh = matches.filter(row => !excludedHosts.has(discoveryHostOf(row.entry.siteUrl)));
+        allMatchesAlreadyFollowed = matches.length > 0 && fresh.length === 0;
+        parsedCandidates = fresh.slice(0, 6).map(({ entry }) => ({
+          title: entry.title,
+          siteUrl: entry.siteUrl,
+          folder: entry.folder,
+          summary: entry.summary,
+        }));
       }
 
       // Deduplicate by origin and cap at 6 candidates for snappy parallel investigation
@@ -2782,6 +2933,7 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
         query: query.trim(),
         // Lets the client (and a test) tell a grounded search from the built-in directory
         aiAssisted: Boolean(discoveryAi),
+        allMatchesAlreadyFollowed,
         webSearchQueries,
         groundingLinks: groundingChunks.slice(0, 8),
         results: investigated,
