@@ -21,8 +21,8 @@ import { SourceFeedLink } from './components/SourceFeedLink';
 import { ReaderVideo } from './components/ReaderVideo';
 import { NewBuildPrompt } from './components/NewBuildPrompt';
 import { readVideoEmbed, type VideoEmbed } from '../lib/videoEmbed';
-import { loadInterests, saveInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
-import { safeGetItem, safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, readAppData, type StorageFailure } from './storage';
+import { loadInterests, saveInterests, emptyInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
+import { clearAppData, safeGetItem, safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, readAppData, type StorageFailure } from './storage';
 import { readBackupFile, restorePlan } from '../lib/backup';
 import { migrateStoryIds } from '../lib/storyIdMigration';
 import { MAX_EDITIONS, editionDayLabel, editionMinutes as editionMinutesFor, editionStoryCount, readEditions, recordEdition, type Edition } from '../lib/editions';
@@ -658,7 +658,9 @@ export default function App() {
         const kept = parsed.filter((source: SourceItem) =>
           source && typeof source === 'object' && !isRetiredDemoFeed(source.feedUrl)
         );
-        // Only an all-stale list falls back to the defaults; anything the reader added is kept.
+        // An explicitly empty list is the reader's choice to start over; only a nonempty list
+        // that contains nothing but retired demo feeds falls back to the starter subscriptions.
+        if (parsed.length === 0) return [];
         if (kept.length === 0) return defaultSources;
         return kept.map((source: SourceItem) => ({
           ...source,
@@ -810,6 +812,69 @@ export default function App() {
     showToast(`Freed ${formatBytes(result.freedBytes)} from ${result.prunedCount} saved article${result.prunedCount === 1 ? '' : 's'}`);
   };
 
+  const resetAllSources = () => {
+    const confirmed = window.confirm(
+      `Delete all ${sources.length} subscription${sources.length === 1 ? '' : 's'} from this browser? Saved articles and preferences will remain. You can add feeds or import a fresh list afterward.`,
+    );
+    if (!confirmed) return;
+
+    digestRequestRef.current += 1;
+    digestAbortRef.current?.abort();
+    freshRoundPendingRef.current = false;
+    deferredRebuildRef.current = false;
+    setLoadingDigest(false);
+    setDigestSlow(false);
+    setDigestError(null);
+    feedStreamRequestRef.current += 1;
+    setLoadingFeedStream(false);
+
+    const sourcesStored = safeSetJson('curator_sources', []);
+    const readSourcesStored = safeSetJson('curator_read_sources', []);
+    setSources([]);
+    setReadSourceIds([]);
+    setSelectedFeedSource(null);
+    setFeedStreamArticles([]);
+    setPendingDeleteId(null);
+    setPendingDeadDelete(false);
+    showToast(sourcesStored && readSourcesStored
+      ? 'All subscriptions removed'
+      : 'Subscriptions reset for this session, but browser storage could not save the change');
+  };
+
+  // The reading profile is the only part of Curator that learns: the votes that teach the
+  // ranking, the signal lists built from them, and the interests the reader declares by hand.
+  // Clearing it returns the ranking to a cold start and leaves the library itself — feeds, saved
+  // pieces, reading history — exactly where it is.
+  const resetReadingPreferences = () => {
+    const confirmed = window.confirm(
+      'Reset your reading preferences? This clears every vote that teaches the ranking, the signals built from those votes and the interests you declared. Subscriptions, saved stories and reading history are kept. This cannot be undone.',
+    );
+    if (!confirmed) return;
+
+    setSemanticFeedback([]);
+    setSignals({ moreTopics: [], lessTopics: [], moreIds: [], lessIds: [], more: [], less: [] });
+    setInterests(emptyInterests());
+    // The inline "Reset profile" button arms itself on the first tap and disappears with the
+    // profile; leaving it armed would let one tap wipe a profile built afterwards.
+    setPendingReset(false);
+    // Rebuild once the cleared profile has landed, so the request carries it rather than the
+    // votes it just replaced.
+    setRebuildTick(tick => tick + 1);
+    showToast('Reading preferences reset');
+  };
+
+  const factoryReset = () => {
+    const confirmed = window.confirm(
+      'Factory reset Curator? This permanently deletes all Curator data saved in this browser, including subscriptions, saved articles, preferences, API keys and reading history. This cannot be undone. Starter feeds will be restored when the app restarts.',
+    );
+    if (!confirmed) return;
+    if (!clearAppData()) {
+      showToast('Could not clear all saved data from browser storage. Check storage permissions and try again.');
+      return;
+    }
+    window.location.reload();
+  };
+
   const weekCutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
   const weeklyRecent = weeklyHistory.filter(it => it.completedAt >= weekCutoff);
   const totalWeeklyMinutes = weeklyRecent.reduce((acc, it) => acc + (it.minutesSpent ?? 0), 0);
@@ -875,6 +940,12 @@ export default function App() {
       return [];
     }
   });
+  // Everything the ranking has learned or been told. The Danger section offers its reset only
+  // while there is a profile to clear.
+  const hasReadingProfile = semanticFeedback.length > 0 ||
+    signals.moreIds.length > 0 || signals.lessIds.length > 0 ||
+    interests.more.length > 0 || interests.less.length > 0;
+
   const [serverGeminiAvailable, setServerGeminiAvailable] = useState<boolean>(false);
   const [startupApiStatus, setStartupApiStatus] = useState<'checking' | 'healthy' | 'issue'>('checking');
   const [startupApiMessage, setStartupApiMessage] = useState('Checking Curator server and configured providers…');
@@ -1599,6 +1670,12 @@ export default function App() {
 
   const fetchFeedStream = async (sourceTitle?: string) => {
     const requestId = ++feedStreamRequestRef.current;
+    if (sources.length === 0) {
+      setLoadingFeedStream(false);
+      setFeedStreamArticles([]);
+      setFeedStreamRenderKey(prev => prev + 1);
+      return;
+    }
     setLoadingFeedStream(true);
     try {
       const { data } = await postFeedStream(buildFeedStreamRequest(sourceTitle, activeSources(sources)));
@@ -1715,9 +1792,13 @@ export default function App() {
   };
 
   const generateDigest = async (options?: { fresh?: boolean }) => {
+    if (sources.length === 0) {
+      if (options?.fresh) showToast('Add or import subscriptions in Sources before building an edition');
+      return;
+    }
     // Every feed paused is a library the reader still has, and an edition that cannot exist.
     // Say so here rather than sending an empty list and reporting it as a server failure.
-    if (sources.length > 0 && activeSources(sources).length === 0) {
+    if (activeSources(sources).length === 0) {
       showToast('Every feed is paused — resume one in Sources to build an edition');
       return;
     }
@@ -1895,6 +1976,10 @@ export default function App() {
   };
 
   const loadCalibration = async () => {
+    if (sources.length === 0) {
+      setSetupError('Add or import a source before calibrating Curator.');
+      return;
+    }
     setLoadingCalibration(true);
     setSetupError(null);
     try {
@@ -2511,6 +2596,10 @@ export default function App() {
   // Re-read every watched feed — and only the feeds. It never rebuilds the digest, so a refresh
   // here cannot reshuffle what is waiting on the Today page.
   const handleRefreshAllFeeds = async () => {
+    if (sources.length === 0) {
+      showToast('Add or import subscriptions before refreshing feeds');
+      return;
+    }
     if (refreshingAllFeeds) return;
     setRefreshingAllFeeds(true);
     try {
@@ -6064,6 +6153,62 @@ Search for writers, publications, or topics. Curator checks whether each result 
               </div>
             </SettingsSection>
 
+            <SettingsSection
+              icon={<AlertCircle className="w-4 h-4" />}
+              title="Danger"
+              meta="Destructive actions"
+            >
+              <div className="space-y-4">
+                <div className="flex flex-col gap-3 rounded-2xl border border-rose-500/20 bg-rose-500/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-100">Reset all sources</p>
+                    <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                      Delete all {sources.length} subscription{sources.length === 1 ? '' : 's'} and their unread markers. Saved articles and preferences stay.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={resetAllSources}
+                    disabled={sources.length === 0}
+                    className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl border border-rose-500/40 px-3.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Reset all sources
+                  </button>
+                </div>
+                <div className="flex flex-col gap-3 rounded-2xl border border-rose-500/20 bg-rose-500/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-100">Reset reading preferences</p>
+                    <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                      Clear every vote that teaches the ranking, the signals built from them and the interests you declared. Feeds, saved stories and reading history stay.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={resetReadingPreferences}
+                    disabled={!hasReadingProfile}
+                    className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl border border-rose-500/40 px-3.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Reset reading preferences
+                  </button>
+                </div>
+                <div className="flex flex-col gap-3 rounded-2xl border border-rose-500/30 bg-rose-500/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-rose-200">Factory reset</p>
+                    <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                      Permanently erase every Curator setting, subscription, saved story, API key and reading record in this browser. Starter feeds return on restart.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={factoryReset}
+                    className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl bg-rose-500/15 px-3.5 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/25"
+                  >
+                    Factory reset
+                  </button>
+                </div>
+              </div>
+            </SettingsSection>
+
             {/* Which build this device is running: the quickest way to tell a stale phone from
                 an updated one after a deploy. */}
             <p
@@ -6232,13 +6377,15 @@ Search for writers, publications, or topics. Curator checks whether each result 
               </div>
             ) : feedStreamArticles.length === 0 ? (
               <div className="py-20 text-center text-slate-400 space-y-2">
-                <p className="text-sm">No entries found for this feed.</p>
+                <p className="text-sm">
+                  {sources.length === 0 ? 'No subscriptions yet. Add or import sources to see stories here.' : 'No entries found for this feed.'}
+                </p>
                 <button
                   type="button"
-                  onClick={() => handleOpenFeedStream('all')}
+                  onClick={() => sources.length === 0 ? setActiveTab('sources') : handleOpenFeedStream('all')}
                   className="text-xs text-amber-400 underline"
                 >
-                  Return to all feeds stream
+                  {sources.length === 0 ? 'Manage sources' : 'Return to all feeds stream'}
                 </button>
               </div>
             ) : (

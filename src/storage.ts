@@ -120,3 +120,24 @@ export function downloadAppData(): boolean {
     return false;
   }
 }
+
+/** Removes every value owned by Curator from this browser, without touching other apps. */
+export function clearAppData(): boolean {
+  let cleared = true;
+  try {
+    const keys: string[] = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(APP_KEY_PREFIX)) keys.push(key);
+    }
+    keys.forEach(key => localStorage.removeItem(key));
+  } catch {
+    cleared = false;
+  }
+
+  for (const key of memoryFallback.keys()) {
+    if (key.startsWith(APP_KEY_PREFIX)) memoryFallback.delete(key);
+  }
+  if (cleared) lastFailure = null;
+  return cleared;
+}
