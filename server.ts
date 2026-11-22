@@ -1314,6 +1314,10 @@ async function startServer() {
         // This text came from the cleaner that keeps a link's address, so a reader holding it
         // needs no refresh. Saves written before that change lack the flag and are refreshed.
         linksCleaned: true,
+        // The feed's own body ended by offering the rest of the piece. The cleaner removes that
+        // line, so the excerpt alone can read as complete; the flag tells the reader there is
+        // more, and it fetches the page once when the piece is opened.
+        teaser: needsArticleFetch,
         _needsArticleFetch: needsArticleFetch,
         publishedAt,
         publishedAtMs: Number.isFinite(publishedAtMs) ? publishedAtMs : undefined,
@@ -1338,11 +1342,19 @@ async function startServer() {
 
   // The part of a page that is the piece itself. Both the text and the video are read from it, so
   // a player in the site's sidebar is never mistaken for the article's own.
+  // Publishers put the masthead, a subscribe modal and the piece inside one <article>, and name
+  // the piece's own container by class. Starting there leaves the furniture above it behind: a
+  // Substack post otherwise opens with its email-capture modal, the section label, the standfirst
+  // and the comment count before the first sentence.
+  const bodyContainerTag = /<div\b[^>]*class\s*=\s*["'][^"']*\b(?:available-content|body markup|article-body|article-content|entry-content|post-body|post-content|story-body)\b[^"']*["'][^>]*>/i;
   const articleRegion = (html: string): string => {
     const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
-    if (articleMatch?.[1]) return articleMatch[1];
-    const mainMatch = html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
-    return mainMatch?.[1] || '';
+    const mainMatch = articleMatch?.[1] ? null : html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
+    const region = articleMatch?.[1] || mainMatch?.[1] || '';
+    if (!region) return '';
+    // The container's own closing tag stays in the slice; the stray tag is stripped with the rest.
+    const start = region.match(bodyContainerTag)?.index ?? 0;
+    return start > 0 ? region.slice(start) : region;
   };
 
   const extractArticleBody = (html: string, baseUrl = ''): string => {
@@ -1484,7 +1496,12 @@ async function startServer() {
         // A page that still stops at a teaser (a paywall, or a stub the publisher never expanded)
         // is no fuller than the feed's own text, so the stored body stays.
         if (!articleText || articleLooksIncomplete({ url: item.url, fullText: articleText })) continue;
+        // A teaser is worth replacing only by something longer than the excerpt the feed gave;
+        // a page that yields less is the same cut, reached a different way.
+        if (item.teaser && articleText.length <= String(item.fullText || '').length) continue;
         item.fullText = articleText;
+        // The page gave up the rest, so the reader no longer has to ask for it.
+        item.teaser = false;
         const words = articleText.split(/\s+/).filter(Boolean).length;
         item.readTime = `${Math.max(2, Math.round(words / 200))} min read`;
       }

@@ -329,6 +329,37 @@ test('a piece that merely mentions the podcast furniture keeps its own ending', 
   assert.equal(body, 'Real article text starts here.\n\nThe show lists recent episodes on its own page, not here.');
 });
 
+test('htmlToReadableText ends a newsletter post before its subscribe box and comments', () => {
+  // The tail of a Substack post, as the page carries it after the last paragraph: the publication's
+  // name over an email box, its blurb, the legal line, the like count, then the thread under its own
+  // heading. None of it is the piece, and the feed's own "Read more" line is gone by this point.
+  const body = htmlToReadableText([
+    '<p>Real article text starts here.</p>',
+    '<p>Real article text continues.</p>',
+    '<p>The piece goes on for another paragraph.</p>',
+    '<p>A fourth paragraph of the piece.</p>',
+    '<p>A fifth paragraph, still the piece.</p>',
+    '<p>A sixth paragraph, which is the last of it.</p>',
+    '<p>Subscribe to Example\u2019s Newsletter</p>',
+    '<p>A publication about foreign policy and American politics.</p>',
+    "<p>By subscribing, you agree to Substack's Terms of Use.</p>",
+    '<p>41 Likes · 5 Restacks</p>',
+    '<p>Discussion about this post</p>',
+    '<p>A commenter writes at length about the piece, in a sentence long enough to look like prose.</p>',
+  ].join(''));
+  assert.equal(body, [
+    'Real article text starts here.',
+    'Real article text continues.',
+    'The piece goes on for another paragraph.',
+    'A fourth paragraph of the piece.',
+    'A fifth paragraph, still the piece.',
+    'A sixth paragraph, which is the last of it.',
+  ].join('\n\n'));
+  // A sentence that merely talks about subscribing is still the piece's own last sentence.
+  const prose = 'Readers who subscribe to the newsletter get every post by email.';
+  assert.equal(htmlToReadableText(`<p>Real article text starts here.</p><p>${prose}</p>`), `Real article text starts here.\n\n${prose}`);
+});
+
 test('htmlToReadableText keeps a word clear of the parameter that followed it', () => {
   assert.equal(
     htmlToReadableText('<p>The?install=datasette-maplibre installs that plugin from PyPI.</p>'),

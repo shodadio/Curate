@@ -230,6 +230,12 @@ const relatedHeading = /^(?:more by\s+\p{Lu}[\p{L}'’.-]*(?:\s+\p{Lu}[\p{L}'’
 // heading, so the first of them closes the piece.
 const podcastFurnitureHeading = /^(?:discussion about this (?:video|episode|podcast)|appears in episode|recent episodes)$/i;
 
+// A newsletter post closes by selling itself: Substack prints the publication's name over an email
+// box ("Subscribe to Richard Hanania's Newsletter"), the publication's own blurb under it, then the
+// comment thread under "Discussion about this post". All of it sits inside the piece's container on
+// the page, after the last paragraph, so the first of these headings is where the piece ends.
+const newsletterFurnitureHeading = /^(?:subscribe to\b.{0,60}|ready for more\?|discussion about this post)$/i;
+
 // The site's own sidebar, which most publishers repeat under the piece: a previous-article
 // arrow, a membership block, then sections of links under headings and dates. Each line on
 // its own looks harmless, so the run is only cut when it holds a date or a "View All" link.
@@ -300,6 +306,17 @@ export const dropEndingFurniture = (paragraphs: string[]): string[] => {
   for (let index = 1; index < end; index++) {
     const text = wordsOf(kept[index]);
     if (text.length <= 60 && podcastFurnitureHeading.test(text)) {
+      end = index;
+      break;
+    }
+  }
+
+  // The same rule for the newsletter's own closing block: its subscribe box and comment thread are
+  // the site talking, and a page fetched to get the rest of a piece carries them. This one is only
+  // trusted in the back half, so a piece that uses the words as a heading of its own is left whole.
+  for (let index = Math.max(1, Math.floor(end / 2)); index < end; index++) {
+    const text = wordsOf(kept[index]);
+    if (text.length <= 80 && newsletterFurnitureHeading.test(text)) {
       end = index;
       break;
     }
@@ -445,6 +462,9 @@ export const htmlToReadableText = (html: string, baseUrl = ''): string => {
     .filter(paragraph => {
       // Length is measured on the words: a link's address is not part of the line the reader sees.
       const words = linkLabelsOnly(paragraph);
+      // The heading over a newsletter's email box names the publication it is selling, and the
+      // ending cut below hangs on it, so it survives this pass and leaves with the rest of the tail.
+      if (words.length <= 80 && /^subscribe to\b/i.test(words)) return true;
       return !(words.length < 180 && /^(click here|subscribe|sign up|follow me|read more|read on|learn more|share this|advertisement)\b/i.test(words));
     })
     // "* Subscribers only" and its siblings are paywall footnotes, not article text. The footnote's

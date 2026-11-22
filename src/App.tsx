@@ -180,6 +180,10 @@ interface DigestItem {
   // stored copy; `linkRefreshAt` keeps a piece with no links of its own from being fetched twice.
   linksCleaned?: boolean;
   linkRefreshAt?: number;
+  // The feed itself ended by offering the rest of the piece ("Read more", "Read full article").
+  // The cleaner drops that line, so the excerpt alone can look whole; the flag keeps the fact
+  // that the publisher said there is more, and the reader fetches the rest once when it opens.
+  teaser?: boolean;
   // A saved piece from before the reader credited writers asks the server for its byline once;
   // the stamp keeps a page that names nobody from being asked again on every launch.
   authorCheckedAt?: number;
@@ -3038,9 +3042,11 @@ export default function App() {
       // feed excerpt the publisher never expanded) is no fuller than what is already stored.
       if (text.length < 200) return;
       if (articleLooksIncomplete(item) && articleLooksIncomplete({ url: item.url, fullText: text })) return;
+      // A teaser is worth opening a page for only if the page gives more than the excerpt did.
+      if (item.teaser && text.length <= item.fullText.length) return;
       const refreshedAt = Date.now();
       const upgrade = (entry: DigestItem): DigestItem => entry.id === item.id
-        ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt, video: entry.video || video || undefined }
+        ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt, teaser: false, video: entry.video || video || undefined }
         : entry;
       setSelectedArticle(prev => (prev && prev.id === item.id ? upgrade(prev) : prev));
       setSavedArticles(prev => prev.map(upgrade));
@@ -3116,7 +3122,7 @@ export default function App() {
             // A piece the server could not read (a dead page, a paywall) keeps its stored body;
             // the stamp records that this pass asked, so the count does not sit at one forever.
             return text
-              ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt }
+              ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt, teaser: false }
               : { ...entry, linkRefreshAt: refreshedAt };
           };
           setSelectedArticle(prev => (prev ? applyBatch(prev) : prev));
@@ -3181,7 +3187,9 @@ export default function App() {
       setReadSourceIds(prev => [...prev, match.id]);
     }
 
-    if (articleNeedsLinkRefresh(item) || articleLooksIncomplete(item)) void refreshArticleLinks(item);
+    // A piece the feed only began — its own "Read more" line, or an excerpt that stops short —
+    // earns one page read when it is opened, whatever its excerpt looks like.
+    if (articleNeedsLinkRefresh(item) || articleLooksIncomplete(item) || item.teaser) void refreshArticleLinks(item);
 
     window.history.pushState({ curatorReader: true }, '');
     readerHistoryDepthRef.current += 1;
