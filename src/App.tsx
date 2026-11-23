@@ -4912,17 +4912,18 @@ export default function App() {
                     There is no delivery time: the next edition is built the next time you open Curator.
                   </p>
 
-                  {allDigestItemsActioned && (
-                    <button
-                      type="button"
-                      onClick={searchAnotherRound}
-                      disabled={startingFreshRound}
-                      className="mt-3 inline-flex min-h-11 items-center gap-1.5 rounded-full border border-amber-500/40 px-4 text-xs font-medium text-amber-300 transition hover:border-amber-400/60 hover:text-amber-200 disabled:opacity-60"
-                    >
-                      <RefreshCw className={`h-3.5 w-3.5 ${startingFreshRound ? 'animate-spin' : ''}`} />
-                      <span>{startingFreshRound ? 'Searching…' : 'Search for a new set'}</span>
-                    </button>
-                  )}
+                  {/* The one action a finished edition needs, in the place a reader reaches after
+                      the last story — the masthead's Refresh is far above by then. It offers the
+                      same thing whether or not every card has been dealt with. */}
+                  <button
+                    type="button"
+                    onClick={searchAnotherRound}
+                    disabled={startingFreshRound}
+                    className="mt-1 inline-flex min-h-11 items-center gap-1.5 text-xs font-medium text-amber-300 transition hover:text-amber-200 disabled:opacity-60"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${startingFreshRound ? 'animate-spin' : ''}`} />
+                    <span>{startingFreshRound ? 'Searching…' : 'Build a new edition'}</span>
+                  </button>
 
                   {earlierEditions.length > 0 && (
                     <section aria-labelledby="earlier-editions" className="mt-8">
