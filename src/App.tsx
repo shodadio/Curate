@@ -26,7 +26,7 @@ import { loadInterests, saveInterests, emptyInterests, suggestionsFromFolders, T
 import { clearAppData, safeGetItem, safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, readAppData, type StorageFailure } from './storage';
 import { readBackupFile, restorePlan } from '../lib/backup';
 import { migrateStoryIds } from '../lib/storyIdMigration';
-import { MAX_EDITIONS, editionDayLabel, editionMinutes as editionMinutesFor, editionStoryCount, readEditions, recordEdition, type Edition } from '../lib/editions';
+import { editionDayLabel, editionMinutes as editionMinutesFor, readEditions, recordEdition, type Edition } from '../lib/editions';
 import { formatBytes, measureStorage, pruneArticleBodies, pruneReadingStats, type StorageReport } from '../lib/storageHealth';
 import { activeSources, applyFeedFailures, resumeFeed } from '../lib/sourceRetirement';
 import {
@@ -753,6 +753,15 @@ export default function App() {
 
   // The last few days' editions, so a morning the reader skipped is still readable.
   const [editions, setEditions] = useState<Edition[]>(() => readEditions(safeGetItem('curator_editions')));
+  // The masthead's edition number: how many editions this browser has built, so the front page
+  // is numbered like an issue. An install that predates the count starts from the mornings
+  // already in its folio rather than calling this morning the first.
+  const [editionNumber, setEditionNumber] = useState<number>(() => {
+    const stored = Math.floor(Number(safeGetItem('curator_edition_number')));
+    return Number.isFinite(stored) && stored > 0 ? stored : readEditions(safeGetItem('curator_editions')).length;
+  });
+  // Which earlier edition the reader has opened in the folio at the end of the page.
+  const [openEditionAt, setOpenEditionAt] = useState<number | null>(null);
   const [savedQuery, setSavedQuery] = useState<string>('');
   const [storageReport, setStorageReport] = useState<StorageReport | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
@@ -1921,6 +1930,12 @@ export default function App() {
         safeSetJson('curator_digest_cache', { curatedAt: builtAt, items: outcome.items });
         // The edition that just arrived joins the archive, so tomorrow's miss is not a loss.
         setEditions(prev => recordEdition(prev, builtAt, outcome.items));
+        // One number per edition that arrives, so the masthead counts up the way an issue does.
+        setEditionNumber(previous => {
+          const next = Math.max(previous, 0) + 1;
+          safeSetItem('curator_edition_number', String(next));
+          return next;
+        });
         applySourceMetadata(outcome.items);
         if (outcome.semanticSummary) setSemanticSummary(outcome.semanticSummary);
         if (outcome.feedReport) {
@@ -3495,9 +3510,17 @@ export default function App() {
   // screen. Once that edition is from an earlier day the heading cannot say "Today's".
   const editionIsToday = digestCuratedAt > 0
     && new Date(digestCuratedAt).toDateString() === new Date().toDateString();
-  const editionHeading = todayDigest.length === 0 || editionIsToday ? "Today's Digest" : 'Your last edition';
   // The settings sheet names the same edition the page is showing, so the two never disagree.
   const editionSheetTitle = todayDigest.length === 0 || editionIsToday ? 'Today\u2019s edition' : 'Your last edition';
+  // The dateline belongs to the edition, not to the moment it is read: an edition left open
+  // overnight must not be dated this morning.
+  const mastheadDateline = new Date(digestCuratedAt > 0 ? digestCuratedAt : Date.now())
+    .toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  // The folio at the end lists the mornings this browser kept — never the edition being read,
+  // which is the page itself.
+  const earlierEditions = editions.filter(edition =>
+    !(digestCuratedAt > 0 && edition.curatedAt === digestCuratedAt),
+  );
   const editionItems = todayDigest.filter(item => !mutedCards[item.id]);
   const editionMinutes = editionItems.reduce((total, item) => total + (parseInt(item.readTime, 10) || 0), 0);
   // The piece after the open one in the list the reader came from, so the end of an article can
@@ -3543,7 +3566,6 @@ export default function App() {
   const editionCountLabel = todayDigest.length === 0
     ? 'No stories yet'
     : `${todayDigest.length} of ${itemCount} ${itemCount === 1 ? 'story' : 'stories'}`;
-  const archivedStoryCount = editionStoryCount(editions);
 
   const restoreAllMutedCards = () => {
     const restoredIds = mutedDigestItems.map(item => item.id);
@@ -4140,8 +4162,81 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Top Header Bar */}
-      <header inert={backgroundInert} className="sticky top-0 z-40 w-full safe-header bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-4 sm:px-6 pb-3 shrink-0 shadow-sm">
+      {/* Today opens like a printed front page rather than an app: a masthead with the name set
+          as a logotype, an edition number, a dateline, the count and minutes on one line, and
+          the editor's line. Refresh, Edition and Settings are words on its baseline. */}
+      {activeTab === 'today' ? (
+        <header inert={backgroundInert} className="w-full">
+          <div className="mx-auto w-full max-w-3xl px-4 pb-3 pt-[max(1rem,env(safe-area-inset-top))] sm:px-6 sm:pt-[max(1.25rem,env(safe-area-inset-top))]">
+            <div className="flex items-start justify-between gap-3">
+              <h1 className="flex min-w-0 items-baseline gap-[0.14em] text-[clamp(2.1rem,8.5vw,2.8rem)] leading-none">
+                <span className="text-[0.42em] font-semibold uppercase leading-none tracking-[0.36em] text-amber-500">The</span>
+                <span className="font-semibold uppercase leading-none tracking-[0.015em] text-slate-50">Curator</span>
+              </h1>
+              {todayDigest.length > 0 && editionNumber > 0 && (
+                <p className="shrink-0 pt-1.5 text-[10px] font-medium uppercase leading-none tabular-nums tracking-[0.28em] text-slate-500">
+                  No. {editionNumber}
+                </p>
+              )}
+            </div>
+
+            {/* The masthead rule: heavy over hairline, the way a front page divides its name
+                from its dateline. */}
+            <div aria-hidden="true" className="mt-3 flex flex-col gap-[3px]">
+              <span className="h-[2px] w-full bg-slate-300/60" />
+              <span className="h-px w-full bg-slate-300/20" />
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+              <p className="text-[10px] font-medium uppercase leading-none tracking-[0.24em] text-slate-400">
+                {mastheadDateline}
+              </p>
+              <p className="text-[11px] leading-none tabular-nums text-slate-400">
+                {editionCountLabel}
+                {editionMinutes > 0 ? ` · ${editionMinutes} min` : ''}
+                {mutedDigestItems.length > 0 ? ` · ${mutedDigestItems.length} hidden` : ''}
+              </p>
+            </div>
+
+            <div className="mt-2.5 flex flex-col gap-1 border-b border-slate-800/80 pb-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+              <p className="min-w-0 text-[11px] italic leading-snug text-slate-400 sm:flex-1">
+                Everything your feeds published, read and weighed, cut to what earns the morning.
+              </p>
+              <nav aria-label="Masthead" className="flex shrink-0 items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => generateDigest({ fresh: true })}
+                  disabled={loadingDigest}
+                  className="inline-flex min-h-9 items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-300 transition hover:text-amber-300 disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3 w-3 ${loadingDigest ? 'animate-spin' : ''}`} />
+                  {loadingDigest ? 'Refreshing' : 'Refresh'}
+                </button>
+                <span aria-hidden="true" className="text-[10px] text-slate-700">·</span>
+                <button
+                  type="button"
+                  onClick={() => setShowDigestSettings(true)}
+                  aria-haspopup="dialog"
+                  aria-expanded={showDigestSettings}
+                  aria-label={`Edition settings — ${itemCount} stories per edition${compactCards ? ', compact cards' : ''}`}
+                  className="inline-flex min-h-9 items-center text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-300 transition hover:text-amber-300"
+                >
+                  Edition
+                </button>
+                <span aria-hidden="true" className="text-[10px] text-slate-700">·</span>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('settings')}
+                  className="inline-flex min-h-9 items-center text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-300 transition hover:text-amber-300"
+                >
+                  Settings
+                </button>
+              </nav>
+            </div>
+          </div>
+        </header>
+      ) : (
+        <header inert={backgroundInert} className="sticky top-0 z-40 w-full safe-header bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-4 sm:px-6 pb-3 shrink-0 shadow-sm">
         <div className="max-w-3xl w-full mx-auto flex items-center justify-between gap-2 sm:gap-3">
           {/* Official Brand Logo & Subtitle */}
           <button 
@@ -4160,21 +4255,7 @@ export default function App() {
             </div>
           </button>
 
-          {/* One refresh in the whole app, and only where it means something: on Today it
-              rebuilds the digest. Feeds and Sources refresh their own feeds instead. */}
           <div className="hidden sm:block flex-1" aria-hidden="true" />
-          {activeTab === 'today' && (
-            <button
-              type="button"
-              onClick={() => generateDigest({ fresh: true })}
-              disabled={loadingDigest}
-              className="w-11 h-11 shrink-0 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-50 cursor-pointer"
-              title="Refresh today's digest"
-              aria-label="Refresh today's digest"
-            >
-              <RefreshCw className={`w-4 h-4 ${loadingDigest ? 'animate-spin' : ''}`} />
-            </button>
-          )}
           <button
             type="button"
             onClick={() => setActiveTab(prev => prev === 'settings' ? 'today' : 'settings')}
@@ -4190,7 +4271,8 @@ export default function App() {
             <Sliders className="w-4 h-4" />
           </button>
         </div>
-      </header>
+        </header>
+      )}
 
       {/* Content Area */}
       <main inert={backgroundInert} className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-32 safe-main overflow-x-clip">
@@ -4230,44 +4312,6 @@ export default function App() {
         {/* TAB 1: TODAY */}
         {activeTab === 'today' && (
           <div className="space-y-6 animate-fade-in w-full max-w-full">
-            <div className="flex flex-col items-start gap-3 border-b border-slate-900 pb-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-2xl font-semibold tracking-tight text-slate-100">{editionHeading}</h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  {loadingDigest && todayDigest.length === 0
-                    ? "Synthesizing today's list…"
-                    : `${digestCuratedAt > 0
-                        ? `Built ${formatCuratedAt(digestCuratedAt)}`
-                        : todayDigest.length > 0
-                          ? 'Edition date not recorded'
-                          : `Today's digest · ${new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}`
-                      } · ${editionCountLabel}${
-                        editionMinutes > 0 ? ` · ${editionMinutes} min` : ''
-                      }${
-                        editionIsToday && todayDigest.length > 0
-                          ? ' · from the last 24 hours'
-                          : ''
-                      }${
-                        mutedDigestItems.length > 0 ? ` · ${mutedDigestItems.length} hidden` : ''
-                      }`}
-                </p>
-              </div>
-              <div className="flex w-full items-center gap-2 text-xs text-slate-400 sm:w-auto">
-                <button
-                  type="button"
-                  onClick={() => setShowDigestSettings(true)}
-                  aria-haspopup="dialog"
-                  aria-expanded={showDigestSettings}
-                  aria-label={`Edition settings — ${itemCount} stories per edition${compactCards ? ', compact cards' : ''}`}
-                  className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/60 px-3 font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300"
-                >
-                  <Sliders className="w-3.5 h-3.5 text-amber-400" />
-                  <span>{itemCount} per edition</span>
-                  {compactCards && <span className="text-slate-400">· compact</span>}
-                </button>
-              </div>
-            </div>
-
             {feedReport && feedReport.failed.length > 0 && (
               <button
                 type="button"
@@ -4281,56 +4325,6 @@ export default function App() {
                   {feedReport.failed.length > 3 ? ', …' : ''}). Tap to review sources.
                 </span>
               </button>
-            )}
-
-            {/* The editions this browser has kept: a morning the reader did not open is still
-                readable rather than lost to the 24-hour window. */}
-            {editions.length > 0 && (
-              <details className="group rounded-2xl border border-slate-800/80 bg-slate-900/30 px-4 py-3">
-                <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-xs font-medium text-slate-300 [&::-webkit-details-marker]:hidden">
-                  <span className="inline-flex items-center gap-1.5">
-                    <Bookmark className="w-3.5 h-3.5 text-amber-400" />
-                    Earlier editions
-                  </span>
-                  <span className="text-slate-500">
-                    {archivedStoryCount} {archivedStoryCount === 1 ? 'story' : 'stories'}
-                    <ChevronDown className="ml-1 inline w-3.5 h-3.5 transition-transform group-open:rotate-180" />
-                  </span>
-                </summary>
-                <ul className="mt-3 space-y-3">
-                  {editions.map(edition => (
-                    <li key={edition.curatedAt}>
-                      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                        {editionDayLabel(edition.curatedAt)} · {edition.items.length} {edition.items.length === 1 ? 'story' : 'stories'}
-                        {editionMinutesFor(edition.items) > 0 ? ` · ${editionMinutesFor(edition.items)} min` : ''}
-                      </p>
-                      <ul className="mt-1.5 space-y-1">
-                        {edition.items.map(item => (
-                          <li key={`${edition.curatedAt}-${item.id}`}>
-                            <button
-                              type="button"
-                              onClick={() => openArticle({
-                                ...item,
-                                folder: item.folder || 'General',
-                                readTime: item.readTime || '',
-                                why: '',
-                                summary: item.summary || '',
-                                url: item.url || '',
-                                fullText: '',
-                                isOutOfBubble: Boolean(item.isOutOfBubble),
-                              })}
-                              className="flex min-h-9 w-full items-baseline gap-2 rounded-lg px-1 text-left text-xs text-slate-300 transition hover:text-amber-300"
-                            >
-                              <span className="min-w-0 flex-1 truncate">{item.title}</span>
-                              <span className="shrink-0 text-slate-500">{item.source}</span>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </li>
-                  ))}
-                </ul>
-              </details>
             )}
 
             {digestOffline && todayDigest.length > 0 && (
@@ -4899,41 +4893,96 @@ export default function App() {
                   </div>
                 )}
 
-                {/* The edition ends here: say what they just read, and how the next one arrives.
-                    Nothing is scheduled, so the copy must not imply a 7am delivery. Once every
-                    story has been actioned, the end of the edition offers a fresh search. */}
-                {allDigestItemsActioned ? (
-                  <div className="animate-fade-in rounded-3xl border border-emerald-500/30 bg-emerald-500/[0.06] px-5 py-6 text-center">
-                    <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full border border-emerald-500/40 bg-emerald-500/10">
-                      <CheckCheck className="h-5 w-5 text-emerald-400" />
-                    </div>
-                    <div role="status">
-                      <h3 className="text-base font-semibold tracking-tight text-slate-100">All done, for now</h3>
-                      <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-slate-400">
-                        You&apos;ve been through every story in this edition. Curator can search your feeds again for a new set.
-                      </p>
-                    </div>
+                {/* The full stop. A printed edition ends with a rule and a sentence, not a
+                    card: what you just read, when the next one comes, and — beneath it — the
+                    mornings this browser kept, set as dated rows. Nothing is scheduled, so the
+                    copy must not imply a 7am delivery. */}
+                <footer>
+                  <div aria-hidden="true" className="relative h-[3px] w-full">
+                    <span className="absolute inset-x-0 top-0 h-px bg-slate-100/25" />
+                    <span className="absolute left-0 top-0 h-[3px] w-12 bg-amber-500" />
+                  </div>
+
+                  <p role="status" className="mt-5 text-sm leading-relaxed text-slate-200">
+                    {allDigestItemsActioned
+                      ? `You have opened, saved or set aside every one of the ${editionItems.length} stories in this edition.`
+                      : `${editionItems.length} ${editionItems.length === 1 ? 'story' : 'stories'}${editionMinutes > 0 ? `, ${editionMinutes} minutes` : ''} — that is the edition.`}
+                  </p>
+                  <p className="mt-1.5 text-xs leading-relaxed text-slate-400">
+                    There is no delivery time: the next edition is built the next time you open Curator.
+                  </p>
+
+                  {allDigestItemsActioned && (
                     <button
                       type="button"
                       onClick={searchAnotherRound}
                       disabled={startingFreshRound}
-                      className="mt-4 inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-amber-500 px-4 text-sm font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-60"
+                      className="mt-3 inline-flex min-h-11 items-center gap-1.5 rounded-full border border-amber-500/40 px-4 text-xs font-medium text-amber-300 transition hover:border-amber-400/60 hover:text-amber-200 disabled:opacity-60"
                     >
-                      <RefreshCw className={`h-4 w-4 ${startingFreshRound ? 'animate-spin' : ''}`} />
+                      <RefreshCw className={`h-3.5 w-3.5 ${startingFreshRound ? 'animate-spin' : ''}`} />
                       <span>{startingFreshRound ? 'Searching…' : 'Search for a new set'}</span>
                     </button>
-                  </div>
-                ) : (
-                  <div className="rounded-3xl border border-slate-800 bg-slate-900/40 px-5 py-6 text-center">
-                    <CuratorMark className="w-8 h-8 mx-auto mb-3 opacity-90" />
-                    <p className="text-sm font-semibold text-slate-100">
-                      That&apos;s your edition — {editionItems.length} {editionItems.length === 1 ? 'story' : 'stories'}, ~{editionMinutes} minutes.
-                    </p>
-                    <p className="mt-1 text-xs text-slate-400">
-                      Curator has no schedule: a fresh edition builds the next time you open it.
-                    </p>
-                  </div>
-                )}
+                  )}
+
+                  {earlierEditions.length > 0 && (
+                    <section aria-labelledby="earlier-editions" className="mt-8">
+                      <h3
+                        id="earlier-editions"
+                        className="text-[10px] font-semibold uppercase tracking-[0.3em] text-slate-500"
+                      >
+                        Earlier editions
+                      </h3>
+                      <ul className="mt-1.5 border-t border-slate-800/70">
+                        {earlierEditions.map(edition => {
+                          const open = openEditionAt === edition.curatedAt;
+                          const minutes = editionMinutesFor(edition.items);
+                          return (
+                            <li key={edition.curatedAt} className="border-b border-slate-800/70">
+                              <button
+                                type="button"
+                                onClick={() => setOpenEditionAt(open ? null : edition.curatedAt)}
+                                aria-expanded={open}
+                                className="flex min-h-11 w-full items-baseline justify-between gap-3 py-2 text-left text-sm text-slate-200 transition hover:text-amber-300"
+                              >
+                                <span className="min-w-0 truncate">{editionDayLabel(edition.curatedAt)}</span>
+                                <span className="flex shrink-0 items-baseline gap-2 text-[11px] tabular-nums text-slate-500">
+                                  {edition.items.length} {edition.items.length === 1 ? 'story' : 'stories'}
+                                  {minutes > 0 ? ` · ${minutes} min` : ''}
+                                  <ChevronDown className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+                                </span>
+                              </button>
+                              {open && (
+                                <ul className="space-y-1 pb-3">
+                                  {edition.items.map(item => (
+                                    <li key={`${edition.curatedAt}-${item.id}`}>
+                                      <button
+                                        type="button"
+                                        onClick={() => openArticle({
+                                          ...item,
+                                          folder: item.folder || 'General',
+                                          readTime: item.readTime || '',
+                                          why: '',
+                                          summary: item.summary || '',
+                                          url: item.url || '',
+                                          fullText: '',
+                                          isOutOfBubble: Boolean(item.isOutOfBubble),
+                                        })}
+                                        className="flex min-h-9 w-full items-baseline gap-2 rounded-lg px-1 text-left text-xs text-slate-300 transition hover:text-amber-300"
+                                      >
+                                        <span className="min-w-0 flex-1 truncate">{item.title}</span>
+                                        <span className="shrink-0 text-slate-500">{item.source}</span>
+                                      </button>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </section>
+                  )}
+                </footer>
               </div>
             )}
           </div>

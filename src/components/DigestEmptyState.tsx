@@ -41,8 +41,8 @@ export function DigestEmptyState({
         </h3>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-slate-400">
           {isMuted
-            ? "You marked every story here \u201cLess like this\u201d, so there is nothing left to read. Restore them to pick up where you left off, or tap the refresh icon at the top for a new mix."
-            : 'Your feeds have not published anything new in the last 24 hours. Tap the refresh icon at the top to look again.'}
+            ? "You marked every story here \u201cLess like this\u201d, so there is nothing left to read. Restore them to pick up where you left off, or choose Refresh at the top for a new mix."
+            : 'Your feeds have not published anything new in the last 24 hours. Choose Refresh at the top to look again.'}
         </p>
       </div>
 
