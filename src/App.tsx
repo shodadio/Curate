@@ -3686,14 +3686,31 @@ export default function App() {
 
   // The front page sets the edition by size: one lead, two second reads, and the rest as a
   // ruled index. The engine's order is kept inside each group, so the top of the page is still
-  // its judgement of what matters most and the stretch stories stay in the tail.
-  const readableDigest = todayDigest
-    .filter(item => !mutedCards[item.id])
-    .sort((a, b) => Number(a.isOutOfBubble) - Number(b.isOutOfBubble));
-  const leadStory = readableDigest[0];
-  const secondReads = readableDigest.slice(1, 3);
-  const indexStories = readableDigest.slice(3);
-  const setAsideStories = todayDigest.filter(item => Boolean(mutedCards[item.id]));
+  // its judgement of what matters most.
+  //
+  // The stretch picks are not part of that run. They are the edition's one aside, set inset at
+  // the turn of the page — after the second reads, before the index — so a piece chosen for range
+  // interrupts the reading once instead of being appended as a second digest. The aside only has
+  // a place when the page has its own stories to interrupt; an edition made only of stretch picks
+  // is the edition, not an aside to it.
+  const readableDigest = todayDigest.filter(item => !mutedCards[item.id]);
+  const stretchStories = readableDigest.filter(item => item.isOutOfBubble);
+  const regularStories = readableDigest.filter(item => !item.isOutOfBubble);
+  const showsStretchAside = regularStories.length > 0 && stretchStories.length > 0;
+  const frontPageStories = regularStories.length > 0 ? regularStories : readableDigest;
+  const leadStory = frontPageStories[0];
+  const secondReads = frontPageStories.slice(1, 3);
+  const indexStories = frontPageStories.slice(3);
+  const mutedDigestStories = todayDigest.filter(item => Boolean(mutedCards[item.id]));
+  const stretchAsideStories = showsStretchAside ? stretchStories : [];
+  // A set-aside stretch keeps its row inside the aside, where Undo can be found where the story
+  // was; every other set-aside story keeps its row in the index.
+  const setAsideStretchStories = showsStretchAside
+    ? mutedDigestStories.filter(item => item.isOutOfBubble)
+    : [];
+  const setAsideStories = showsStretchAside
+    ? mutedDigestStories.filter(item => !item.isOutOfBubble)
+    : mutedDigestStories;
   const leadActions = getCardActions(leadStory?.id || '');
   const leadStatus = leadActions.isReadThrough ? 'Read through' : leadActions.isClicked ? leadActions.openedLabel : '';
   const leadByline = leadStory ? bylineLineFor(leadStory) : { lead: '', readTime: '' };
@@ -4764,6 +4781,108 @@ export default function App() {
                       );
                     })}
                   </section>
+                )}
+
+                {/* The one deliberate interruption: every out-of-bubble pick gathered into a
+                    single inset panel, narrower than the column and tinted a shade off the paper,
+                    held between two hairlines. It is set where the editor placed it — at the
+                    turn from the front page's run into its index — never appended after the
+                    edition. One label, in the edition's serif small caps, says once what the
+                    amber flag used to repeat on every row. */}
+                {(stretchAsideStories.length > 0 || setAsideStretchStories.length > 0) && (
+                  <aside
+                    aria-labelledby="deliberate-stretch"
+                    className="animate-fade-in ml-3 max-w-[30rem] border-y border-[#c9bc9f] bg-[#ede4d2] px-5 py-5 sm:ml-12 sm:px-6"
+                  >
+                    <h3
+                      id="deliberate-stretch"
+                      className="font-serif text-[11px] font-semibold uppercase leading-none tracking-[0.28em] text-[#8a5a24]"
+                    >
+                      Deliberate stretch
+                    </h3>
+                    <p className="mt-2 font-serif text-[0.85rem] italic leading-snug text-[#6f675c]">
+                      Chosen from outside your usual reading.
+                    </p>
+
+                    <ul className="mt-4 space-y-4">
+                      {stretchAsideStories.map((item) => {
+                        const actions = getCardActions(item.id);
+                        const isSaved = savedIds.includes(item.id);
+                        return (
+                          <li key={item.id}>
+                            <h4 className="font-serif text-[1.1rem] font-semibold leading-snug text-[#1c1a17]">
+                              <button
+                                type="button"
+                                onClick={() => openArticle(item)}
+                                className="text-left transition-colors hover:underline hover:underline-offset-4"
+                              >
+                                {headline(item)}
+                              </button>
+                            </h4>
+
+                            <p className="mt-1 line-clamp-1 text-[0.875rem] leading-[1.55] text-[#6f675c]">
+                              {standfirst(item)}
+                            </p>
+
+                            <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
+                              <button
+                                type="button"
+                                onClick={() => openArticle(item)}
+                                className="inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-[#1c1a17] transition hover:underline hover:underline-offset-4"
+                              >
+                                Read <ArrowRight className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSave(item)}
+                                aria-pressed={isSaved}
+                                className={`inline-flex min-h-11 items-center gap-1 text-xs transition ${
+                                  isSaved ? 'text-[#1c1a17]' : 'text-[#6f675c] hover:text-[#1c1a17]'
+                                }`}
+                              >
+                                <Bookmark className={`h-3 w-3 ${isSaved ? 'fill-[#1c1a17]' : ''}`} />
+                                {isSaved ? 'Saved' : 'Save'}
+                              </button>
+                              <div className="sm:ml-auto">
+                                <FeedbackActions
+                                  isMore={actions.isVotedMore}
+                                  isLess={actions.isVotedLess}
+                                  onMore={() => handleMore(item)}
+                                  onLess={() => handleLess(item)}
+                                />
+                              </div>
+                            </div>
+                          </li>
+                        );
+                      })}
+
+                      {setAsideStretchStories.map((item) => (
+                        <li key={item.id} className="flex items-center justify-between gap-3 border-t border-[#d8cdb4] pt-3">
+                          <span className="min-w-0 truncate text-xs text-[#6f675c]">
+                            Set aside · {item.title}
+                          </span>
+                          <span className="flex shrink-0 items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => undoHandleLess(item.id)}
+                              className="inline-flex min-h-9 items-center gap-1 px-1 text-[11px] font-semibold text-[#1c1a17] transition hover:underline hover:underline-offset-4"
+                            >
+                              <RotateCcw className="h-3 w-3" />
+                              Undo
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => permanentlyDismissMuted(item.id)}
+                              aria-label="Remove this story from today"
+                              className="inline-flex min-h-9 min-w-9 items-center justify-center text-[#6f675c] transition hover:text-[#3f3a33]"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </aside>
                 )}
 
                 {/* The tail: everything else as a ruled index — headline, one line of summary,

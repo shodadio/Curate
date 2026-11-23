@@ -77,7 +77,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Editorial Ranking**: Scores articles on analytical density, source reputation, topic diversity, and personal reading history.
 
 ### 2. Deliberate Stretch ("Out of the Bubble" picks)
-- The Today controls label the dial **Serendipity**, and the digest section carrying these picks is titled **Deliberate Stretch — Outside Your Usual Bubble**.
+- The Today controls label the dial **Serendipity**. The picks themselves appear once, as the edition's one inset aside — **Deliberate stretch** — set at the turn of the page, after the second reads and before the index, rather than appended as a second stack at the end.
 - Deliberately identifies and highlights articles outside your standard reading habits.
 - Pulls from foundational domains such as long-term thinking, political philosophy, urbanism, and deep history to challenge assumptions and spark creative cross-pollination.
 
