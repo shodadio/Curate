@@ -3151,7 +3151,7 @@ export default function App() {
           </span>
         </div>
 
-        <h3 className="mt-2 font-serif text-[1.4rem] font-semibold leading-[1.15] text-[#1c1a17] transition-colors group-hover:text-[#1c1a17] sm:text-[1.55rem]">
+        <h3 className="mt-2 font-serif text-[1.4rem] font-semibold leading-[1.15] text-[#1c1a17] transition-colors group-hover:underline group-hover:underline-offset-4 sm:text-[1.55rem]">
           {headline(item)}
         </h3>
 
@@ -3167,7 +3167,7 @@ export default function App() {
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); openArticle(item); }}
-            className="inline-flex min-h-11 items-center gap-1.5 text-sm font-semibold text-[#1c1a17] transition hover:text-[#1c1a17]"
+            className="inline-flex min-h-11 items-center gap-1.5 text-sm font-semibold text-[#1c1a17] transition hover:underline hover:underline-offset-4"
           >
             Read in Curator <ArrowRight className="h-4 w-4" />
           </button>
@@ -4611,7 +4611,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => openArticle(leadStory)}
-                        className="text-left transition-colors hover:text-[#1c1a17]"
+                        className="text-left transition-colors hover:underline hover:underline-offset-4"
                       >
                         {headline(leadStory)}
                       </button>
@@ -4637,7 +4637,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => openArticle(leadStory)}
-                        className="inline-flex min-h-11 items-center gap-1.5 text-sm font-semibold text-[#1c1a17] transition hover:text-[#1c1a17]"
+                        className="inline-flex min-h-11 items-center gap-1.5 text-sm font-semibold text-[#1c1a17] transition hover:underline hover:underline-offset-4"
                       >
                         Read in Curator <ArrowRight className="h-4 w-4" />
                       </button>
@@ -4702,7 +4702,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => openArticle(item)}
-                              className="text-left transition-colors hover:text-[#1c1a17]"
+                              className="text-left transition-colors hover:underline hover:underline-offset-4"
                             >
                               {headline(item)}
                             </button>
@@ -4722,7 +4722,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => openArticle(item)}
-                              className="inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-[#1c1a17] transition hover:text-[#1c1a17]"
+                              className="inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-[#1c1a17] transition hover:underline hover:underline-offset-4"
                             >
                               Read in Curator <ArrowRight className="h-3.5 w-3.5" />
                             </button>
@@ -4782,13 +4782,13 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => openArticle(item)}
-                              className="block w-full text-left font-serif text-[0.95rem] font-medium leading-snug text-[#1c1a17] transition-colors hover:text-[#1c1a17] sm:text-base"
+                              className="block w-full text-left font-serif text-[0.95rem] font-medium leading-snug text-[#1c1a17] transition-colors hover:underline hover:underline-offset-4 sm:text-base"
                             >
                               {headline(item)}
                             </button>
                             <p className="mt-1 truncate text-xs leading-relaxed text-[#6f675c]">{standfirst(item)}</p>
                             <p className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#6f675c]">
-                              <span className="whitespace-nowrap">
+                              <span>
                                 {[item.source, decodeEntities(item.publishedAt || ''), decodeEntities(item.readTime || '')]
                                   .filter(Boolean)
                                   .join(' · ')}
@@ -4822,7 +4822,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => undoHandleLess(item.id)}
-                              className="inline-flex min-h-9 items-center gap-1 px-1 text-[11px] font-semibold text-[#1c1a17] transition hover:text-[#1c1a17]"
+                              className="inline-flex min-h-9 items-center gap-1 px-1 text-[11px] font-semibold text-[#1c1a17] transition hover:underline hover:underline-offset-4"
                             >
                               <RotateCcw className="h-3 w-3" />
                               Undo
@@ -4868,7 +4868,7 @@ export default function App() {
                     type="button"
                     onClick={searchAnotherRound}
                     disabled={startingFreshRound}
-                    className="mt-1 inline-flex min-h-11 items-center gap-1.5 text-xs font-medium text-[#1c1a17] transition hover:text-[#1c1a17] disabled:opacity-60"
+                    className="mt-1 inline-flex min-h-11 items-center gap-1.5 text-xs font-medium text-[#1c1a17] transition hover:underline hover:underline-offset-4 disabled:opacity-60"
                   >
                     <RefreshCw className={`h-3.5 w-3.5 ${startingFreshRound ? 'animate-spin' : ''}`} />
                     <span>{startingFreshRound ? 'Searching…' : 'Build a new edition'}</span>
@@ -7001,7 +7001,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   <button
                     type="button"
                     onClick={() => setSetupStep(3)}
-                    className="inline-flex min-h-11 items-center px-2 -mr-2 font-medium text-[#1c1a17] transition hover:text-[#1c1a17]"
+                    className="inline-flex min-h-11 items-center px-2 -mr-2 font-medium text-[#1c1a17] underline underline-offset-4 transition"
                   >
                     Continue
                   </button>
