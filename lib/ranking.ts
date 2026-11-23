@@ -12,13 +12,17 @@ export interface SemanticVoteExample {
   folder?: string;
 }
 
-export interface SemanticCandidate {
-  id: string;
+export interface SemanticDocument {
   title?: string;
-  summary?: string;
-  fullText?: string;
   folder?: string;
   categories?: string[];
+  summary?: string;
+  fullText?: string;
+}
+
+// A candidate is a document with an identity; the composer only needs the document part.
+export interface SemanticCandidate extends SemanticDocument {
+  id: string;
   source?: string;
 }
 
@@ -84,20 +88,12 @@ export const semanticTermCounts = (text: string): Map<string, number> => {
   return counts;
 };
 
-export const SEMANTIC_BODY_CHARS = 1800;
+const SEMANTIC_BODY_CHARS = 1800;
 
 // A headline carries more meaning per word than a body paragraph, so its terms are counted
 // deliberately more. It is still one composed text: emphasis is an argument to the composer,
 // never a second version of the document.
 export const SEMANTIC_TITLE_WEIGHT = 3;
-
-export interface SemanticDocument {
-  title?: string;
-  folder?: string;
-  categories?: string[];
-  summary?: string;
-  fullText?: string;
-}
 
 export interface ComposeSemanticOptions {
   titleEmphasis?: number;
@@ -111,9 +107,9 @@ export const composeSemanticText = (
   options: ComposeSemanticOptions = {},
 ): string => {
   const emphasis = Math.max(1, Math.min(4, Math.round(options.titleEmphasis ?? 1)));
-  const title = String(document.title || '').replace(/\s+/g, ' ').trim();
   const fields = [
-    title ? Array.from({ length: emphasis }, () => title).join(' ') : '',
+    // Normalised once, with every other field, by the map below.
+    Array.from({ length: emphasis }, () => String(document.title || '')).join(' '),
     document.folder,
     Array.isArray(document.categories) ? document.categories.join('. ') : '',
     document.summary,
@@ -183,37 +179,8 @@ export const feedbackDecay = (ageMs: number, halfLifeMs: number): number =>
   Math.max(SEMANTIC_DECAY_FLOOR, Math.pow(0.5, Math.max(0, ageMs) / halfLifeMs));
 
 // One continuous scale for both engines: -1 (all dislike) to 1 (all like).
-export const clampSemanticScore = (value: number): number =>
+const clampSemanticScore = (value: number): number =>
   Math.max(-1, Math.min(1, Number.isFinite(value) ? value : 0));
-
-export const buildSparseCentroid = (
-  vote: 'like' | 'dislike',
-  examples: SemanticVoteExample[],
-  vectors: Array<Map<string, number> | null>,
-  nowMs: number = Date.now(),
-): Map<string, number> | null => {
-  const halfLifeMs = SPARSE_FEEDBACK_HALF_LIFE_MS;
-  const centroid = new Map<string, number>();
-  let totalWeight = 0;
-
-  examples.forEach((example, index) => {
-    if (example.vote !== vote) return;
-    const vector = vectors[index];
-    if (!vector) return;
-    const timestamp = Number.isFinite(example.timestamp) ? example.timestamp : nowMs;
-    const weight = feedbackDecay(nowMs - timestamp, halfLifeMs);
-    vector.forEach((value, term) => centroid.set(term, (centroid.get(term) || 0) + value * weight));
-    totalWeight += weight;
-  });
-
-  if (totalWeight === 0 || centroid.size === 0) return null;
-  let magnitude = 0;
-  centroid.forEach(value => { magnitude += value * value; });
-  if (magnitude <= 0) return null;
-  const norm = Math.sqrt(magnitude);
-  centroid.forEach((value, term) => centroid.set(term, value / norm));
-  return centroid;
-};
 
 export const localSemanticScores = (
   feedback: SemanticVoteExample[],
@@ -437,34 +404,6 @@ export const denseFeedbackScores = (
   };
 
   return candidateEmbeddings.map(scoreFor);
-};
-
-export const buildDenseCentroid = (
-  vote: 'like' | 'dislike',
-  examples: Array<{ vote: 'like' | 'dislike'; timestamp: number }>,
-  embeddings: Array<number[] | null>,
-  nowMs: number = Date.now(),
-): number[] | null => {
-  let centroid: number[] = [];
-  let totalWeight = 0;
-  const halfLifeMs = DENSE_FEEDBACK_HALF_LIFE_MS;
-
-  examples.forEach((example, index) => {
-    const vector = embeddings[index];
-    if (example.vote !== vote || !vector) return;
-    if (centroid.length === 0) centroid = Array(vector.length).fill(0);
-    if (centroid.length !== vector.length) return;
-    const timestamp = Number.isFinite(example.timestamp) ? example.timestamp : nowMs;
-    const weight = feedbackDecay(nowMs - timestamp, halfLifeMs);
-    vector.forEach((value, dimension) => {
-      centroid[dimension] += value * weight;
-    });
-    totalWeight += weight;
-  });
-
-  if (totalWeight === 0) return null;
-  const magnitude = Math.sqrt(centroid.reduce((sum, value) => sum + value * value, 0));
-  return magnitude > 0 ? centroid.map(value => value / magnitude) : null;
 };
 
 // The weights that turn ranking inputs into one comparable score. Exported so the tests can

@@ -4,11 +4,9 @@ import assert from 'node:assert/strict';
 import {
   SCORE_WEIGHTS,
   blendSemanticScores,
-  buildDenseCentroid,
   buildDeterministicDigest,
   buildExposurePenalty,
   buildSemanticVectors,
-  buildSparseCentroid,
   buildWhyLine,
   composeSemanticText,
   composeVoteText,
@@ -184,22 +182,6 @@ test('sparseCosine is 0 for unrelated vectors and 1 for identical normalised one
 // Feedback maths: sparse and dense matching, decay and blending
 // ---------------------------------------------------------------------------
 
-test('buildSparseCentroid weights votes by age and ignores the other vote', () => {
-  const vectors = buildSemanticVectors(['rust memory safety', 'rust memory safety']);
-  const recentOnly = buildSparseCentroid('like', [vote({ text: 'rust memory safety' })], vectors, NOW);
-  assert.ok(recentOnly, 'a fresh vote must produce a centroid');
-  approx(Math.sqrt([...recentOnly!.values()].reduce((sum, v) => sum + v * v, 0)), 1, 'centroid is normalised');
-
-  const dislikeOnly = buildSparseCentroid('dislike', [vote({ text: 'rust memory safety' })], vectors, NOW);
-  assert.equal(dislikeOnly, null, 'a like must not feed the dislike centroid');
-});
-
-test('buildSparseCentroid returns null without usable examples', () => {
-  assert.equal(buildSparseCentroid('like', [], [], NOW), null);
-  const vectors = buildSemanticVectors(['alpha beta']);
-  assert.equal(buildSparseCentroid('like', [vote({ text: 'alpha beta' })], [null], NOW), null);
-});
-
 test('a recent like dominates a years-old like when directions differ', () => {
   const feedback = [
     vote({ id: 'new', vote: 'like', text: 'rust memory safety borrow checker' }),
@@ -333,25 +315,6 @@ test('decay is measured from the clock and stops at the floor', () => {
   approx(feedbackDecay(DAY, DAY), 0.5);
   approx(feedbackDecay(30 * DAY, 60 * DAY), Math.pow(0.5, 0.5));
   approx(feedbackDecay(10 * 365 * DAY, 60 * DAY), SEMANTIC_DECAY_FLOOR);
-});
-
-test('buildDenseCentroid normalises vectors and skips mismatched dimensions', () => {
-  const centroid = buildDenseCentroid('like', [{ vote: 'like', timestamp: NOW }], [[3, 4]], NOW);
-  assert.deepEqual(centroid, [0.6, 0.8]);
-
-  const mixed = buildDenseCentroid(
-    'like',
-    [
-      { vote: 'like', timestamp: NOW },
-      { vote: 'like', timestamp: NOW },
-    ],
-    [[1, 0], [0, 1, 0]],
-    NOW,
-  );
-  assert.deepEqual(mixed, [1, 0], 'a vector of the wrong width is ignored');
-
-  assert.equal(buildDenseCentroid('dislike', [{ vote: 'like', timestamp: NOW }], [[1, 0]], NOW), null);
-  assert.equal(buildDenseCentroid('like', [{ vote: 'like', timestamp: NOW }], [[0, 0]], NOW), null);
 });
 
 test('cosineSimilarity is a dot product and rejects mismatched widths', () => {
