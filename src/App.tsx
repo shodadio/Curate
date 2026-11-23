@@ -3710,15 +3710,15 @@ export default function App() {
     </div>
   );
 
-  // One count, said once: the stories that arrived, beside the dose that named the length.
-  // "Standard · 8 stories · 35 min" is three things the reader can check at a glance — the
-  // length they chose, what arrived, and what it costs — with the setting's own number said
-  // only by the dose name. A short edition still shows its real count, so "Deep · 13 stories"
-  // stays honest about a pool that could not fill.
+  // The dose is named once, in the masthead pill, because it is a setting and the pill is
+  // where the masthead already keeps current state. The dateline beside it reports what this
+  // edition actually holds — "8 stories · 35 min" — since naming the dose there too made the
+  // page say "Standard" three times before the reader reached the lead story. A short edition
+  // still shows its real count, so a Deep edition that could not fill reads "13 stories".
   const currentDose = DIGEST_DOSES.find(dose => dose.count === itemCount) ?? DIGEST_DOSES[1];
   const editionCountLabel = todayDigest.length === 0
-    ? `${currentDose.label} · no stories yet`
-    : `${currentDose.label} · ${todayDigest.length} ${todayDigest.length === 1 ? 'story' : 'stories'}`;
+    ? 'No stories yet'
+    : `${todayDigest.length} ${todayDigest.length === 1 ? 'story' : 'stories'}`;
 
   // The front page sets the edition by size: one lead, two second reads, and the rest as a
   // ruled index. The engine's order is kept inside each group, so the top of the page is still
