@@ -83,8 +83,8 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 
 ### 3. Signal Tuning with Undo Safeguards
 - **Streamlined Icon-Only Controls**: Clean, minimalist thumbs-up and thumbs-down icon buttons on cards keep the layout uncluttered without extraneous "More" or "Less" text labels.
-- **More Like This**: Boosts weights for related topics and source categories (amber highlight on activation).
-- **Fewer Like This**: Deprioritizes recurring themes without abrupt card deletion (rose highlight on activation).
+- **More Like This**: Boosts weights for related topics and source categories (the button fills ink on activation).
+- **Fewer Like This**: Deprioritizes recurring themes without abrupt card deletion (the button fills ink on activation — state is weight and word, never colour).
 - **Undo fallback**:
   - When clicking "Fewer", the card morphs into an inline placeholder with an **Undo** button and a dismiss option.
   - A toast notification appears with a direct one-click **Undo** action.
@@ -115,6 +115,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 
 ### 8. Distraction-Free Reader & Onboard Read Aloud
 - **Typographic Discipline**: Two self-hosted variable families, both served from the app — *Inter* (roman 47 KB + italic 51 KB woff2, `font-display: optional`) for the interface and metadata, and *Literata* (roman 108 KB + italic 111 KB woff2, optical-size axis, `font-display: swap`, roman preloaded) for article bodies, the edition's headlines and the wordmark. No Google Fonts requests, so no text depends on a third party's uptime.
+- **Colour Discipline**: The edition is paper (ink `#1c1a17` on `#f6f1e7`), so Today reads in black and white. One amber accent (`#8a5a24`) marks only the editor's flag — pieces outside the reader's bubble — plus focus rings; every other state (saved, read, synced, failed, unread) is weight, a mark, or a word. No gradients, no image scrims, no state colours.
 - **Native Read Aloud**:
   - A sentence-by-sentence queue over the browser's own `window.speechSynthesis`, so an article is never cut off by the engine's long-utterance limit (Chrome stops at roughly fifteen seconds, iOS stalls on very long strings), and every paragraph break gets a natural beat.
   - Defaults to **Jamie (Premium)** at a calm 0.95× rate when the browser exposes that voice; otherwise it leaves voice selection to the device's Spoken Content settings. Automatic mode prefers voices explicitly named Enhanced, Premium, Neural or Natural. Other installed voices and any speed can be chosen by hand in **Settings → Read aloud**, with a *Hear this voice* preview.
@@ -125,7 +126,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Video in the reader**: a piece that carries a video plays it where the article is, above the prose. A video file (mp4, webm, or HLS) plays in the page's own player; a YouTube or Vimeo piece is a still with a play button until the reader taps it, so the video host is never contacted on their behalf. Publishers that refuse to be framed fall back to one link out, and a piece with no video is unchanged.
 
 ### 9. Mobile & iOS Safari Viewport Hardening
-- **Zero Horizontal Bleed**: `overflow-x: clip`, `width: 100%`, and `background-color: #020617` enforced across `html`, `body`, `#root`, and layout wrappers. Clipping avoids creating an overflow scroll container that can interrupt the sticky header.
+- **Zero Horizontal Bleed**: `overflow-x: clip`, `width: 100%`, and `background-color: #f6f1e7` enforced across `html`, `body`, `#root`, and layout wrappers. Clipping avoids creating an overflow scroll container that can interrupt the sticky header.
 - **Safe Area Insets**: Uses `viewport-fit=cover` and responsive padding (`px-4 sm:px-6`) to prevent notch clipping or cut-off margins on mobile viewports.
 - **Floating Bottom Dock**: Floating navigation dock centered using `left-1/2 -translate-x-1/2` and clamped to `w-[calc(100%-2rem)] max-w-lg`, preventing horizontal page jitter.
 

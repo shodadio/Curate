@@ -80,13 +80,13 @@ export function ModelField({
   return (
     <div>
       <div className="flex items-center justify-between gap-2 mb-1.5">
-        <label htmlFor={inputId} className="block text-xs font-medium text-slate-300">{label}</label>
+        <label htmlFor={inputId} className="block text-xs font-medium text-[#1c1a17]">{label}</label>
         {canFetch && (
           <button
             type="button"
             onClick={() => void fetchModels()}
             disabled={fetching}
-            className="shrink-0 flex items-center gap-1 text-xs font-medium text-amber-300 hover:text-amber-200 transition disabled:opacity-50"
+            className="shrink-0 flex items-center gap-1 text-xs font-semibold text-[#1c1a17] underline underline-offset-2 hover:no-underline transition disabled:opacity-50"
           >
             <RefreshCw className={`w-3 h-3 ${fetching ? 'animate-spin' : ''}`} />
             <span>{fetching ? 'Fetching…' : models.length > 0 ? 'Fetch again' : 'Fetch models'}</span>
@@ -102,7 +102,7 @@ export function ModelField({
         placeholder={placeholder}
         autoComplete="off"
         spellCheck={false}
-        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
+                  className="w-full bg-[#fffdf7] border border-[#c9bc9f] rounded-xl px-3 py-2 text-xs text-[#1c1a17] font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8a5a24]/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#f6f1e7] focus:border-[#8a5a24]"
       />
 
       {/* A real picker, not a type-ahead: browsers keep a datalist's options hidden until you
@@ -113,7 +113,7 @@ export function ModelField({
           value={models.includes(value) ? value : ''}
           onChange={event => { if (event.target.value) onChange(event.target.value); }}
           aria-label={`${label}: fetched models`}
-          className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500 cursor-pointer"
+          className="mt-1.5 w-full bg-[#fffdf7] border border-[#c9bc9f] rounded-xl px-3 py-2 text-xs text-[#1c1a17] font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8a5a24]/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#f6f1e7] focus:border-[#8a5a24] cursor-pointer"
         >
           <option value="">
             {`Choose from ${models.length} fetched model${models.length === 1 ? '' : 's'}`}
@@ -123,7 +123,7 @@ export function ModelField({
       )}
 
       {status.message && (
-        <p className={`text-xs mt-1 ${status.tone === 'failed' ? 'text-rose-400' : 'text-slate-400'}`}>
+        <p className={`text-xs mt-1 ${status.tone === 'failed' ? 'text-[#1c1a17] font-semibold' : 'text-[#6f675c]'}`}>
           {status.message}
         </p>
       )}

@@ -31,9 +31,9 @@ export function SourceFeedLink({
       type="button"
       onClick={onOpen}
       title={`${feedUrl} (opens in Feeds)`}
-      className={`group w-full min-w-0 cursor-pointer text-left flex items-start gap-2.5 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 ${className}`}
+      className={`group w-full min-w-0 cursor-pointer text-left flex items-start gap-2.5 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8a5a24]/50 ${className}`}
     >
-      <span className="w-9 h-9 rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden shrink-0 relative transition group-hover:border-amber-500/50">
+      <span className="w-9 h-9 rounded-full bg-[#ece4d1] border border-[#c9bc9f] flex items-center justify-center overflow-hidden shrink-0 relative transition group-hover:border-[#1c1a17]">
         {avatarUrl ? (
           <img
             src={avatarUrl}
@@ -48,14 +48,14 @@ export function SourceFeedLink({
             }}
           />
         ) : null}
-        <span className={`src-list-initials text-xs font-bold text-amber-400 ${avatarUrl ? 'hidden' : ''}`}>
+        <span className={`src-list-initials text-xs font-bold text-[#1c1a17] ${avatarUrl ? 'hidden' : ''}`}>
           {title.slice(0, 2).toUpperCase()}
         </span>
       </span>
 
       <span className="min-w-0 flex-1">
-        <span className="block text-sm font-medium text-slate-100 truncate leading-snug">{title}</span>
-        <span className="mt-0.5 flex max-w-full items-center gap-1 text-xs text-slate-500 transition group-hover:text-amber-300">
+        <span className="block text-sm font-medium text-[#1c1a17] truncate leading-snug">{title}</span>
+        <span className="mt-0.5 flex max-w-full items-center gap-1 text-xs text-[#6f675c] transition group-hover:text-[#1c1a17]">
           <span className="truncate">{address}</span>
           <ExternalLink className="w-3 h-3 shrink-0" />
         </span>

@@ -100,21 +100,20 @@ export function CuratorMark({ className = 'w-9 h-9', size }: LogoProps) {
  */
 export function CuratorFullLogo({ className = 'w-full max-w-sm', showTagline = true }: { className?: string; showTagline?: boolean }) {
   return (
-    <div className={`flex flex-col items-center justify-center p-6 rounded-3xl bg-gradient-to-b from-slate-900/80 via-slate-950/90 to-slate-950 border border-amber-500/20 shadow-2xl relative overflow-hidden ${className}`}>
-      {/* Ambient background glow */}
-      <div className="absolute inset-0 bg-radial-gradient from-amber-500/10 via-transparent to-transparent pointer-events-none" />
+    <div className={`flex flex-col items-center justify-center p-6 rounded-3xl bg-[#efe8d6] border border-[#c9bc9f] shadow-2xl relative overflow-hidden ${className}`}>
+
 
       {/* Emblem */}
-      <CuratorMark className="w-24 h-24 mb-4 drop-shadow-[0_8px_24px_rgba(245,158,11,0.25)]" />
+      <CuratorMark className="w-24 h-24 mb-4" />
 
       {/* Typography: THE CURATOR */}
       <div className="flex items-baseline gap-2.5 text-center">
-        <span className="font-serif text-xl sm:text-2xl font-semibold text-amber-500/90 tracking-[0.1em]">THE</span>
-        <span className="font-serif text-xl sm:text-2xl font-semibold text-white tracking-[0.1em]">CURATOR</span>
+        <span className="font-serif text-xl sm:text-2xl font-semibold text-[#8a5a24] tracking-[0.1em]">THE</span>
+        <span className="font-serif text-xl sm:text-2xl font-semibold text-[#1c1a17] tracking-[0.1em]">CURATOR</span>
       </div>
 
       {showTagline && (
-        <p className="text-xs text-amber-200/60 font-sans tracking-wide mt-2">
+        <p className="text-xs text-[#6f675c] font-sans tracking-wide mt-2">
           Your Daily Curated Reading Digest
         </p>
       )}

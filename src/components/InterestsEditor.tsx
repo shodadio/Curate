@@ -15,8 +15,8 @@ interface InterestsEditorProps {
 }
 
 const CHIP_TONE: Record<InterestGroup, string> = {
-  more: 'border-amber-500/30 bg-amber-500/10 text-amber-200 hover:border-amber-400/60',
-  less: 'border-rose-500/25 bg-rose-500/10 text-rose-200 hover:border-rose-400/50',
+  more: 'border-[#c9bc9f] bg-[#ece4d1] text-[#1c1a17] hover:border-[#1c1a17]',
+  less: 'border-[#c9bc9f] bg-transparent text-[#3f3a33] hover:border-[#1c1a17]',
 };
 
 function InterestRow({
@@ -53,8 +53,8 @@ function InterestRow({
   return (
     <div className="space-y-2.5">
       <div>
-        <h4 className="text-xs font-semibold text-slate-200">{title}</h4>
-        <p className="text-xs text-slate-400 mt-0.5">{summary}</p>
+        <h4 className="text-xs font-semibold text-[#1c1a17]">{title}</h4>
+        <p className="text-xs text-[#6f675c] mt-0.5">{summary}</p>
       </div>
 
       {items.length > 0 && (
@@ -88,13 +88,13 @@ function InterestRow({
           placeholder={hint}
           disabled={atCap}
           maxLength={40}
-          className="flex-1 min-w-0 rounded-xl bg-slate-950 border border-slate-800 px-3 py-2.5 text-xs text-slate-100 placeholder:text-slate-400 focus:outline-none focus:border-amber-500 disabled:opacity-50"
+          className="flex-1 min-w-0 rounded-xl bg-[#fffdf7] border border-[#c9bc9f] px-3 py-2.5 text-xs text-[#1c1a17] placeholder:text-[#a39a8c] focus:outline-none focus:border-[#8a5a24] disabled:opacity-50"
         />
         <button
           type="button"
           onClick={commit}
           disabled={atCap || !draft.trim()}
-          className="px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-medium text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-40 flex items-center gap-1.5 shrink-0"
+          className="px-3 py-2.5 rounded-xl bg-[#1c1a17] border border-[#1c1a17] text-xs font-medium text-[#f6f1e7] hover:bg-[#3a352d] transition disabled:opacity-40 flex items-center gap-1.5 shrink-0"
         >
           <Plus className="w-3.5 h-3.5" />
           <span>Add</span>
@@ -105,13 +105,13 @@ function InterestRow({
           lists read as a stray chip repeated, not as a choice. */}
       {group === 'more' && unusedSuggestions.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-xs text-slate-400">From your folders:</span>
+          <span className="text-xs text-[#6f675c]">From your folders:</span>
           {unusedSuggestions.map(label => (
             <button
               key={label}
               type="button"
               onClick={() => onChange(addInterest(value, group, label))}
-              className="text-xs px-2 py-1.5 rounded-lg text-slate-400 border border-slate-800 hover:text-slate-200 hover:border-slate-700 transition"
+              className="text-xs px-2 py-1.5 rounded-lg text-[#6f675c] border border-[#ddd2bc] hover:text-[#1c1a17] hover:border-[#1c1a17] transition"
             >
               {label}
             </button>
@@ -135,7 +135,7 @@ export function InterestsEditor({ value, suggestions, onChange }: InterestsEdito
         onChange={onChange}
       />
 
-      <div className="border-t border-slate-800/80" />
+      <div className="border-t border-[#ddd2bc]" />
 
       <InterestRow
         group="less"
