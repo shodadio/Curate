@@ -1018,7 +1018,6 @@ export default function App() {
     { count: 8, label: 'Standard', hint: '30–45 min' },
     { count: 15, label: 'Deep', hint: '45–75 min' },
   ] as const;
-  const DIGEST_ITEM_COUNTS: number[] = DIGEST_DOSES.map(dose => dose.count);
   const READ_THROUGH_DEPTH = 85;
   // 75s covers a Cloud Run cold start plus a feed sweep; the softer hint at 20s gives the
   // reader a way out long before that.
@@ -1047,15 +1046,13 @@ export default function App() {
     }
   });
   const [itemCount, setItemCount] = useState<number>(() => {
-    const saved = safeGetItem('curator_item_count');
-    if (!saved) return 8;
-    const savedCount = Number(saved);
-    if (DIGEST_ITEM_COUNTS.some(count => count === savedCount)) return savedCount;
-    if (!Number.isFinite(savedCount)) return 8;
-    return DIGEST_ITEM_COUNTS.reduce((closest, count) =>
-      Math.abs(count - savedCount) < Math.abs(closest - savedCount) ? count : closest,
-      8
-    );
+    const savedCount = Number(safeGetItem('curator_item_count'));
+    if (!Number.isFinite(savedCount) || savedCount <= 0) return 8;
+    // Earlier builds offered 3, 5, 8, 12 and 15, so a saved count snaps to the nearest dose
+    // rather than resetting a reader who had picked 3 or 12 to the default.
+    return DIGEST_DOSES.reduce((closest, dose) =>
+      Math.abs(dose.count - savedCount) < Math.abs(closest.count - savedCount) ? dose : closest
+    ).count;
   });
   // Bumped when an edition has to be built again outside the auto-build's own triggers: the
   // reader cleared their votes, or a settings change had to wait for a fresh search.
@@ -3704,8 +3701,7 @@ export default function App() {
               selected ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            {/* No wrap: the Settings copy sits in a narrower column than the sheet, and a
-                label that broke there dropped its number out of line with the other two. */}
+            {/* No wrap: this row is narrower in Settings, where "Standard" broke in two. */}
             <span className="block whitespace-nowrap text-[9px] font-semibold uppercase leading-none tracking-[0.1em]">{dose.label}</span>
             <span className="mt-1 block text-lg font-semibold leading-none">{dose.count}</span>
             <span className={`mt-1 block text-[10px] leading-none ${selected ? 'text-slate-400' : 'text-slate-500'}`}>{dose.hint}</span>
@@ -3715,11 +3711,8 @@ export default function App() {
     </div>
   );
 
-  // The dose is named once, in the masthead pill, because it is a setting and the pill is
-  // where the masthead already keeps current state. The dateline beside it reports what this
-  // edition actually holds — "8 stories · 35 min" — since naming the dose there too made the
-  // page say "Standard" three times before the reader reached the lead story. A short edition
-  // still shows its real count, so a Deep edition that could not fill reads "13 stories".
+  // The dose is named once, in the masthead pill, so the dateline reports only what the
+  // edition actually holds — a short Deep edition reads "13 stories", not the setting.
   const currentDose = DIGEST_DOSES.find(dose => dose.count === itemCount) ?? DIGEST_DOSES[1];
   const editionCountLabel = todayDigest.length === 0
     ? 'No stories yet'
