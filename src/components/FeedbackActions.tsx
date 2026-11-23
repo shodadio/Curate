@@ -16,13 +16,13 @@ export function FeedbackActions({ isMore, isLess, onMore, onLess, tone = 'defaul
   const moreClasses = onReader
     ? 'reader-button'
     : isMore
-      ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
-      : 'bg-slate-950/80 border-slate-700/80 text-slate-300 hover:text-amber-300 hover:border-amber-500/40';
+      ? 'bg-[#1c1a17] border-[#1c1a17] text-[#f6f1e7] shadow-sm'
+      : 'bg-transparent border-[#c9bc9f] text-[#6f675c] hover:text-[#1c1a17] hover:border-[#1c1a17]';
   const lessClasses = onReader
     ? 'reader-button'
     : isLess
-      ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 shadow-sm'
-      : 'bg-slate-950/80 border-slate-700/80 text-slate-300 hover:text-rose-300 hover:border-rose-500/40';
+      ? 'bg-[#1c1a17] border-[#1c1a17] text-[#f6f1e7] shadow-sm'
+      : 'bg-transparent border-[#c9bc9f] text-[#6f675c] hover:text-[#1c1a17] hover:border-[#1c1a17]';
 
   return (
     <div className="flex items-center gap-2">
@@ -35,7 +35,7 @@ export function FeedbackActions({ isMore, isLess, onMore, onLess, tone = 'defaul
         aria-label={isMore ? 'More like this, selected' : 'More like this'}
         aria-pressed={isMore}
       >
-        <ThumbsUp className={`w-4 h-4 ${isMore ? (onReader ? 'fill-current opacity-25' : 'fill-amber-400/30') : ''}`} />
+        <ThumbsUp className={`w-4 h-4 ${isMore ? (onReader ? 'fill-current opacity-25' : 'fill-current') : ''}`} />
       </button>
       <button
         type="button"
@@ -46,7 +46,7 @@ export function FeedbackActions({ isMore, isLess, onMore, onLess, tone = 'defaul
         aria-label={isLess ? 'Less like this, selected' : 'Less like this'}
         aria-pressed={isLess}
       >
-        <ThumbsDown className={`w-4 h-4 ${isLess ? (onReader ? 'fill-current opacity-25' : 'fill-rose-400/30') : ''}`} />
+        <ThumbsDown className={`w-4 h-4 ${isLess ? (onReader ? 'fill-current opacity-25' : 'fill-current') : ''}`} />
       </button>
     </div>
   );

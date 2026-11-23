@@ -92,19 +92,19 @@ export function NewBuildPrompt() {
       aria-live="polite"
       className="fixed safe-update left-1/2 z-[60] w-[calc(100%-2rem)] max-w-sm -translate-x-1/2"
     >
-      <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-slate-900/95 px-3 py-2 text-xs text-slate-200 shadow-2xl backdrop-blur-md animate-fade-in">
-        <RefreshCw className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+      <div className="flex items-center gap-2 rounded-xl border border-[#1c1a17]/30 bg-[#1c1a17] px-3 py-2 text-xs text-[#f6f1e7] shadow-2xl animate-fade-in">
+        <RefreshCw className="h-3.5 w-3.5 shrink-0" />
         <div className="min-w-0 flex-1 leading-tight">
           <span className="block">A newer build is ready.</span>
           {newer.note ? (
-            <span className="mt-0.5 line-clamp-2 block text-[11px] text-slate-400">{newer.note}</span>
+            <span className="mt-0.5 line-clamp-2 block text-[11px] opacity-70">{newer.note}</span>
           ) : null}
         </div>
         <button
           type="button"
           onClick={applyUpdate}
           disabled={busy}
-          className="inline-flex min-h-8 shrink-0 items-center justify-center rounded-lg border border-amber-500/40 bg-amber-500/20 px-2.5 text-[11px] font-semibold text-amber-300 transition hover:bg-amber-500/30 disabled:opacity-60 cursor-pointer"
+          className="inline-flex min-h-8 shrink-0 items-center justify-center rounded-lg border border-[#f6f1e7]/40 bg-transparent px-2.5 text-[11px] font-semibold transition hover:bg-[#f6f1e7]/15 disabled:opacity-60 cursor-pointer"
         >
           {busy ? 'Updating…' : 'Reload'}
         </button>
@@ -112,7 +112,7 @@ export function NewBuildPrompt() {
           type="button"
           onClick={dismiss}
           aria-label="Dismiss update notice"
-          className="shrink-0 rounded-md p-1 text-slate-500 transition hover:text-slate-300 cursor-pointer"
+          className="shrink-0 rounded-md p-1 opacity-60 transition hover:opacity-100 cursor-pointer"
         >
           <X className="h-3.5 w-3.5" />
         </button>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, Check, RefreshCw } from 'lucide-react';
+import { Check, RefreshCw, X } from 'lucide-react';
 
 type TestStatus =
   | { state: 'idle' }
@@ -68,23 +68,23 @@ export function ProviderTestButton({
         type="button"
         onClick={runTest}
         disabled={disabled || running}
-        className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-medium text-slate-300 hover:text-slate-100 hover:border-slate-700 transition disabled:opacity-50 flex items-center gap-1.5"
+        className="px-3 py-2 rounded-xl bg-transparent border border-[#c9bc9f] text-xs font-medium text-[#1c1a17] hover:border-[#1c1a17] transition disabled:opacity-50 flex items-center gap-1.5"
       >
         <RefreshCw className={`w-3.5 h-3.5 ${running ? 'animate-spin' : ''}`} />
         <span>{running ? 'Testing…' : 'Test API'}</span>
       </button>
 
       {status.state === 'ok' && (
-        <p className="text-xs text-emerald-400 flex items-start gap-1.5">
-          <Check className="w-3 h-3 mt-0.5 shrink-0" />
-          <span>{status.message}</span>
+        <p className="text-xs text-[#1c1a17] font-medium flex items-start gap-1.5">
+          <Check className="w-3 h-3 mt-0.5 shrink-0" strokeWidth={3} />
+          <span>Passed — {status.message}</span>
         </p>
       )}
 
       {status.state === 'failed' && (
-        <p className="text-xs text-rose-400 flex items-start gap-1.5">
-          <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />
-          <span>{status.message}</span>
+        <p className="text-xs text-[#1c1a17] font-medium flex items-start gap-1.5">
+          <X className="w-3 h-3 mt-0.5 shrink-0" strokeWidth={3} />
+          <span>Failed — {status.message}</span>
         </p>
       )}
     </div>

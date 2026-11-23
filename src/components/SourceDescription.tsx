@@ -28,14 +28,14 @@ export function SourceDescription({ description, sourceTitle, expanded, onToggle
 
   return (
     <div>
-      <p ref={textRef} className={`text-xs text-slate-400 leading-relaxed ${expanded ? '' : 'line-clamp-2'}`}>
+      <p ref={textRef} className={`text-xs text-[#6f675c] leading-relaxed ${expanded ? '' : 'line-clamp-2'}`}>
         {stripMarkdownSyntax(description)}
       </p>
       {(clipped || expanded) && (
         <button
           type="button"
           onClick={onToggle}
-          className="mt-0.5 inline-flex min-h-8 items-center gap-0.5 px-0.5 text-[11px] font-medium text-slate-500 hover:text-amber-300 transition cursor-pointer"
+          className="mt-0.5 inline-flex min-h-8 items-center gap-0.5 px-0.5 text-[11px] font-medium text-[#6f675c] hover:text-[#1c1a17] underline underline-offset-2 transition cursor-pointer"
           aria-expanded={expanded}
           title={expanded ? 'Show less of this site description' : `Show more about ${sourceTitle}`}
         >
