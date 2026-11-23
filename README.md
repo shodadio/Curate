@@ -114,7 +114,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Export Anytime**: Download a clean, standardized `.opml` XML file containing your complete watch list.
 
 ### 8. Distraction-Free Reader & Onboard Read Aloud
-- **Typographic Discipline**: One self-hosted variable family, *Inter* (roman 47 KB + italic 51 KB woff2, `font-display: optional`), used for the interface, reading bodies, wordmark and metadata alike — no Google Fonts requests, so text never reflows or changes face after first paint.
+- **Typographic Discipline**: Two self-hosted variable families, both served from the app — *Inter* (roman 47 KB + italic 51 KB woff2, `font-display: optional`) for the interface and metadata, and *Literata* (roman 108 KB + italic 111 KB woff2, optical-size axis, `font-display: swap`, roman preloaded) for article bodies, the edition's headlines and the wordmark. No Google Fonts requests, so no text depends on a third party's uptime.
 - **Native Read Aloud**:
   - A sentence-by-sentence queue over the browser's own `window.speechSynthesis`, so an article is never cut off by the engine's long-utterance limit (Chrome stops at roughly fifteen seconds, iOS stalls on very long strings), and every paragraph break gets a natural beat.
   - Defaults to **Jamie (Premium)** at a calm 0.95× rate when the browser exposes that voice; otherwise it leaves voice selection to the device's Spoken Content settings. Automatic mode prefers voices explicitly named Enhanced, Premium, Neural or Natural. Other installed voices and any speed can be chosen by hand in **Settings → Read aloud**, with a *Hear this voice* preview.
@@ -151,7 +151,7 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                       Client (React 19)                         │
-│  - Inter (self-hosted, sole family)                                │
+│  - Inter (interface) + Literata (reading, headlines)            │
 │  - Top Header Navigation with Refresh & Settings Controls       │
 │  - Bottom Dock Navigation (Today, Feeds, Saved, Sources)        │
 │  - Signal Tuning with Undo Fallbacks                            │

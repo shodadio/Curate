@@ -4243,8 +4243,8 @@ export default function App() {
             <CuratorMark className="w-9 h-9 sm:w-10 sm:h-10 shrink-0 drop-shadow-md group-hover:scale-105 transition-transform" />
             <div className="min-w-0">
               <div className="flex items-baseline gap-1.5 leading-none whitespace-nowrap">
-                <span className="font-serif text-xs font-semibold tracking-[0.24em] text-amber-500/90">THE</span>
-                <span className="font-serif text-base font-bold tracking-[0.16em] text-slate-100">CURATOR</span>
+                <span className="font-serif text-[15px] font-semibold tracking-[0.08em] text-amber-500/90">THE</span>
+                <span className="font-serif text-[15px] font-semibold tracking-[0.08em] text-slate-100">CURATOR</span>
               </div>
               <p className="text-xs text-slate-400 mt-1 truncate hidden sm:block">Your morning reading editor</p>
             </div>
@@ -4446,7 +4446,7 @@ export default function App() {
                       <span className="tracking-[0.16em] text-slate-500">{leadStory.source}</span>
                     </div>
 
-                    <h2 className="mt-3 text-[clamp(2rem,7.4vw,2.75rem)] font-semibold leading-[1.02] tracking-[-0.035em] text-slate-50">
+                    <h2 className="mt-3 font-serif text-[clamp(2rem,7.4vw,2.75rem)] font-semibold leading-[1.02] text-slate-50">
                       <button
                         type="button"
                         onClick={() => openArticle(leadStory)}
@@ -4536,7 +4536,7 @@ export default function App() {
                             </span>
                           </div>
 
-                          <h3 className="mt-2 text-[1.4rem] font-semibold leading-[1.15] tracking-[-0.025em] text-slate-50 sm:text-[1.55rem]">
+                          <h3 className="mt-2 font-serif text-[1.4rem] font-semibold leading-[1.15] text-slate-50 sm:text-[1.55rem]">
                             <button
                               type="button"
                               onClick={() => openArticle(item)}
@@ -4621,7 +4621,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => openArticle(item)}
-                              className="block w-full text-left text-[0.95rem] font-medium leading-snug text-slate-100 transition-colors hover:text-amber-300 sm:text-base"
+                              className="block w-full text-left font-serif text-[0.95rem] font-medium leading-snug text-slate-100 transition-colors hover:text-amber-300 sm:text-base"
                             >
                               {item.title}
                             </button>
@@ -5628,11 +5628,11 @@ Search for writers, publications, or topics. Curator checks whether each result 
               <div className="grid grid-cols-3 gap-3">
                 <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center">
                   <span className="text-xs text-slate-400 block mb-0.5">Time spent</span>
-                  <span className="text-base font-bold font-serif text-slate-100">{totalWeeklyMinutes}m</span>
+                  <span className="text-base font-bold text-slate-100">{totalWeeklyMinutes}m</span>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center">
                   <span className="text-xs text-slate-400 block mb-0.5">Finished</span>
-                  <span className="text-base font-bold font-serif text-slate-100">{weeklyRecent.length}</span>
+                  <span className="text-base font-bold text-slate-100">{weeklyRecent.length}</span>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center truncate">
                   <span className="text-xs text-slate-400 block mb-0.5">Focus</span>

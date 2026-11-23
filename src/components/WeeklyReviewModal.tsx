@@ -201,12 +201,12 @@ export function WeeklyReviewModal({
             <CuratorMark className="w-11 h-11 shadow-lg drop-shadow-[0_4px_12px_rgba(245,158,11,0.25)]" />
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-serif text-sm tracking-[0.2em] font-semibold text-amber-400">THE CURATOR</span>
+                <span className="font-serif text-sm tracking-[0.08em] font-semibold text-amber-400">THE CURATOR</span>
                 <span className="text-xs uppercase font-mono tracking-wider px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
                   Weekly Review
                 </span>
               </div>
-              <h2 className="text-xl sm:text-2xl font-serif font-bold text-slate-100 tracking-tight mt-0.5">
+              <h2 className="text-xl sm:text-2xl font-serif font-bold text-slate-100 mt-0.5">
                 Past Week Reading Activity
               </h2>
             </div>
@@ -232,7 +232,7 @@ export function WeeklyReviewModal({
                 <Clock className="w-3.5 h-3.5" />
                 <span>Total Time</span>
               </div>
-              <div className="text-2xl font-bold font-serif text-slate-100">
+              <div className="text-2xl font-bold text-slate-100">
                 {totalMinutes} <span className="text-xs font-sans text-slate-400 font-normal">mins</span>
               </div>
               <div className={`text-xs mt-1 flex items-center gap-1 ${
@@ -252,7 +252,7 @@ export function WeeklyReviewModal({
                 <BookOpen className="w-3.5 h-3.5" />
                 <span>Articles Read</span>
               </div>
-              <div className="text-2xl font-bold font-serif text-slate-100">
+              <div className="text-2xl font-bold text-slate-100">
                 {totalArticles} <span className="text-xs font-sans text-slate-400 font-normal">items</span>
               </div>
               <div className="text-xs text-slate-400 mt-1">
@@ -265,7 +265,7 @@ export function WeeklyReviewModal({
                 <Layers className="w-3.5 h-3.5" />
                 <span>Top Topic</span>
               </div>
-              <div className="text-base sm:text-lg font-bold font-serif text-slate-100 truncate">
+              <div className="text-base sm:text-lg font-bold text-slate-100 truncate">
                 {topTopic || 'No reading yet'}
               </div>
               <div className="text-xs text-amber-300/80 mt-1">
@@ -278,7 +278,7 @@ export function WeeklyReviewModal({
                 <Compass className="w-3.5 h-3.5" />
                 <span>Serendipity</span>
               </div>
-              <div className="text-2xl font-bold font-serif text-slate-100">
+              <div className="text-2xl font-bold text-slate-100">
                 {stretchCount} <span className="text-xs font-sans text-slate-400 font-normal">stretch</span>
               </div>
               <div className="text-xs text-slate-400 mt-1">

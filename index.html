@@ -29,6 +29,9 @@
     <meta name="twitter:image:alt" content="The Curator emblem — a rising sun over an open book — beside the words THE CURATOR and the line “A daily curated reading digest”." />
 
     <link rel="preload" href="/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <!-- The serif sets the edition's headlines above the fold, so it is fetched with the page
+         rather than discovered after the first text has been laid out. -->
+    <link rel="preload" href="/fonts/literata-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
   </head>
   <body class="bg-slate-950 text-slate-100 overflow-x-clip w-full max-w-full antialiased min-h-screen">
     <div id="root" class="bg-slate-950 text-slate-100 overflow-x-clip w-full max-w-full min-h-screen"></div>

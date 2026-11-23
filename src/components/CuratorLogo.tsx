@@ -108,9 +108,9 @@ export function CuratorFullLogo({ className = 'w-full max-w-sm', showTagline = t
       <CuratorMark className="w-24 h-24 mb-4 drop-shadow-[0_8px_24px_rgba(245,158,11,0.25)]" />
 
       {/* Typography: THE CURATOR */}
-      <div className="flex items-baseline gap-2.5 tracking-[0.22em] text-center">
-        <span className="font-serif text-xl sm:text-2xl font-semibold text-amber-500/90 tracking-[0.28em]">THE</span>
-        <span className="font-serif text-xl sm:text-2xl font-bold text-white tracking-[0.22em]">CURATOR</span>
+      <div className="flex items-baseline gap-2.5 text-center">
+        <span className="font-serif text-xl sm:text-2xl font-semibold text-amber-500/90 tracking-[0.1em]">THE</span>
+        <span className="font-serif text-xl sm:text-2xl font-semibold text-white tracking-[0.1em]">CURATOR</span>
       </div>
 
       {showTagline && (

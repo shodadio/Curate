@@ -1,9 +1,16 @@
 @import "tailwindcss";
 
-/* One self-hosted variable family, Inter, used for everything — interface, reading body,
-   wordmark and numerals — in two files (roman + italic). No third-party requests.
-   `font-display: optional` means the browser either has it within ~100ms or keeps the
-   fallback for that page load — the text never changes face after it is painted. */
+/* Two self-hosted variable families, no third-party requests.
+
+   Inter carries the interface: chrome, buttons, metadata, summaries. `font-display: optional`
+   means the browser either has it within ~100ms or keeps the fallback for that page load —
+   the chrome never changes face after it is painted.
+
+   Literata carries what the reader actually reads: article bodies and the edition's headlines
+   (and the wordmark, which was already asking for a serif). It is a text-first serif drawn in
+   an optical-size axis, so the same file sets a headline at 24px and a paragraph at 18px
+   properly. It uses `swap` rather than `optional`: on a reading app the wrong face on the
+   first screen is worse than one quiet swap as the page settles. */
 @font-face {
   font-family: 'Inter';
   font-style: normal;
@@ -20,11 +27,29 @@
   src: url('/fonts/inter-latin-wght-italic.woff2') format('woff2');
 }
 
-/* Inter is the site's only family: the sans, serif and mono utilities all resolve to it,
-   so a `font-serif` wordmark or a `font-mono` timestamp stays on the same typeface. */
+@font-face {
+  font-family: 'Literata';
+  font-style: normal;
+  font-weight: 200 900;
+  font-display: swap;
+  src: url('/fonts/literata-latin-wght-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Literata';
+  font-style: italic;
+  font-weight: 200 900;
+  font-display: swap;
+  src: url('/fonts/literata-latin-wght-italic.woff2') format('woff2');
+}
+
+/* The serif utility is a real serif now, so `font-serif` on a headline or the nameplate lands
+   on the same face the reader reads prose in. Numbers stay in Inter even where they are set
+   large: a figure is data, and the weekly review's own heading carries the editorial voice.
+   `font-mono` stays on Inter too — the app has no code to set, only timestamps to align. */
 @theme {
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
-  --font-serif: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+  --font-serif: 'Literata', Georgia, serif;
   --font-mono: 'Inter', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
@@ -539,9 +564,12 @@ img[data-tiny-icon] {
   text-decoration-color: currentColor;
 }
 
+/* The reading face, shipped: Literata roman + italic live in /fonts. `letter-spacing: normal`
+   matters: the app tightens Inter by -0.012em at the root, which a text serif should not
+   inherit. Optical sizing is the variable font's own default, so it needs no declaration. */
 .reader-serif {
-  font-family: 'Literata', 'Charter', 'Bitstream Charter', 'Merriweather', 'Sitka Text', Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Times New Roman', serif;
-  letter-spacing: 0.005em;
+  font-family: 'Literata', Georgia, serif;
+  letter-spacing: normal;
 }
 
 .reader-sans {
@@ -549,8 +577,9 @@ img[data-tiny-icon] {
   letter-spacing: -0.005em;
 }
 
+/* The mono utility's family comes from the theme (Inter); only the figures need saying here:
+   timestamps and counts should not jitter as they tick. */
 .font-mono {
-  font-family: 'Inter', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
   font-feature-settings: "tnum";
 }
 
