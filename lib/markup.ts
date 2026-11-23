@@ -49,7 +49,8 @@ export const stripMarkdownSyntax = (text: string): string =>
     .replace(/(^|[\s(])\*([^*\s][^*\n]*?)\*/g, '$1$2')
     .replace(/(^|[\s(])_([^_\s][^_\n]*?)_/g, '$1$2');
 
-// One line of plain text: for summaries, titles, dates and feed descriptions.
+// One line of plain text: for summaries, titles, dates and feed descriptions. Markdown
+// reaches these cleaners as often as markup does, so its links and emphasis marks come off here.
 export const cleanHtml = (str: string): string => {
   if (!str) return '';
   // Strip, decode, strip again. A tag must also open with a letter, slash or bang, so prose
@@ -61,7 +62,7 @@ export const cleanHtml = (str: string): string => {
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<[a-zA-Z/!][^>]*>/g, ' ');
 
-  return linkLabelsOnly(withoutTags(decodeEntities(withoutTags(str))))
+  return stripMarkdownSyntax(withoutTags(decodeEntities(withoutTags(str))))
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/[ \t\u00a0]+/g, ' ')
     .replace(/\s+/g, ' ')

@@ -71,7 +71,7 @@ import {
   splitIntoSentences,
 } from '../lib/speech';
 import { formatBuildStamp } from '../lib/buildStamp';
-import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, isPlayerChrome, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, isPlayerChrome, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
 
 // One-click provider addresses: the popular OpenAI-compatible services, so a working setup
 // starts with a name and a key rather than a copied URL and a guessed model ID.
@@ -923,8 +923,11 @@ export default function App() {
   const displayFolder = (folder?: string) =>
     (!folder || folder.trim().toLowerCase() === 'uncategorized') ? 'General' : folder;
   // Feed writers type their excerpts in Markdown, so a standfirst can arrive as
-  // "[Headline](https://…)". The words are what the reader wants, on every page that shows one.
-  const standfirst = (item: { summary?: string }) => linkLabelsOnly(item.summary || '');
+  // "[Headline](https://…)" or "**growth**". The words are what the reader wants, on every
+  // page that shows one, so it is cleaned the same way a source blurb is.
+  const standfirst = (item: { summary?: string }) => stripMarkdownSyntax(item.summary || '');
+  // A feed that writes its headline in Markdown gets the words back, not the emphasis marks.
+  const headline = (item: { title?: string }) => stripMarkdownSyntax(item.title || '');
 
   // The folder that took the most of this week's reading time
   const topWeeklyTopic = (() => {
@@ -3141,7 +3144,7 @@ export default function App() {
         </div>
 
         <h3 className="mt-2 font-serif text-[1.4rem] font-semibold leading-[1.15] text-slate-50 transition-colors group-hover:text-amber-200 sm:text-[1.55rem]">
-          {item.title}
+          {headline(item)}
         </h3>
 
         <p className="mt-2 line-clamp-2 text-[0.95rem] leading-[1.55] text-slate-400">{standfirst(item)}</p>
@@ -4056,7 +4059,7 @@ export default function App() {
                 tabIndex={-1}
                 className="reader-heading reader-ink mt-6 text-balance text-[1.95em] font-semibold leading-[1.12] tracking-[-0.024em] focus:outline-none"
               >
-                {selectedArticle.title}
+                {headline(selectedArticle)}
               </h1>
 
               <div className="reader-dim mt-4 flex flex-wrap items-center gap-x-2 gap-y-1.5 font-sans text-[0.75rem]">
@@ -4602,7 +4605,7 @@ export default function App() {
                         onClick={() => openArticle(leadStory)}
                         className="text-left transition-colors hover:text-amber-200"
                       >
-                        {leadStory.title}
+                        {headline(leadStory)}
                       </button>
                     </h2>
 
@@ -4612,7 +4615,7 @@ export default function App() {
 
                     {leadOpening && (
                       <p className="mt-4 max-w-[42rem] text-[0.95rem] leading-[1.75] text-slate-400">
-                        {linkLabelsOnly(leadOpening)}
+                        {stripMarkdownSyntax(leadOpening)}
                       </p>
                     )}
 
@@ -4693,7 +4696,7 @@ export default function App() {
                               onClick={() => openArticle(item)}
                               className="text-left transition-colors hover:text-amber-200"
                             >
-                              {item.title}
+                              {headline(item)}
                             </button>
                           </h3>
 
@@ -4773,7 +4776,7 @@ export default function App() {
                               onClick={() => openArticle(item)}
                               className="block w-full text-left font-serif text-[0.95rem] font-medium leading-snug text-slate-100 transition-colors hover:text-amber-300 sm:text-base"
                             >
-                              {item.title}
+                              {headline(item)}
                             </button>
                             <p className="mt-1 truncate text-xs leading-relaxed text-slate-400">{standfirst(item)}</p>
                             <p className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
@@ -5289,7 +5292,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-sm font-medium text-slate-100">{item.title}</span>
+                              <span className="text-sm font-medium text-slate-100">{headline(item)}</span>
                               <span className="text-xs text-slate-400">· {item.folder}</span>
                             </div>
                             <a
@@ -6937,7 +6940,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       {currentCalibrationItem.source} · {currentCalibrationItem.folder}
                     </div>
                     <h4 className="text-sm font-semibold text-slate-100 leading-snug">
-                      {currentCalibrationItem.title}
+                      {headline(currentCalibrationItem)}
                     </h4>
                     <p className="text-xs text-slate-400 leading-relaxed line-clamp-3">
                       {standfirst(currentCalibrationItem)}

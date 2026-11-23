@@ -59,6 +59,11 @@ test('a blurb written in Markdown reaches the page as prose', () => {
   assert.equal(stripMarkdownSyntax('A *quiet* case where 5 * 3 = 15.'), 'A quiet case where 5 * 3 = 15.');
 });
 
+test('cleanHtml treats a headline written in Markdown as words', () => {
+  assert.equal(cleanHtml('<title>*The Great Enrichment*</title>'), 'The Great Enrichment');
+  assert.equal(cleanHtml('Static **and** dynamic typing'), 'Static and dynamic typing');
+});
+
 test('a Markdown link in a feed summary keeps its words and loses its address', () => {
   assert.equal(
     cleanHtml('1. [Why so many arranged marriages in South Asia?](https://www.gdd.world/p/why-do-south-asian-parents-often) 2. [Markets and migration](https://example.com/a)'),
