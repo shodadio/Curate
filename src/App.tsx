@@ -28,6 +28,7 @@ import { readBackupFile, restorePlan } from '../lib/backup';
 import { migrateStoredMarkdown } from '../lib/markdownMigration';
 import { migrateStoryIds } from '../lib/storyIdMigration';
 import { editionDayLabel, editionMinutes as editionMinutesFor, readEditions, recordEdition, type Edition } from '../lib/editions';
+import { isDegenerateDescription } from '../lib/sourceMetadata';
 import { formatBytes, measureStorage, pruneArticleBodies, pruneReadingStats, type StorageReport } from '../lib/storageHealth';
 import { activeSources, applyFeedFailures, resumeFeed } from '../lib/sourceRetirement';
 import {
@@ -1385,8 +1386,10 @@ export default function App() {
       return;
     }
 
+    // A blurb that stops mid-phrase (Hugo's title-less "Recent content on") is refetched the
+    // same way a missing one is: the server now answers those with the directory's one-liner.
     const batch = sources
-      .filter(source => !source.description?.trim() && !source.descriptionCheckedAt && !sourceDescriptionRequestsRef.current.has(source.id))
+      .filter(source => (!source.description?.trim() || isDegenerateDescription(source.description)) && !source.descriptionCheckedAt && !sourceDescriptionRequestsRef.current.has(source.id))
       .slice(0, 20);
     if (batch.length === 0) return;
 

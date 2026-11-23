@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseArticleAuthor, parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from '../lib/sourceMetadata.ts';
+import { isDegenerateDescription, parseArticleAuthor, parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from '../lib/sourceMetadata.ts';
 
 test('reads the channel description without mistaking an article description for it', () => {
   const feed = '<rss><channel><title>Example</title><description><![CDATA[<p>A journal about science and society.</p>]]></description><item><description>Article excerpt</description></item></channel></rss>';
@@ -11,6 +11,18 @@ test('reads the channel description without mistaking an article description for
 test('a publication blurb in Markdown loses its syntax before it reaches the page', () => {
   const feed = '<rss><channel><description>Essays on [markets](https://example.com) and **growth**.</description></channel></rss>';
   assert.equal(parseFeedChannelDescription(feed), 'Essays on markets and growth.');
+});
+
+test('a blurb cut mid-phrase counts as missing so the fallbacks get their turn', () => {
+  const feed = '<rss><channel><description>Recent content on </description><item><description>Article excerpt</description></item></channel></rss>';
+  assert.equal(parseFeedChannelDescription(feed), '');
+  assert.equal(isDegenerateDescription('Recent content on'), true);
+  assert.equal(isDegenerateDescription('Essays on design and'), true);
+  assert.equal(isDegenerateDescription('Notes on the'), true);
+  assert.equal(isDegenerateDescription('Small Steps Toward A Much Better World'), false);
+  assert.equal(isDegenerateDescription('Serving the Technologist since 1998. News, reviews, and analysis.'), false);
+  assert.equal(isDegenerateDescription('A continuous stream of the latest articles published from Rest of World'), false);
+  assert.equal(isDegenerateDescription(''), false);
 });
 
 test('reads an Atom subtitle and returns an empty description when feed metadata is absent', () => {

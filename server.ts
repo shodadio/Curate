@@ -1197,7 +1197,7 @@ async function startServer() {
 
   const parseFeedItems = (xml: string, sourceTitle: string, folder: string, baseUrl: string, categories: string[]): any[] => {
     const items: any[] = [];
-    const feedDescription = parseFeedChannelDescription(xml);
+    const feedDescription = parseFeedChannelDescription(xml) || directorySummaryForSiteUrl(baseUrl);
     const regex = /<(?:item|entry)\b[^>]*>([\s\S]*?)<\/(?:item|entry)>/gi;
     let m: RegExpExecArray | null;
 
@@ -1611,13 +1611,16 @@ async function startServer() {
       if (!feedPage.ok || !feedPage.text) throw new Error(`Feed responded with ${feedPage.status || 'no content'}`);
       description = parseFeedChannelDescription(feedPage.text);
 
-      if (!description) {
-        const siteUrl = parseFeedSiteUrl(feedPage.text, feedUrl);
-        const sitePage = siteUrl ? await fetchPublicPage(siteUrl, 4500) : null;
+      const siteUrl = parseFeedSiteUrl(feedPage.text, feedUrl);
+      if (!description && siteUrl) {
+        const sitePage = await fetchPublicPage(siteUrl, 4500);
         if (sitePage?.ok && (!sitePage.contentType || /(?:text\/html|application\/xhtml\+xml)/i.test(sitePage.contentType))) {
           description = parseSitePageDescription(sitePage.text);
         }
       }
+      // Neither the feed nor the site names the publication: fall back to the directory's
+      // own one-liner for a known publication before giving up.
+      if (!description && siteUrl) description = directorySummaryForSiteUrl(siteUrl);
     } catch (err: any) {
       error = err?.message || 'Site description could not be loaded';
     }
@@ -2769,6 +2772,26 @@ CURATION RULES:
     { title: 'Serious Eats', siteUrl: 'https://www.seriouseats.com', folder: 'Food', summary: 'Food science and rigorously tested recipes.', topics: ['food', 'recipes', 'science', 'technique'] },
     { title: 'David Lebovitz', siteUrl: 'https://www.davidlebovitz.com', folder: 'Food', summary: 'A pastry chef on cooking, baking and living in Paris.', topics: ['food', 'baking', 'paris', 'recipes'] },
   ];
+
+  // Curator's own one-liner for a known publication, used when the feed and the site carry
+  // no usable blurb of their own. A missing blurb hides the line, but a broken one — Hugo's
+  // title-less "Recent content on" — must never reach the page, and the parsers above
+  // already report such cases as missing.
+  const directorySummaryForSiteUrl = (url: string): string => {
+    // Hosts, not origins: a feed that still links its site over plain http names the same
+    // publication the directory lists under https.
+    const hostOf = (value: string): string => {
+      try {
+        return new URL(value).hostname.replace(/^www\./, '').toLowerCase();
+      } catch {
+        return '';
+      }
+    };
+    const host = hostOf(url);
+    if (!host) return '';
+    const match = discoveryDirectory.find(entry => hostOf(entry.siteUrl) === host);
+    return match ? match.summary : '';
+  };
 
   // Words too common to say what a search is about; they would match half the directory.
   const discoveryStopWords = new Set([

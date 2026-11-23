@@ -2,9 +2,28 @@ import { cleanHtml } from './markup';
 
 const DESCRIPTION_LIMIT = 300;
 
+// A blurb that stops mid-phrase is worse than none: Hugo's default channel text reads
+// "Recent content on" when the site title is empty, and some publishers cut their own
+// description mid-sentence. Either would sit on the page as a broken line, so they count
+// as missing and the fallbacks get their turn.
+const DANGLING_ENDINGS = new Set([
+  'on', 'of', 'for', 'to', 'in', 'with', 'by', 'from', 'about', 'at', 'as', 'into', 'over',
+  'after', 'before', 'between', 'through', 'during', 'the', 'a', 'an', 'and', 'or', 'but',
+  'nor', 'is', 'are', 'was', 'were', 'be', 'been', 'that', 'which', 'who', 'whom', 'whose',
+  'this', 'these', 'it', 'its',
+]);
+
+export const isDegenerateDescription = (value: string): boolean => {
+  const description = (value || '').trim();
+  if (!description) return false;
+  if (/[.?!…:;]$/.test(description)) return false;
+  const last = description.split(/\s+/).pop()?.replace(/["'“”‘’()]+$/g, '').toLowerCase() || '';
+  return DANGLING_ENDINGS.has(last);
+};
+
 const trimDescription = (raw: string): string => {
   const description = cleanHtml(raw);
-  if (description.length <= DESCRIPTION_LIMIT) return description;
+  if (description.length <= DESCRIPTION_LIMIT) return isDegenerateDescription(description) ? '' : description;
   return `${description.slice(0, DESCRIPTION_LIMIT - 3).replace(/\s+\S*$/, '')}…`;
 };
 
