@@ -4,14 +4,15 @@ import assert from 'node:assert/strict';
 import {
   SCORE_WEIGHTS,
   blendSemanticScores,
-  buildDenseCentroid,
   buildDeterministicDigest,
   buildExposurePenalty,
   buildSemanticVectors,
-  buildSparseCentroid,
   buildWhyLine,
+  composeSemanticText,
+  composeVoteText,
   cosineSimilarity,
   denseFeedbackScores,
+  feedbackDecay,
   localSemanticScores,
   matchesInterest,
   maxPerSourceFor,
@@ -28,6 +29,8 @@ import {
   withinDigestWindow,
   DIGEST_MAX_AGE_MS,
   DENSE_FEEDBACK_HALF_LIFE_MS,
+  SEMANTIC_DECAY_FLOOR,
+  SEMANTIC_TITLE_WEIGHT,
   type SemanticVoteExample,
 } from '../lib/ranking.ts';
 
@@ -62,7 +65,86 @@ test('semanticTokens lowercases, strips markup, drops stopwords and stems plural
   assert.ok(tokens.includes('guard'));
   assert.ok(tokens.includes('memory'));
   assert.ok(!tokens.includes('the'), 'stopwords must be dropped');
-  assert.ok(!tokens.includes('safely'.slice(0, 3)), 'tokens are three characters or longer');
+  assert.ok(tokens.includes('safely'), 'longer words keep their shape');
+});
+
+test('semanticTokens keeps two-letter and technical terms', () => {
+  const tokens = semanticTokens('AI and ML at C++ and .NET, gpt-4 in the EU, a VC round');
+  for (const expected of ['ai', 'ml', 'c++', '.net', 'gpt-4', 'eu', 'vc']) {
+    assert.ok(tokens.includes(expected), `expected ${expected} in ${tokens.join(',')}`);
+  }
+  for (const stopword of ['and', 'at', 'in']) {
+    assert.ok(!tokens.includes(stopword), `two-letter stopword ${stopword} stays dropped`);
+  }
+});
+
+test('semanticTokens keeps plural stems honest and technical forms intact', () => {
+  assert.ok(semanticTokens('business').includes('business'), 'business is not a plural');
+  assert.ok(semanticTokens('analysis').includes('analysis'));
+  assert.ok(semanticTokens('news').includes('news'), 'a stem that collapses into a stopword is refused');
+  assert.ok(semanticTokens('programmes').includes('programme'));
+  assert.ok(semanticTokens('node.js').includes('node.js'));
+});
+
+test('semanticTokens reads non-Latin scripts and bigrams space-free ones', () => {
+  const russian = semanticTokens('Квантовые вычисления');
+  assert.ok(russian.includes('квантовые'));
+  assert.ok(russian.includes('вычисления'));
+  assert.deepEqual(semanticTokens('量子计算'), ['量子', '子计', '计算']);
+});
+
+test('composeSemanticText describes an article once and caps the body', () => {
+  const text = composeSemanticText({
+    title: 'Quantum error correction',
+    folder: 'Science',
+    categories: ['Physics', 'Computing'],
+    summary: 'Logical qubits improve',
+    fullText: 'x'.repeat(5000),
+  });
+  assert.equal(text.split('Quantum error correction').length - 1, 1, 'the title appears once');
+  assert.ok(text.includes('Science'));
+  assert.ok(text.includes('Physics. Computing'));
+  assert.ok(text.includes('Logical qubits improve'));
+  assert.ok(text.length <= 1800 + 200, 'the body is capped near 1,800 characters');
+
+  const voteText = composeVoteText(vote({ title: 'Example', text: 'body text only' }));
+  assert.ok(voteText.startsWith('Example'), 'the vote title leads its body');
+  assert.equal(voteText.split('Example').length - 1, 1, 'the title is not repeated into the body');
+});
+
+test('composeSemanticText weighs a headline deliberately without a second composer', () => {
+  const document = { title: 'Quantum error correction', summary: 'Logical qubits improve' };
+  const occurrences = (text: string) => text.split('Quantum error correction').length - 1;
+
+  assert.equal(occurrences(composeSemanticText(document)), 1, 'the default keeps one title');
+  assert.equal(
+    occurrences(composeSemanticText(document, { titleEmphasis: SEMANTIC_TITLE_WEIGHT })),
+    SEMANTIC_TITLE_WEIGHT,
+    'the engine counts the headline deliberately more',
+  );
+  assert.ok(
+    composeSemanticText(document, { titleEmphasis: 4 }).includes('Logical qubits improve'),
+    'emphasis never touches the body',
+  );
+  assert.equal(occurrences(composeSemanticText(document, { titleEmphasis: 0 })), 1, 'emphasis floors at one');
+  assert.equal(occurrences(composeSemanticText(document, { titleEmphasis: 99 })), 4, 'emphasis is clamped');
+});
+
+test('a headline match outweighs the same words buried in a body', () => {
+  const feedback = [vote({
+    title: 'Quantum error correction',
+    text: 'filler words about office furniture',
+    timestamp: NOW,
+  })];
+  const scores = localSemanticScores(feedback, [
+    { id: 'headline', title: 'Quantum error correction' },
+    { id: 'buried', title: 'Office furniture', fullText: 'Quantum error correction' },
+  ], NOW);
+
+  assert.ok(
+    (scores.get('headline') || 0) > (scores.get('buried') || 0),
+    `headline ${scores.get('headline')} should beat buried ${scores.get('buried')}`,
+  );
 });
 
 test('semanticTermCounts adds adjacent bigrams at half weight', () => {
@@ -100,22 +182,6 @@ test('sparseCosine is 0 for unrelated vectors and 1 for identical normalised one
 // Feedback maths: sparse and dense matching, decay and blending
 // ---------------------------------------------------------------------------
 
-test('buildSparseCentroid weights votes by age and ignores the other vote', () => {
-  const vectors = buildSemanticVectors(['rust memory safety', 'rust memory safety']);
-  const recentOnly = buildSparseCentroid('like', [vote({ text: 'rust memory safety' })], vectors, NOW);
-  assert.ok(recentOnly, 'a fresh vote must produce a centroid');
-  approx(Math.sqrt([...recentOnly!.values()].reduce((sum, v) => sum + v * v, 0)), 1, 'centroid is normalised');
-
-  const dislikeOnly = buildSparseCentroid('dislike', [vote({ text: 'rust memory safety' })], vectors, NOW);
-  assert.equal(dislikeOnly, null, 'a like must not feed the dislike centroid');
-});
-
-test('buildSparseCentroid returns null without usable examples', () => {
-  assert.equal(buildSparseCentroid('like', [], [], NOW), null);
-  const vectors = buildSemanticVectors(['alpha beta']);
-  assert.equal(buildSparseCentroid('like', [vote({ text: 'alpha beta' })], [null], NOW), null);
-});
-
 test('a recent like dominates a years-old like when directions differ', () => {
   const feedback = [
     vote({ id: 'new', vote: 'like', text: 'rust memory safety borrow checker' }),
@@ -134,7 +200,8 @@ test('a recent like dominates a years-old like when directions differ', () => {
 
   assert.ok(recentRust > 0.4, `a fresh vote should still score, got ${recentRust}`);
   approx(recentRust, freshScores.get('rust') || 0, 'the recent interest keeps its score');
-  assert.ok(staleGarden < freshGarden * 0.01, 'the older interest fades relative to a newer vote');
+  assert.ok(staleGarden < freshGarden * 0.2, 'a five-year-old vote decays to the floor');
+  assert.ok(staleGarden > 0, 'the floor keeps a dormant interest alive');
 });
 
 test('localSemanticScores returns nothing without feedback or candidates', () => {
@@ -188,23 +255,66 @@ test('matching positive and negative feedback cancels into a neutral score', () 
   approx(scores.get('same') || 0, 0, 'opposed votes on the same text cancel');
 });
 
-test('buildDenseCentroid normalises vectors and skips mismatched dimensions', () => {
-  const centroid = buildDenseCentroid('like', [{ vote: 'like', timestamp: NOW }], [[3, 4]], NOW);
-  assert.deepEqual(centroid, [0.6, 0.8]);
+test('an unrelated dislike does not rescale the liked topics', () => {
+  const liked = vote({
+    id: 'liked',
+    vote: 'like',
+    title: 'Quantum error correction',
+    text: 'quantum computing qubits logical qubit',
+  });
+  const neighbours = [
+    vote({ id: 'n1', vote: 'like', title: 'Quantum hardware', text: 'quantum computing qubits roadmap', timestamp: NOW - DAY }),
+    vote({ id: 'n2', vote: 'like', title: 'Quantum advantage', text: 'quantum computing qubits scale', timestamp: NOW - 2 * DAY }),
+  ];
+  const unrelated = vote({
+    id: 'hated',
+    vote: 'dislike',
+    title: 'Red carpet fashion',
+    text: 'celebrity gossip designer dresses stylist',
+  });
+  const candidates = [{ id: 'on_topic', title: 'Quantum error correction', summary: 'logical qubits and quantum computing' }];
 
-  const mixed = buildDenseCentroid(
-    'like',
-    [
-      { vote: 'like', timestamp: NOW },
-      { vote: 'like', timestamp: NOW },
-    ],
-    [[1, 0], [0, 1, 0]],
-    NOW,
+  const withoutDislike = localSemanticScores([liked, ...neighbours], candidates, NOW).get('on_topic') || 0;
+  const withDislike = localSemanticScores([liked, ...neighbours, unrelated], candidates, NOW).get('on_topic') || 0;
+
+  assert.ok(withoutDislike > 0.4, `the liked topic should score strongly, got ${withoutDislike}`);
+  assert.ok(
+    Math.abs(withDislike - withoutDislike) < 0.05,
+    `an unrelated dislike shifted the topic from ${withoutDislike} to ${withDislike}`,
   );
-  assert.deepEqual(mixed, [1, 0], 'a vector of the wrong width is ignored');
+});
 
-  assert.equal(buildDenseCentroid('dislike', [{ vote: 'like', timestamp: NOW }], [[1, 0]], NOW), null);
-  assert.equal(buildDenseCentroid('like', [{ vote: 'like', timestamp: NOW }], [[0, 0]], NOW), null);
+test('a matching dislike pulls its own topic below neutral', () => {
+  const feedback = [
+    vote({ id: 'like', vote: 'like', title: 'Rust memory safety', text: 'rust memory safety borrow checker' }),
+    vote({ id: 'hate', vote: 'dislike', title: 'Crypto tokens', text: 'crypto tokens speculation airdrop' }),
+  ];
+  const scores = localSemanticScores(feedback, [
+    { id: 'rust', title: 'Rust memory safety', summary: 'borrow checker' },
+    { id: 'crypto', title: 'Token speculation', summary: 'airdrop crypto tokens' },
+  ], NOW);
+  assert.ok((scores.get('rust') || 0) > 0.5);
+  assert.ok((scores.get('crypto') || 0) < 0, 'a disliked topic scores below neutral');
+});
+
+test('decay is measured from the clock and stops at the floor', () => {
+  const feedback = [vote({
+    vote: 'like',
+    title: 'Rust memory safety',
+    text: 'rust memory safety borrow checker',
+    timestamp: NOW,
+  })];
+  const candidates = [{ id: 'rust', title: 'Rust memory safety', summary: 'borrow checker' }];
+
+  const fresh = localSemanticScores(feedback, candidates, NOW).get('rust') || 0;
+  const stale = localSemanticScores(feedback, candidates, NOW + 3 * 365 * DAY).get('rust') || 0;
+
+  assert.ok(fresh > 0.9, `a fresh vote counts in nearly full, got ${fresh}`);
+  approx(stale, fresh * SEMANTIC_DECAY_FLOOR, 'a stale vote keeps the floor, not its full weight');
+  approx(feedbackDecay(0, DAY), 1);
+  approx(feedbackDecay(DAY, DAY), 0.5);
+  approx(feedbackDecay(30 * DAY, 60 * DAY), Math.pow(0.5, 0.5));
+  approx(feedbackDecay(10 * 365 * DAY, 60 * DAY), SEMANTIC_DECAY_FLOOR);
 });
 
 test('cosineSimilarity is a dot product and rejects mismatched widths', () => {
@@ -226,8 +336,8 @@ test('denseFeedbackScores preserves multiple interests and decays older votes', 
     [[1, 0], [0, 1]],
     NOW,
   );
-  approx(scores[0], 0.5, 'most recent matching interest');
-  approx(scores[1], 0.25, 'one-half-life-old interest is down-weighted');
+  approx(scores[0], 1, 'most recent matching interest');
+  approx(scores[1], 0.5, 'one-half-life-old interest is down-weighted');
 });
 
 test('provider embeddings are blended 65/35 with the built-in engine', () => {
