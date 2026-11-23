@@ -4821,6 +4821,8 @@ export default function App() {
                             </h4>
 
                             <p className="mt-1 line-clamp-1 text-[0.875rem] leading-[1.55] text-[#6f675c]">
+                              <span className="font-semibold text-[#3f3a33]">{item.source}</span>
+                              {' · '}
                               {standfirst(item)}
                             </p>
 
