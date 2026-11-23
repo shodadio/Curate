@@ -49,6 +49,24 @@ export const stripMarkdownEmphasis = (text: string): string =>
     .replace(/(^|[\s(])\*([^*\s][^*\n]*?)\*/g, '$1$2')
     .replace(/(^|[\s(])_([^_\s][^_\n]*?)_/g, '$1$2');
 
+// Block-level Markdown a body can carry: headings, quotes, lists, rules, fences, tables
+// and strikethrough. The words stay; only the scaffolding goes. Shared by the reader and
+// the voice, so the page reads what is spoken. The reader's own list bullet survives:
+// it is the cleaner's doing, not debris, and the voice strips it separately.
+export const stripMarkdownBlocks = (text: string): string =>
+  text
+    .replace(/^\s{0,3}#{1,6}\s*/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s*[-+*]\s+\[[ xX]\]\s+/gm, '')
+    .replace(/^\s*[-+*]\s+/gm, '')
+    .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm, ' ')
+    .replace(/^```\s*\w*\s*$/gm, ' ')
+    .replace(/```/g, ' ')
+    .replace(/~~/g, ' ')
+    .replace(/^\s*\|(?:\s*:?-{1,}:?\s*\|)+\s*$/gm, ' ')
+    .replace(/\|/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ');
+
 // A blurb written in Markdown reaches the page as prose: a link keeps its label, and the
 // emphasis and code marks come off.
 export const stripMarkdownSyntax = (text: string): string =>

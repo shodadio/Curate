@@ -73,7 +73,7 @@ import {
   splitIntoSentences,
 } from '../lib/speech';
 import { formatBuildStamp } from '../lib/buildStamp';
-import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, isPlayerChrome, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, isPlayerChrome, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
 
 // One-click provider addresses: the popular OpenAI-compatible services, so a working setup
 // starts with a name and a key rather than a copied URL and a guessed model ID.
@@ -443,7 +443,7 @@ const MARKDOWN_LINK = /\[([^\]\n]{1,240})\]\(([^)]+)\)/g;
 
 function linkifyParagraph(paragraph: string): ParagraphToken[] {
   // Prose reads as words; a link keeps its address for the anchor below.
-  const prose = (segment: string) => linkifyBareUrls(stripMarkdownEmphasis(segment));
+  const prose = (segment: string) => linkifyBareUrls(stripMarkdownEmphasis(stripMarkdownBlocks(segment)));
   const tokens: ParagraphToken[] = [];
   let cursor = 0;
   MARKDOWN_LINK.lastIndex = 0;
@@ -4622,7 +4622,7 @@ export default function App() {
 
                     {leadOpening && (
                       <p className="mt-4 max-w-[42rem] text-[0.95rem] leading-[1.75] text-slate-400">
-                        {stripMarkdownSyntax(leadOpening)}
+                        {stripMarkdownSyntax(stripMarkdownBlocks(leadOpening))}
                       </p>
                     )}
 

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { articleLooksIncomplete, articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, repairSplitDigits, splitDenseParagraph, splitSentences, stripMarkdownEmphasis, stripMarkdownSyntax, trimSummaryFurniture } from '../lib/markup.ts';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, repairSplitDigits, splitDenseParagraph, splitSentences, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, trimSummaryFurniture } from '../lib/markup.ts';
 
 test('only a piece saved before links were kept is refreshed', () => {
   assert.equal(articleNeedsLinkRefresh({ url: 'https://example.com/story' }), true);
@@ -62,6 +62,21 @@ test('a blurb written in Markdown reaches the page as prose', () => {
 test('cleanHtml treats a headline written in Markdown as words', () => {
   assert.equal(cleanHtml('<title>*The Great Enrichment*</title>'), 'The Great Enrichment');
   assert.equal(cleanHtml('Static **and** dynamic typing'), 'Static and dynamic typing');
+});
+
+test('block scaffolding comes off a body while its words stay', () => {
+  assert.equal(stripMarkdownBlocks('He called it ~~a mistake~~ and moved on.'), 'He called it a mistake and moved on.');
+  assert.equal(
+    stripMarkdownBlocks('| Year | Growth |\n| --- | --- |\n| 2020 | 3% |'),
+    ' Year Growth \n \n 2020 3% ',
+  );
+  assert.equal(stripMarkdownBlocks('## The setup nobody mentions'), 'The setup nobody mentions');
+  assert.equal(stripMarkdownBlocks('> Pull this quote for the trial.'), 'Pull this quote for the trial.');
+  assert.equal(stripMarkdownBlocks('- [ ] File the appeal\n- [x] Pay the fee'), 'File the appeal\nPay the fee');
+  assert.equal(stripMarkdownBlocks('```js\nconst x = 1;\n```'), ' \nconst x = 1;\n ');
+  assert.equal(stripMarkdownBlocks('The result --- not the process --- mattered.'), 'The result --- not the process --- mattered.');
+  // The reader's own list bullet is the cleaner's doing, not debris.
+  assert.equal(stripMarkdownBlocks('• First step'), '• First step');
 });
 
 test('emphasis comes off without touching a link address', () => {

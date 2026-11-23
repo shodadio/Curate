@@ -2,7 +2,7 @@
 // page shows. Kept out of the screen so the wording, the voice choice and the sentence split
 // can be tested — and changed — without touching a seven-thousand-line component.
 
-import { decodeEntities, stripMarkdownEmphasis } from './markup.ts';
+import { decodeEntities, stripMarkdownBlocks, stripMarkdownEmphasis } from './markup.ts';
 
 // Browsers cut a long utterance off (Chrome after roughly fifteen seconds, iOS stalls), so the
 // reader speaks a sentence at a time: 220 characters sits inside every engine's comfort zone.
@@ -181,16 +181,10 @@ export function normaliseForSpeech(text: string): string {
     .replace(/\bread\s+(?:the\s+)?(?:full|original|rest\s+of\s+(?:the|this))\s+(?:article|post|story)\b[^.!?]*[.!?]?/gi, ' ')
     .replace(/\b(?:read more|continue reading|share this|advertisement)\b/gi, ' ');
 
-  // Remove Markdown formatting while retaining the words it decorates. Emphasis comes off
-  // the same way it does on screen, so the voice reads what the eye saw.
-  out = stripMarkdownEmphasis(out
-    .replace(/^\s{0,3}#{1,6}\s*/gm, '')
-    .replace(/^\s{0,3}>\s?/gm, '')
-    .replace(/^\s*[-+*•·]\s+/gm, '')
-    .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm, ' ')
-    .replace(/```[^\n]*|```/g, ' ')
-    .replace(/~~/g, ' ')
-    .replace(/\|/g, ' '));
+  // Remove Markdown formatting while retaining the words it decorates. Blocks come off the
+  // same way they do on screen, so the voice reads what the eye saw; the reader's own list
+  // bullet is stripped here, where no eye needs it.
+  out = stripMarkdownEmphasis(stripMarkdownBlocks(out).replace(/^\s*[•·]\s+/gm, ''));
 
   // Abbreviations, numbers, symbols and currency the engine otherwise spells awkwardly.
   const currencyNames: Record<string, string> = {
