@@ -989,7 +989,12 @@ export default function App() {
           (item.vote === 'like' || item.vote === 'dislike') &&
           typeof item.title === 'string' && typeof item.text === 'string' &&
           Number.isFinite(item.timestamp))
-        .slice(-40);
+        .slice(-40)
+        // Older votes stored the title at the head of the excerpt; the title is its own field now.
+        .map((item: any) => ({
+          ...item,
+          text: item.text.startsWith(item.title) ? item.text.slice(item.title.length).trim() : item.text,
+        }));
     } catch {
       return [];
     }
@@ -2025,7 +2030,8 @@ export default function App() {
   };
 
   const recordSemanticFeedback = (item: DigestItem, vote: 'like' | 'dislike') => {
-    const text = `${item.title}\n${item.summary}\n${item.fullText}`
+    // The title travels as its own field, so the excerpt is the body only; the engine joins them.
+    const text = `${item.summary || ''}\n${item.fullText || ''}`
       .replace(/<[^>]*>/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()

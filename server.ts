@@ -14,6 +14,8 @@ import { clientAddress, parseTrustedHops, type ProxyTrust } from './lib/clientAd
 import { DEFAULT_REPO, commitFromEnv, readBuildInfo, versionReport } from './lib/buildInfo';
 import {
   blendSemanticScores,
+  composeSemanticText,
+  composeVoteText,
   denseFeedbackScores,
   buildDeterministicDigest,
   buildExposurePenalty,
@@ -1811,7 +1813,7 @@ async function startServer() {
               id,
               vote,
               title: String(item.title).slice(0, 300),
-              text: `${item.title}\n${item.summary || ''}\n${item.fullText || ''}`.slice(0, 3000),
+              text: `${item.summary || ''}\n${item.fullText || ''}`.trim().slice(0, 3000),
               timestamp: Date.now(),
               source: item.source,
               folder: item.folder,
@@ -1879,7 +1881,7 @@ async function startServer() {
       // Provider-free semantic ranking: votes change the digest even with no API key.
       const semanticScores = new Map<string, number>();
       if (feedbackExamples.length > 0 && candidatePool.length > 0) {
-        localSemanticScores(feedbackExamples, candidatePool).forEach((value, key) => {
+        localSemanticScores(feedbackExamples, candidatePool, digestNowMs).forEach((value, key) => {
           semanticScores.set(key, value);
         });
       }
@@ -1889,18 +1891,12 @@ async function startServer() {
       const semanticItems = candidatePool.slice(0, 80);
       if (embeddingProvider !== 'none' && feedbackExamples.length > 0 && semanticItems.length > 0) {
         try {
-          const feedbackTexts = feedbackExamples.map(entry => `${entry.title}\n${entry.text}`.slice(0, 3200));
-          const candidateTexts = semanticItems.map(item =>
-            `${item.title || ''}\n${item.folder || ''}\n${Array.isArray(item.categories) ? item.categories.join(' ') : ''}\n${item.summary || ''}\n${item.fullText || ''}`
-              .replace(/<[^>]*>/g, ' ')
-              .replace(/\s+/g, ' ')
-              .trim()
-              .slice(0, 3000)
-          );
+          const feedbackTexts = feedbackExamples.map(entry => composeVoteText(entry));
+          const candidateTexts = semanticItems.map(item => composeSemanticText(item));
           const vectors = await embedSemanticTexts([...feedbackTexts, ...candidateTexts], embeddingConfig);
           const feedbackVectors = vectors.slice(0, feedbackExamples.length);
           const candidateVectors = vectors.slice(feedbackExamples.length);
-          const providerScores = denseFeedbackScores(feedbackExamples, feedbackVectors, candidateVectors);
+          const providerScores = denseFeedbackScores(feedbackExamples, feedbackVectors, candidateVectors, digestNowMs);
 
           candidateVectors.forEach((vector, index) => {
             if (!vector) return;

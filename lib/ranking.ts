@@ -32,15 +32,39 @@ const SEMANTIC_STOPWORDS = new Set(
    why will with within without would you your yours yourself yourselves`).split(/\s+/)
 );
 
+// Tokens keep two-letter terms (AI, ML, US, VC), technical forms (C++, C#, .NET, GPT-4, 3.5)
+// and every Unicode script: a reader whose interests never became tokens was never being
+// learned from at all. Scripts written without spaces emit character bigrams, the smallest
+// unit that still carries meaning.
+const TOKEN_PATTERN = /(?<![\p{L}\p{N}])\.?[\p{L}\p{N}](?:[\p{L}\p{N}+#'’.-]*[\p{L}\p{N}+#])?/gu;
+const SPACELESS_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+// "business", "analysis", "chaos" and "status" are not plurals, and technical forms keep
+// their shape.
+const trimPlural = (token: string): string => {
+  if (token.length <= 4 || !token.endsWith('s')) return token;
+  if (/(?:ss|us|is|os)$/.test(token) || /[#'’+.-]/.test(token)) return token;
+  return token.slice(0, -1);
+};
+
 export const semanticTokens = (text: string): string[] => {
-  const stripped = (text || '')
-    .replace(/<[^>]*>/g, ' ')
-    .toLowerCase();
-  const raw = stripped.match(/[a-z][a-z'-]{2,}/g) || [];
+  const stripped = (text || '').replace(/<[^>]*>/g, ' ');
+  const raw = stripped.match(TOKEN_PATTERN) || [];
   const tokens: string[] = [];
-  for (const token of raw) {
+  for (const rawToken of raw) {
+    const token = rawToken.toLowerCase().replace(/’/g, "'");
+    const characters = [...token];
+    if (characters.length < 2) continue;
+    if (SPACELESS_SCRIPT.test(token)) {
+      for (let index = 0; index < characters.length - 1; index += 1) {
+        tokens.push(`${characters[index]}${characters[index + 1]}`);
+      }
+      continue;
+    }
     if (SEMANTIC_STOPWORDS.has(token)) continue;
-    tokens.push(token.length > 4 && token.endsWith('s') ? token.slice(0, -1) : token);
+    const stemmed = trimPlural(token);
+    // A stem that collapses into a stopword ("news" -> "new") is refused.
+    tokens.push(SEMANTIC_STOPWORDS.has(stemmed) ? token : stemmed);
   }
   return tokens;
 };
@@ -60,14 +84,55 @@ export const semanticTermCounts = (text: string): Map<string, number> => {
   return counts;
 };
 
-export const composeSemanticText = (item: SemanticCandidate): string => {
-  const title = item.title || '';
-  const folder = item.folder || '';
-  const categories = Array.isArray(item.categories) ? item.categories.join('. ') : '';
-  const summary = item.summary || '';
-  const full = String(item.fullText || '').slice(0, 1800);
-  return `${title}. ${title}. ${title}. ${folder}. ${folder}. ${categories}. ${categories}. ${summary}. ${summary}. ${full}`;
+export const SEMANTIC_BODY_CHARS = 1800;
+
+// A headline carries more meaning per word than a body paragraph, so its terms are counted
+// deliberately more. It is still one composed text: emphasis is an argument to the composer,
+// never a second version of the document.
+export const SEMANTIC_TITLE_WEIGHT = 3;
+
+export interface SemanticDocument {
+  title?: string;
+  folder?: string;
+  categories?: string[];
+  summary?: string;
+  fullText?: string;
+}
+
+export interface ComposeSemanticOptions {
+  titleEmphasis?: number;
+}
+
+// One canonical description of an article, used by the local engine, the vote recorder and the
+// provider embeddings alike. Repetition is how term counts are weighted, so it lives here and
+// nowhere else.
+export const composeSemanticText = (
+  document: SemanticDocument,
+  options: ComposeSemanticOptions = {},
+): string => {
+  const emphasis = Math.max(1, Math.min(4, Math.round(options.titleEmphasis ?? 1)));
+  const title = String(document.title || '').replace(/\s+/g, ' ').trim();
+  const fields = [
+    title ? Array.from({ length: emphasis }, () => title).join(' ') : '',
+    document.folder,
+    Array.isArray(document.categories) ? document.categories.join('. ') : '',
+    document.summary,
+    String(document.fullText || '').slice(0, SEMANTIC_BODY_CHARS),
+  ];
+  return fields
+    .map(field => String(field || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
 };
+
+// A vote stores the article body beside the title, so both describe the same document.
+export const composeVoteText = (
+  example: SemanticVoteExample,
+  options: ComposeSemanticOptions = {},
+): string => composeSemanticText(
+  { title: example.title, folder: example.folder, fullText: example.text },
+  options,
+);
 
 export const buildSemanticVectors = (documents: string[]): Array<Map<string, number>> => {
   const counts = documents.map(semanticTermCounts);
@@ -111,6 +176,16 @@ export const sparseCosine = (left: Map<string, number>, right: Map<string, numbe
 export const SPARSE_FEEDBACK_HALF_LIFE_MS = 60 * 24 * 60 * 60 * 1000;
 export const DENSE_FEEDBACK_HALF_LIFE_MS = 90 * 24 * 60 * 60 * 1000;
 
+// Decay runs from the clock, not from the newest vote in a class, so a profile that stops
+// growing slowly loses its pull. The floor keeps a dormant reader's taste from vanishing.
+export const SEMANTIC_DECAY_FLOOR = 0.15;
+export const feedbackDecay = (ageMs: number, halfLifeMs: number): number =>
+  Math.max(SEMANTIC_DECAY_FLOOR, Math.pow(0.5, Math.max(0, ageMs) / halfLifeMs));
+
+// One continuous scale for both engines: -1 (all dislike) to 1 (all like).
+export const clampSemanticScore = (value: number): number =>
+  Math.max(-1, Math.min(1, Number.isFinite(value) ? value : 0));
+
 export const buildSparseCentroid = (
   vote: 'like' | 'dislike',
   examples: SemanticVoteExample[],
@@ -125,8 +200,8 @@ export const buildSparseCentroid = (
     if (example.vote !== vote) return;
     const vector = vectors[index];
     if (!vector) return;
-    const ageMs = Math.max(0, nowMs - example.timestamp);
-    const weight = Math.pow(0.5, ageMs / halfLifeMs);
+    const timestamp = Number.isFinite(example.timestamp) ? example.timestamp : nowMs;
+    const weight = feedbackDecay(nowMs - timestamp, halfLifeMs);
     vector.forEach((value, term) => centroid.set(term, (centroid.get(term) || 0) + value * weight));
     totalWeight += weight;
   });
@@ -148,8 +223,12 @@ export const localSemanticScores = (
   const scores = new Map<string, number>();
   if (feedback.length === 0 || candidates.length === 0) return scores;
 
-  const candidateTexts = candidates.map(composeSemanticText);
-  const feedbackTexts = feedback.map(entry => `${entry.title}. ${entry.title}. ${entry.title}. ${entry.text}`);
+  const candidateTexts = candidates.map(item =>
+    composeSemanticText(item, { titleEmphasis: SEMANTIC_TITLE_WEIGHT })
+  );
+  const feedbackTexts = feedback.map(entry =>
+    composeVoteText(entry, { titleEmphasis: SEMANTIC_TITLE_WEIGHT })
+  );
   const vectors = buildSemanticVectors([...candidateTexts, ...feedbackTexts]);
   const feedbackVectors = vectors.slice(candidates.length);
   const usableFeedback = feedback
@@ -165,13 +244,9 @@ export const localSemanticScores = (
     halfLifeMs: number,
   ): number => {
     if (examples.length === 0) return 0;
-    const latestTimestamp = Math.max(...examples.map(({ example }) =>
-      Number.isFinite(example.timestamp) ? example.timestamp : nowMs
-    ));
     return examples.reduce((best, { example, vector }) => {
       const timestamp = Number.isFinite(example.timestamp) ? example.timestamp : nowMs;
-      const ageMs = Math.max(0, latestTimestamp - timestamp);
-      const recency = Math.pow(0.5, ageMs / halfLifeMs);
+      const recency = feedbackDecay(nowMs - timestamp, halfLifeMs);
       return Math.max(best, sparseCosine(candidateVector, vector) * recency);
     }, 0);
   };
@@ -181,11 +256,8 @@ export const localSemanticScores = (
     if (!candidate || !candidate.id) return;
     const positiveSimilarity = bestSimilarity(vector, positiveExamples, SPARSE_FEEDBACK_HALF_LIFE_MS);
     const negativeSimilarity = bestSimilarity(vector, negativeExamples, SPARSE_FEEDBACK_HALF_LIFE_MS);
-    const score = positiveExamples.length > 0 && negativeExamples.length > 0
-      ? (positiveSimilarity - negativeSimilarity) / 2
-      : positiveExamples.length > 0
-        ? positiveSimilarity
-        : -negativeSimilarity;
+    // No conditional halving: an unrelated dislike must not rescale every liked topic.
+    const score = clampSemanticScore(positiveSimilarity - negativeSimilarity);
     if (Number.isFinite(score)) scores.set(candidate.id, score);
   });
 
@@ -350,27 +422,18 @@ export const denseFeedbackScores = (
   candidateEmbeddings: Array<number[] | null>,
   nowMs: number = Date.now(),
 ): number[] => {
-  const latestByVote: Record<'like' | 'dislike', number> = { like: -Infinity, dislike: -Infinity };
-  feedback.forEach((example, index) => {
-    if (!feedbackEmbeddings[index]) return;
-    const timestamp = Number.isFinite(example.timestamp) ? example.timestamp : nowMs;
-    latestByVote[example.vote] = Math.max(latestByVote[example.vote], timestamp);
-  });
-
   const scoreFor = (candidate: number[] | null): number => {
     if (!candidate) return 0;
     const bestByVote: Record<'like' | 'dislike', number> = { like: 0, dislike: 0 };
     feedback.forEach((example, index) => {
       const vector = feedbackEmbeddings[index];
       if (!vector) return;
-      const latestTimestamp = latestByVote[example.vote];
       const timestamp = Number.isFinite(example.timestamp) ? example.timestamp : nowMs;
-      const ageMs = Math.max(0, latestTimestamp - timestamp);
-      const recency = Math.pow(0.5, ageMs / DENSE_FEEDBACK_HALF_LIFE_MS);
+      const recency = feedbackDecay(nowMs - timestamp, DENSE_FEEDBACK_HALF_LIFE_MS);
       const similarity = cosineSimilarity(candidate, vector) * recency;
       bestByVote[example.vote] = Math.max(bestByVote[example.vote], similarity);
     });
-    return (bestByVote.like - bestByVote.dislike) / 2;
+    return clampSemanticScore(bestByVote.like - bestByVote.dislike);
   };
 
   return candidateEmbeddings.map(scoreFor);
@@ -391,8 +454,8 @@ export const buildDenseCentroid = (
     if (example.vote !== vote || !vector) return;
     if (centroid.length === 0) centroid = Array(vector.length).fill(0);
     if (centroid.length !== vector.length) return;
-    const ageMs = Math.max(0, nowMs - example.timestamp);
-    const weight = Math.pow(0.5, ageMs / halfLifeMs);
+    const timestamp = Number.isFinite(example.timestamp) ? example.timestamp : nowMs;
+    const weight = feedbackDecay(nowMs - timestamp, halfLifeMs);
     vector.forEach((value, dimension) => {
       centroid[dimension] += value * weight;
     });
