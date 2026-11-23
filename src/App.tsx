@@ -1011,12 +1011,13 @@ export default function App() {
   // Three lengths, named rather than a row of bare numbers: the reader is picking a dose of
   // reading, so each one says what it costs in minutes as well as how many stories.
   // Ranges, not a single number: the edition's minutes come from the stories it found, and
-  // measured editions ran 14 minutes at five, 40 at eight, and 47 at a Deep that could only
-  // fill ten of its fifteen. A fixed guess contradicted the dateline on the first screen.
+  // measured editions ran 14 minutes at five, 40 at eight, 47 at a Deep that could only fill
+  // ten of its fifteen, and 69–83 at Deep editions that filled all fifteen. A fixed guess
+  // contradicted the dateline on the first screen.
   const DIGEST_DOSES = [
     { count: 5, label: 'Brief', hint: '10–20 min' },
     { count: 8, label: 'Standard', hint: '30–45 min' },
-    { count: 15, label: 'Deep', hint: '45–75 min' },
+    { count: 15, label: 'Deep', hint: '45–85 min' },
   ] as const;
   const READ_THROUGH_DEPTH = 85;
   // 75s covers a Cloud Run cold start plus a feed sweep; the softer hint at 20s gives the
