@@ -4336,7 +4336,7 @@ export default function App() {
 
             <div className="mt-2.5 flex flex-col gap-1 border-b border-slate-800/80 pb-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
               <p className="min-w-0 text-[11px] italic leading-snug text-slate-400 sm:flex-1">
-                Everything your feeds published, read and weighed, cut to what earns the morning.
+                Your feeds, minus the noise.
               </p>
               <nav aria-label="Masthead" className="flex shrink-0 items-center gap-2.5">
                 <button
