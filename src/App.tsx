@@ -4,7 +4,8 @@ import {
   Download, Upload, Sliders, ExternalLink, ArrowLeft, Sparkles, 
   AlertCircle, X, Home, Compass,
   ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square, Headphones,
-  RotateCcw, EyeOff, BarChart3, Clock, ArrowRight, ChevronDown, Activity
+  RotateCcw, EyeOff, BarChart3, Clock, ArrowRight, ChevronDown, Activity,
+  HardDrive, Tags
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { focusableWithin, trapTabKey } from './overlayFocus';
@@ -577,9 +578,20 @@ function idsInFrontOfReader(): string[] {
   return ids;
 }
 
+// How many rows a long list builds before offering the rest. The stream can hold several hundred
+// entries and the library scores of sources, and rendering them all made a page nobody could scroll.
+const LIST_PAGE_SIZE = 40;
+
+const TAB_LABELS = { today: 'Today', feeds: 'Feeds', saved: 'Saved', sources: 'Sources' } as const;
+
 export default function App() {
   // Navigation & View state
   const [activeTab, setActiveTab] = useState<'today' | 'saved' | 'sources' | 'settings' | 'feeds'>('today');
+  // Settings has no dock tab of its own, so it remembers which screen opened it and offers the
+  // way back, instead of leaving the reader with no active tab and no exit.
+  const lastTabBeforeSettingsRef = React.useRef<'today' | 'saved' | 'sources' | 'feeds'>('today');
+  const [feedVisibleCount, setFeedVisibleCount] = useState<number>(LIST_PAGE_SIZE);
+  const [sourceVisibleCount, setSourceVisibleCount] = useState<number>(LIST_PAGE_SIZE);
   const [selectedArticle, setSelectedArticle] = useState<DigestItem | null>(null);
   const [selectedFeedSource, setSelectedFeedSource] = useState<string | null>(null);
   const [feedStreamArticles, setFeedStreamArticles] = useState<DigestItem[]>([]);
@@ -1226,6 +1238,14 @@ export default function App() {
   // A refused write is worth interrupting for: the reader needs to know that what they save
   // may not survive a reload, and gets a one-tap export while the warning is on screen.
   useEffect(() => subscribeToStorageFailures(setStorageFailure), []);
+
+  useEffect(() => {
+    if (activeTab !== 'settings') lastTabBeforeSettingsRef.current = activeTab;
+  }, [activeTab]);
+
+  // A new stream, a new filter or a typed search starts the list again at one page.
+  useEffect(() => { setFeedVisibleCount(LIST_PAGE_SIZE); }, [selectedFeedSource, feedStreamRenderKey]);
+  useEffect(() => { setSourceVisibleCount(LIST_PAGE_SIZE); }, [sourceSearch]);
 
   useEffect(() => {
     // Saved articles carry their full bodies, so this is the write most likely to hit the
@@ -4087,7 +4107,7 @@ export default function App() {
           <div className="space-y-6 animate-fade-in w-full max-w-full">
             <div className="flex flex-col items-start gap-3 border-b border-slate-900 pb-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h2 className="text-xl font-semibold tracking-tight text-slate-100">{editionHeading}</h2>
+                <h2 className="text-2xl font-semibold tracking-tight text-slate-100">{editionHeading}</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
                   {loadingDigest && digest.length === 0
                     ? "Synthesizing today's list…"
@@ -4374,21 +4394,22 @@ export default function App() {
                             );
                           })()}
                           <div className="min-w-0">
-                            <div className="text-xs font-bold text-slate-100 flex items-center gap-1.5">
-                              <span className="truncate">{item.source}</span>
-                            </div>
-                            <div className="text-xs text-slate-400 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
-                              {item.author && (
-                                <>
-                                  <span className="min-w-0">By {item.author}</span>
-                                  <span aria-hidden="true">·</span>
-                                </>
-                              )}
-                              <span className="min-w-0">{decodeEntities(item.publishedAt || '30m')}</span>
-                              <span aria-hidden="true">·</span>
-                              <span className="min-w-0">{displayFolder(item.folder)}</span>
-                              <span aria-hidden="true">·</span>
-                              <span className="shrink-0 font-medium text-slate-300">{decodeEntities(item.readTime || '')}</span>
+                            <div className="truncate text-[13px] font-semibold text-slate-100">{item.source}</div>
+                            {/* One line of provenance, truncated rather than wrapped: five facts on
+                                three lines at 12px was the least readable block on the card. */}
+                            <div
+                              className="mt-0.5 truncate text-[13px] text-slate-400"
+                              title={[
+                                item.author ? `By ${item.author}` : '',
+                                decodeEntities(item.publishedAt || '30m'),
+                                decodeEntities(item.readTime || ''),
+                              ].filter(Boolean).join(' · ')}
+                            >
+                              {[
+                                item.author ? `By ${item.author}` : '',
+                                decodeEntities(item.publishedAt || '30m'),
+                                decodeEntities(item.readTime || ''),
+                              ].filter(Boolean).join(' · ')}
                             </div>
                           </div>
                         </div>
@@ -4415,15 +4436,6 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Intentional placeholder keeps the card's rhythm when a story has no hero image */}
-                      {!item.bannerImage && (
-                        <div className={`mx-3.5 rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 flex items-center justify-center ${compactCards ? 'h-24' : 'h-32'}`}>
-                          <div className="text-center px-4">
-                            <CuratorMark className="w-7 h-7 mx-auto mb-1.5 opacity-80" />
-                            <div className="text-xs uppercase font-bold tracking-wider text-amber-400/90">{displayFolder(item.folder)}</div>
-                          </div>
-                        </div>
-                      )}
                       {/* Billboard Hero Image Card with Bookmark Save Button right on image */}
                       {item.bannerImage && (
                         <div className={`relative mx-3.5 rounded-2xl overflow-hidden ${compactCards ? 'h-40 md:h-48' : 'h-60 md:h-72'} shadow-lg border border-slate-700/60`}>
@@ -4439,15 +4451,15 @@ export default function App() {
 
                       <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
                         <div>
-                          {item.bannerImage && (
-                            <div className="text-xs uppercase font-bold tracking-wider text-amber-400/90 mb-1">
+                          {displayFolder(item.folder) && (
+                            <div className="text-xs uppercase font-semibold tracking-wider text-slate-500 mb-1">
                               {displayFolder(item.folder)}
                             </div>
                           )}
                           <h3 className={`${compactCards ? 'text-lg' : 'text-xl'} font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors`}>
                             {item.title}
                           </h3>
-                          <p className={`${compactCards ? 'text-xs line-clamp-1' : 'text-sm line-clamp-2'} text-slate-400 mt-1`}>
+                          <p className="text-sm line-clamp-2 text-slate-400 mt-1">
                             {item.summary}
                           </p>
                         </div>
@@ -4660,10 +4672,8 @@ export default function App() {
                           </div>
 
                           {!item.bannerImage && (
-                            <div className={`mx-3.5 rounded-2xl border border-rose-900/60 bg-gradient-to-br from-rose-950/40 via-slate-950 to-slate-900 flex items-center justify-center ${compactCards ? 'h-24' : 'h-32'}`}>
-                              <div className="text-center px-4">
-                                <CuratorMark className="w-7 h-7 mx-auto opacity-80" />
-                              </div>
+                            <div className={`mx-3.5 rounded-2xl border border-rose-900/60 bg-gradient-to-br from-rose-950/40 via-slate-950 to-slate-900 flex items-center justify-center ${compactCards ? 'h-16' : 'h-20'}`}>
+                              <CuratorMark className="w-6 h-6 opacity-70" />
                             </div>
                           )}
                           {item.bannerImage && (
@@ -4680,10 +4690,15 @@ export default function App() {
 
                           <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
                             <div>
+                              {displayFolder(item.folder) && (
+                                <div className="text-xs uppercase font-semibold tracking-wider text-slate-500 mb-1">
+                                  {displayFolder(item.folder)}
+                                </div>
+                              )}
                               <h3 className={`${compactCards ? 'text-lg' : 'text-xl'} font-bold tracking-tight text-slate-100 group-hover:text-rose-300 transition-colors`}>
                                 {item.title}
                               </h3>
-                              <p className={`${compactCards ? 'text-xs line-clamp-1' : 'text-sm line-clamp-2'} text-slate-400 mt-1`}>
+                              <p className="text-sm line-clamp-2 text-slate-400 mt-1">
                                 {item.summary}
                               </p>
                             </div>
@@ -4804,7 +4819,7 @@ export default function App() {
           <div className="space-y-6 animate-fade-in">
             <div className="border-b border-slate-900 pb-4 flex items-start justify-between gap-3">
               <div>
-                <h2 className="text-xl font-semibold tracking-tight text-slate-100">Saved Items</h2>
+                <h2 className="text-2xl font-semibold tracking-tight text-slate-100">Saved Items</h2>
                 <p className="text-xs text-slate-400 mt-0.5">Your personal re-reading queue ({savedDigestItems.length})</p>
               </div>
               {/* A piece saved before the cleaner kept links reads without its citations until it
@@ -4927,7 +4942,7 @@ export default function App() {
                       <h3 className="text-base font-semibold text-slate-100 hover:text-amber-300 transition">
                         {item.title}
                       </h3>
-                      <p className="text-xs text-slate-400 line-clamp-2">{item.summary}</p>
+                      <p className="text-sm text-slate-400 line-clamp-2">{item.summary}</p>
 
                       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80 pt-3">
                         <div className="flex flex-1 flex-wrap items-center gap-2">
@@ -4980,7 +4995,7 @@ export default function App() {
           <div className="space-y-8 animate-fade-in">
             <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-900 pb-4">
               <div>
-                <h2 className="text-xl font-semibold tracking-tight text-slate-100">Watched Sources</h2>
+                <h2 className="text-2xl font-semibold tracking-tight text-slate-100">Watched Sources</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
                   {sources.length} {sources.length === 1 ? 'source' : 'sources'} across {Object.keys(sourcesByFolder).length} {Object.keys(sourcesByFolder).length === 1 ? 'folder' : 'folders'}
                 </p>
@@ -5359,10 +5374,28 @@ Search for writers, publications, or topics. Curator checks whether each result 
             </div>
 
             <div className="space-y-6 w-full max-w-full">
-              {Object.entries(filteredSourcesByFolder).sort(([a], [b]) => a.localeCompare(b)).map(([folder, folderSources]: [string, SourceItem[]]) => (
+              {(() => {
+                // One page of rows at a time: a 85-source library built every row at once and made
+                // a 14,000-point document. The folder heading still counts the whole folder.
+                const sortedFolders = Object.entries(filteredSourcesByFolder).sort(([a], [b]) => a.localeCompare(b));
+                const folderTotals: Record<string, number> = {};
+                sortedFolders.forEach(([folder, rows]) => { folderTotals[folder] = rows.length; });
+                let remaining = sourceVisibleCount;
+                const shown: Array<[string, SourceItem[]]> = [];
+                for (const [folder, folderSources] of sortedFolders) {
+                  if (remaining <= 0) break;
+                  const take = folderSources.slice(0, remaining);
+                  remaining -= take.length;
+                  if (take.length > 0) shown.push([folder, take]);
+                }
+                const total = sortedFolders.reduce((n, [, rows]) => n + rows.length, 0);
+                const shownCount = shown.reduce((n, [, rows]) => n + rows.length, 0);
+                return (
+                  <>
+                    {shown.map(([folder, folderSources]) => (
                 <div key={folder} className="space-y-3 w-full max-w-full">
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 border-b border-slate-900 pb-2">
-                    {folder} ({folderSources.length})
+                    {folder} ({folderTotals[folder] ?? folderSources.length})
                   </h3>
                   <div className="grid gap-2 w-full max-w-full">
                     {folderSources.map((src) => {
@@ -5545,6 +5578,19 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   </div>
                 </div>
               ))}
+                    {total > shownCount && (
+                      <button
+                        type="button"
+                        onClick={() => setSourceVisibleCount(count => count + LIST_PAGE_SIZE)}
+                        className="w-full min-h-11 rounded-xl border border-slate-800 px-3 text-xs font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300"
+                      >
+                        Show {Math.min(LIST_PAGE_SIZE, total - shownCount)} more sources
+                        <span className="text-slate-500"> · {total - shownCount} left</span>
+                      </button>
+                    )}
+                  </>
+                );
+              })()}
               {sourceSearch.trim() && Object.keys(filteredSourcesByFolder).length === 0 && (
                 <p className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-5 text-center text-sm text-slate-400">
                   No sources match “{sourceSearch.trim()}”. Try another name, folder, category, or feed URL.
@@ -5571,8 +5617,16 @@ Search for writers, publications, or topics. Curator checks whether each result 
         {/* TAB 4: SETTINGS */}
         {activeTab === 'settings' && (
           <div className="no-sideways space-y-4 animate-fade-in">
-            <div>
-              <h2 className="text-xl font-semibold tracking-tight text-slate-100">Settings</h2>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-2xl font-semibold tracking-tight text-slate-100">Settings</h2>
+              <button
+                type="button"
+                onClick={() => setActiveTab(lastTabBeforeSettingsRef.current)}
+                className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-slate-800 px-3 text-xs font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Back to {TAB_LABELS[lastTabBeforeSettingsRef.current]}</span>
+              </button>
             </div>
 
 
@@ -5900,7 +5954,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   disabled={loadingDigest}
                   className="w-full px-4 py-2 text-xs font-semibold rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition disabled:opacity-50"
                 >
-                  Apply & refresh digest
+                  Save &amp; rebuild today’s edition
                 </button>
               </div>
 
@@ -6043,7 +6097,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     disabled={loadingDigest}
                     className="w-full px-4 py-2 text-xs font-semibold rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition disabled:opacity-50"
                   >
-                    Apply & re-match
+                    Save &amp; re-rank today’s stories
                   </button>
                 )}
               </div>
@@ -6055,6 +6109,46 @@ Search for writers, publications, or topics. Curator checks whether each result 
               title="Your reading preferences"
               meta={`${semanticFeedback.length}/40 votes`}
             >
+              {/* How each edition is built: the same two controls that sit behind the pill on
+                  Today, gathered here where a reader looks for a preference rather than a view. */}
+              <div className="space-y-4 rounded-2xl border border-slate-700/60 bg-slate-950/40 p-4">
+                <div>
+                  <span className="block text-xs font-medium text-slate-300 mb-2">Stories per edition</span>
+                  <div role="group" aria-label="Stories per edition in settings" className="grid grid-cols-5 gap-1.5">
+                    {DIGEST_ITEM_COUNTS.map(num => (
+                      <button
+                        key={num}
+                        type="button"
+                        onClick={() => setItemCount(num)}
+                        aria-pressed={itemCount === num}
+                        className={`min-h-11 rounded-xl text-sm font-medium transition ${
+                          itemCount === num ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {num}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label htmlFor="serendipity-slider-settings" className="flex items-baseline justify-between text-xs font-medium text-slate-300">
+                    <span>Serendipity</span>
+                    <span className="text-amber-300">{serendipityDial}%</span>
+                  </label>
+                  <input
+                    id="serendipity-slider-settings"
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={serendipityDial}
+                    onChange={event => setSerendipityDial(Number(event.target.value))}
+                    aria-valuetext={`${serendipityDial}% outside your usual interests`}
+                    className="mt-2 w-full accent-amber-500 cursor-pointer"
+                  />
+                  <p className="mt-1 text-xs leading-relaxed text-slate-400">of the edition comes from outside your usual interests</p>
+                </div>
+              </div>
+
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="text-xs text-slate-400">
                   {semanticFeedback.filter(item => item.vote === 'like').length} liked · {semanticFeedback.filter(item => item.vote === 'dislike').length} disliked
@@ -6126,7 +6220,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
             {/* Declared interests: nudges for the ranking, never a filter */}
             <SettingsSection
-              icon={<Compass className="w-4 h-4" />}
+              icon={<Tags className="w-4 h-4" />}
               title="Interests"
               meta={interests.more.length || interests.less.length
                 ? `${interests.more.length} more · ${interests.less.length} less`
@@ -6139,11 +6233,11 @@ Search for writers, publications, or topics. Curator checks whether each result 
               />
             </SettingsSection>
 
-            {/* The library, in and out. Export used to be offered only when storage had already
-                failed, which is the moment it is worth least; a copy nobody can restore is not
-                a backup, so this sits beside the way back in. */}
+            {/* The library, in and out, and what the browser holds of it. Storage used to be a second
+                section beside this one, both reading the same size, so the two were indistinguishable.
+                Export sits beside the way back in: a copy nobody can restore is not a backup. */}
             <SettingsSection
-              icon={<Upload className="w-4 h-4" />}
+              icon={<HardDrive className="w-4 h-4" />}
               title="Your library"
               meta={storageReport ? formatBytes(storageReport.totalBytes) : 'In this browser'}
             >
@@ -6166,7 +6260,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 <button
                   type="button"
                   onClick={() => restoreInputRef.current?.click()}
-                  className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 px-3.5 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/25"
+                  className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-slate-700 px-3.5 text-xs font-medium text-slate-200 transition hover:border-amber-500/40 hover:text-amber-300"
                 >
                   Restore from a backup
                 </button>
@@ -6185,37 +6279,34 @@ Search for writers, publications, or topics. Curator checks whether each result 
               {restoreError && (
                 <p role="alert" className="mt-2 text-xs leading-relaxed text-rose-300">{restoreError}</p>
               )}
-            </SettingsSection>
 
-            {/* What the browser is holding, and the largest part of it that can be dropped. */}
-            <SettingsSection
-              icon={<BarChart3 className="w-4 h-4" />}
-              title="Storage"
-              meta={storageReport ? formatBytes(storageReport.totalBytes) : 'Measuring…'}
-            >
-              {storageReport && storageReport.entries.length > 0 ? (
-                <ul className="space-y-1">
-                  {storageReport.entries.slice(0, 5).map(entry => (
-                    <li key={entry.key} className="flex items-baseline justify-between gap-3 text-xs">
-                      <span className="min-w-0 flex-1 truncate text-slate-300">{entry.label}</span>
-                      <span className="shrink-0 tabular-nums text-slate-500">{formatBytes(entry.bytes)}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-xs text-slate-400">Nothing stored yet.</p>
-              )}
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                <p className="max-w-sm text-[11px] leading-relaxed text-slate-500">
-                  Saved article text is the largest item, and the only part that can be fetched again.
-                </p>
-                <button
-                  type="button"
-                  onClick={freeStorageSpace}
-                  className="inline-flex min-h-11 shrink-0 items-center rounded-xl border border-slate-700 px-3.5 text-xs font-medium text-slate-200 transition hover:border-amber-500/40 hover:text-amber-300"
-                >
-                  Free up space
-                </button>
+              {/* What the browser is holding, and the largest part of it that can be dropped. */}
+              <div className="mt-5 border-t border-slate-800/80 pt-4 space-y-3">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Storage</h4>
+                {storageReport && storageReport.entries.length > 0 ? (
+                  <ul className="space-y-1">
+                    {storageReport.entries.slice(0, 5).map(entry => (
+                      <li key={entry.key} className="flex items-baseline justify-between gap-3 text-xs">
+                        <span className="min-w-0 flex-1 truncate text-slate-300">{entry.label}</span>
+                        <span className="shrink-0 tabular-nums text-slate-500">{formatBytes(entry.bytes)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-xs text-slate-400">Nothing stored yet.</p>
+                )}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="max-w-sm text-[11px] leading-relaxed text-slate-500">
+                    Saved article text is the largest item, and the only part that can be fetched again.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={freeStorageSpace}
+                    className="inline-flex min-h-11 shrink-0 items-center rounded-xl border border-slate-700 px-3.5 text-xs font-medium text-slate-200 transition hover:border-amber-500/40 hover:text-amber-300"
+                  >
+                    Free up space
+                  </button>
+                </div>
               </div>
             </SettingsSection>
 
@@ -6373,8 +6464,8 @@ Search for writers, publications, or topics. Curator checks whether each result 
             {/* Stream Header */}
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-900 pb-4">
               <div>
-                <div className="flex items-center gap-2">
-                  <h2 className="text-xl font-semibold tracking-tight text-slate-100">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="min-w-0 break-words text-2xl font-semibold tracking-tight text-slate-100">
                     {selectedFeedSource && selectedFeedSource !== 'all' ? selectedFeedSource : 'All Feeds Stream'}
                   </h2>
                   {selectedFeedSource && selectedFeedSource !== 'all' && (
@@ -6456,7 +6547,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
               </div>
             ) : (
               <div key={`stream-${feedStreamRenderKey}`} className="space-y-6">
-                {feedStreamArticles.map((item) => {
+                {feedStreamArticles.slice(0, feedVisibleCount).map((item) => {
                   const actions = getCardActions(item.id);
                   return (
                     <article
@@ -6500,25 +6591,20 @@ Search for writers, publications, or topics. Curator checks whether each result 
                             );
                           })()}
                           <div className="min-w-0">
-                            <div className="text-xs font-bold text-slate-100 flex items-center gap-1.5">
-                              <span className="truncate">{item.source}</span>
-                            </div>
-                            <div className="text-xs text-slate-400 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
-                              {item.author && (
-                                <>
-                                  <span className="min-w-0">By {item.author}</span>
-                                  <span aria-hidden="true">·</span>
-                                </>
-                              )}
-                              {item.publishedAt && (
-                                <>
-                                  <span className="min-w-0">{decodeEntities(item.publishedAt)}</span>
-                                  <span aria-hidden="true">·</span>
-                                </>
-                              )}
-                              <span className="min-w-0">{displayFolder(item.folder)}</span>
-                              <span aria-hidden="true">·</span>
-                              <span className="shrink-0 font-medium text-slate-300">{decodeEntities(item.readTime || '')}</span>
+                            <div className="truncate text-[13px] font-semibold text-slate-100">{item.source}</div>
+                            <div
+                              className="mt-0.5 truncate text-[13px] text-slate-400"
+                              title={[
+                                item.author ? `By ${item.author}` : '',
+                                decodeEntities(item.publishedAt || ''),
+                                decodeEntities(item.readTime || ''),
+                              ].filter(Boolean).join(' · ')}
+                            >
+                              {[
+                                item.author ? `By ${item.author}` : '',
+                                decodeEntities(item.publishedAt || ''),
+                                decodeEntities(item.readTime || ''),
+                              ].filter(Boolean).join(' · ')}
                             </div>
                           </div>
                         </div>
@@ -6546,11 +6632,8 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       </div>
 
                       {!item.bannerImage && (
-                        <div className={`mx-3.5 rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 flex items-center justify-center ${compactCards ? 'h-24' : 'h-32'}`}>
-                          <div className="text-center px-4">
-                            <CuratorMark className="w-7 h-7 mx-auto mb-1.5 opacity-80" />
-                            <div className="text-xs uppercase font-bold tracking-wider text-amber-400/90">{displayFolder(item.folder)}</div>
-                          </div>
+                        <div className={`mx-3.5 rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 flex items-center justify-center ${compactCards ? 'h-16' : 'h-20'}`}>
+                          <CuratorMark className="w-6 h-6 opacity-70" />
                         </div>
                       )}
                       {item.bannerImage && (
@@ -6567,15 +6650,15 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
                       <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
                         <div>
-                          {item.bannerImage && (
-                            <div className="text-xs uppercase font-bold tracking-wider text-amber-400/90 mb-1">
+                          {displayFolder(item.folder) && (
+                            <div className="text-xs uppercase font-semibold tracking-wider text-slate-500 mb-1">
                               {displayFolder(item.folder)}
                             </div>
                           )}
                           <h3 className={`${compactCards ? 'text-lg' : 'text-xl'} font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors`}>
                             {item.title}
                           </h3>
-                          <p className={`${compactCards ? 'text-xs line-clamp-1' : 'text-sm line-clamp-2'} text-slate-400 mt-1`}>
+                          <p className="text-sm line-clamp-2 text-slate-400 mt-1">
                             {item.summary}
                           </p>
                         </div>
@@ -6631,6 +6714,16 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     </article>
                   );
                 })}
+                {feedStreamArticles.length > feedVisibleCount && (
+                  <button
+                    type="button"
+                    onClick={() => setFeedVisibleCount(count => count + LIST_PAGE_SIZE)}
+                    className="w-full min-h-11 rounded-xl border border-slate-800 px-3 text-xs font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300"
+                  >
+                    Show {Math.min(LIST_PAGE_SIZE, feedStreamArticles.length - feedVisibleCount)} more entries
+                    <span className="text-slate-500"> · {feedStreamArticles.length - feedVisibleCount} left</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
