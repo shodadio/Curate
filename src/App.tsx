@@ -3704,7 +3704,9 @@ export default function App() {
               selected ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            <span className="block text-[10px] font-semibold uppercase tracking-[0.14em]">{dose.label}</span>
+            {/* No wrap: the Settings copy sits in a narrower column than the sheet, and a
+                label that broke there dropped its number out of line with the other two. */}
+            <span className="block whitespace-nowrap text-[9px] font-semibold uppercase leading-none tracking-[0.1em]">{dose.label}</span>
             <span className="mt-1 block text-lg font-semibold leading-none">{dose.count}</span>
             <span className={`mt-1 block text-[10px] leading-none ${selected ? 'text-slate-400' : 'text-slate-500'}`}>{dose.hint}</span>
           </button>
