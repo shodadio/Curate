@@ -25,7 +25,7 @@ export function DigestEmptyState({
   return (
     <section
       aria-labelledby={headingId}
-      className="animate-fade-in rounded-3xl border border-slate-800 bg-slate-900/60 px-6 py-10 text-center shadow-sm"
+      className="animate-fade-in border-t border-slate-800/70 py-10 text-center"
     >
       <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full border border-slate-800 bg-slate-950">
         {isMuted ? (

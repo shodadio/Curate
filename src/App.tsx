@@ -4,7 +4,7 @@ import {
   Download, Upload, Sliders, ExternalLink, ArrowLeft, Sparkles, 
   AlertCircle, X, Home, Compass,
   ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square, Headphones,
-  RotateCcw, BarChart3, Clock, ArrowRight, ChevronDown, Activity,
+  RotateCcw, BarChart3, ArrowRight, ChevronDown, Activity,
   HardDrive, Tags
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
@@ -1035,7 +1035,6 @@ export default function App() {
       8
     );
   });
-  const [compactCards, setCompactCards] = useState<boolean>(() => safeGetItem('curator_compact_cards') === '1');
   // Bumped when an edition has to be built again outside the auto-build's own triggers: the
   // reader cleared their votes, or a settings change had to wait for a fresh search.
   const [rebuildTick, setRebuildTick] = useState<number>(0);
@@ -1637,10 +1636,6 @@ export default function App() {
   useEffect(() => {
     safeSetItem('curator_item_count', itemCount.toString());
   }, [itemCount]);
-
-  useEffect(() => {
-    safeSetItem('curator_compact_cards', compactCards ? '1' : '0');
-  }, [compactCards]);
 
   useEffect(() => {
     safeSetItem('curator_custom_api_key', customApiKey);
@@ -3064,7 +3059,7 @@ export default function App() {
     // Only show Opened when there is a matching in-reader timestamp or reading progress.
     const hasReaderOpenRecord = readArticleIds.includes(itemId) && Boolean(stats?.lastRead);
     const isClicked = hasReaderOpenRecord || Boolean(stats?.maxDepth && stats.maxDepth > 0);
-    // The one word a card's status slot can say. Votes and saves are already visible on their own
+    // The one word the byline can add. Votes and saves are already visible on their own
     // controls, so they never take this slot: it only answers "have I been in this piece?".
     const openedLabel = stats?.maxDepth ? `${stats.maxDepth}% read` : 'Opened';
     const isVotedMore = Boolean(signals.moreIds?.includes(itemId));
@@ -3074,6 +3069,111 @@ export default function App() {
     const hasAnyAction = isReadThrough || isClicked || isVotedMore || isVotedLess || isSaved;
 
     return { hasAnyAction, isReadThrough, isClicked, isVotedMore, isVotedLess, openedLabel };
+  };
+
+  // Every story outside the edition — the Feeds stream and the Saved queue — is set like the
+  // edition's second reads: image, kicker, headline, standfirst and byline on rules, not in a
+  // card. The Saved queue differs only in its single save action: taking the piece back out.
+  const renderStoryEntry = (item: DigestItem, inSavedQueue: boolean) => {
+    const actions = getCardActions(item.id);
+    const isSaved = inSavedQueue || savedIds.includes(item.id);
+    const byline = [bylineFor(item), decodeEntities(item.publishedAt || ''), decodeEntities(item.readTime || '')]
+      .filter(Boolean)
+      .join(' · ');
+
+    return (
+      <article
+        key={item.id}
+        onClick={() => openArticle(item)}
+        // A reading surface, not a button: a short name, and the actions inside it stay
+        // separately announced instead of being flattened into one label.
+        aria-label={`${item.title} — ${item.source}`}
+        tabIndex={0}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            openArticle(item);
+          }
+        }}
+        className="group cursor-pointer border-t border-slate-800/70 pt-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+      >
+        {item.bannerImage && (
+          <div className="-mx-4 mb-6 overflow-hidden bg-slate-900 sm:-mx-6">
+            <img
+              src={item.bannerImage}
+              alt={item.title}
+              loading="lazy"
+              className="aspect-[16/9] w-full object-cover"
+            />
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[10px] font-semibold uppercase">
+          <span className={`tracking-[0.22em] ${item.isOutOfBubble ? 'text-rose-400' : 'text-amber-500'}`}>
+            {item.isOutOfBubble ? 'Outside your bubble' : displayFolder(item.folder)}
+          </span>
+          <span aria-hidden="true" className="text-slate-700">·</span>
+          <span className="tracking-[0.16em] text-slate-500">{item.source}</span>
+        </div>
+
+        <h3 className="mt-2 font-serif text-[1.4rem] font-semibold leading-[1.15] text-slate-50 transition-colors group-hover:text-amber-200 sm:text-[1.55rem]">
+          {item.title}
+        </h3>
+
+        <p className="mt-2 line-clamp-2 text-[0.95rem] leading-[1.55] text-slate-400">{item.summary}</p>
+
+        <p className="mt-3 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+          {byline}
+          {actions.isReadThrough ? ' · Read through' : actions.isClicked ? ` · ${actions.openedLabel}` : ''}
+        </p>
+
+        <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-slate-800/80 pt-2">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+            className="inline-flex min-h-11 items-center gap-1.5 text-sm font-semibold text-amber-300 transition hover:text-amber-200"
+          >
+            Read in Curator <ArrowRight className="h-4 w-4" />
+          </button>
+          <a
+            href={webUrlHref(item.url) || '#'}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleExternalClick(e, item.url);
+              setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
+              showToast('Opening original');
+            }}
+            className="inline-flex min-h-11 items-center gap-1.5 text-xs font-medium text-slate-400 transition hover:text-amber-300"
+            aria-label={`Read original on ${item.source}`}
+          >
+            Original <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); handleSave(item); }}
+            className={`inline-flex min-h-11 items-center gap-1.5 text-xs font-medium transition hover:text-amber-300 ${
+              isSaved ? 'text-amber-400' : 'text-slate-400'
+            }`}
+            title={isSaved ? 'Remove from saved' : 'Save for later'}
+            aria-label={isSaved ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
+            aria-pressed={isSaved}
+          >
+            <Bookmark className={`h-3.5 w-3.5 ${isSaved ? 'fill-amber-400' : ''}`} />
+            {isSaved ? 'Saved' : 'Save'}
+          </button>
+          <div className="ml-auto">
+            <FeedbackActions
+              isMore={actions.isVotedMore}
+              isLess={actions.isVotedLess}
+              onMore={() => handleMore(item)}
+              onLess={() => handleLess(item)}
+            />
+          </div>
+        </div>
+      </article>
+    );
   };
 
   // The reader owns browser history entries (one per open), so the phone's back gesture
@@ -4364,7 +4464,7 @@ export default function App() {
             {/* One feed is a real digest, but a thin one. Say so instead of waiting for the
                 reader to notice the carousel has a single circle. */}
             {sources.length === 1 && (
-              <div className="rounded-3xl border border-amber-500/25 bg-amber-500/5 p-5">
+              <div className="border-t border-amber-500/30 pt-4">
                 <div className="flex items-start gap-3">
                   <Rss className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
                   <div className="min-w-0">
@@ -4874,13 +4974,13 @@ export default function App() {
             )}
 
             {savedDigestItems.length === 0 ? (
-              <div className="rounded-3xl border border-slate-800 bg-slate-900/60 px-6 py-16 text-center shadow-sm space-y-2">
+              <div className="space-y-2 border-t border-slate-800/70 py-16 text-center">
                 <Bookmark className="w-8 h-8 mx-auto text-slate-700 mb-2" />
                 <p className="font-serif text-lg font-semibold text-slate-100">No saved stories yet</p>
                 <p className="text-xs leading-relaxed text-slate-400">Tap the bookmark icon on any digest item to save it here.</p>
               </div>
             ) : savedVisibleItems.length === 0 ? (
-              <div className="rounded-3xl border border-slate-800 bg-slate-900/60 px-6 py-14 text-center shadow-sm space-y-2">
+              <div className="space-y-2 border-t border-slate-800/70 py-14 text-center">
                 <Search className="w-7 h-7 mx-auto text-slate-700 mb-1" />
                 <p className="font-serif text-lg font-semibold text-slate-100">No saved stories match “{savedQuery.trim()}”.</p>
                 <button
@@ -4892,169 +4992,8 @@ export default function App() {
                 </button>
               </div>
             ) : (
-              <div className="space-y-4">
-                {savedVisibleItems.map((item) => {
-                  const actions = getCardActions(item.id);
-                  return (
-                    <article
-                      key={item.id}
-                      onClick={() => openArticle(item)}
-                      // A card is a reading surface, not a button: a short name, and the four actions
-                      // inside it stay separately announced instead of being flattened into one label.
-                      aria-label={`${item.title} — ${item.source}`}
-                      tabIndex={0}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault();
-                          openArticle(item);
-                        }
-                      }}
-                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.12)] hover:border-amber-500/60 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(245,158,11,0.35)]`}
-                    >
-                      <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex items-center justify-between`}>
-                        <div className="flex items-center gap-3 min-w-0">
-                          {(() => {
-                            const itemAvatar = getSourceAvatar(item.url);
-                            return (
-                              <div className="w-9 h-9 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center overflow-hidden shrink-0 relative">
-                                {itemAvatar ? (
-                                  <img
-                                    src={itemAvatar}
-                                    alt={item.source} loading="lazy"
-                                    className="w-full h-full object-cover rounded-full"
-                                    onLoad={markTinyIcon}
-                                    onError={(e) => {
-                                      (e.currentTarget as HTMLElement).style.display = 'none';
-                                      const fallback = e.currentTarget.parentElement?.querySelector('.stream-card-initials');
-                                      if (fallback) fallback.classList.remove('hidden');
-                                    }}
-                                  />
-                                ) : null}
-                                <span className={`stream-card-initials text-xs font-bold text-amber-400 ${itemAvatar ? 'hidden' : ''}`}>
-                                  {item.source.slice(0, 2).toUpperCase()}
-                                </span>
-                              </div>
-                            );
-                          })()}
-                          <div className="min-w-0">
-                            <div className="truncate text-[13px] font-semibold text-slate-100">{item.source}</div>
-                            <div
-                              className="mt-0.5 truncate text-[13px] text-slate-400"
-                              title={[
-                                bylineFor(item),
-                                decodeEntities(item.publishedAt || ''),
-                                decodeEntities(item.readTime || ''),
-                              ].filter(Boolean).join(' · ')}
-                            >
-                              {[
-                                bylineFor(item),
-                                decodeEntities(item.publishedAt || ''),
-                                decodeEntities(item.readTime || ''),
-                              ].filter(Boolean).join(' · ')}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/40 text-xs font-semibold text-amber-300" title="Saved for later">
-                            <Bookmark className="w-3 h-3 fill-amber-400" />
-                            <span>Saved</span>
-                          </div>
-                          {actions.isReadThrough ? (
-                            <div
-                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-xs font-bold text-emerald-300 shadow-sm"
-                              title="Read through completed"
-                            >
-                              <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
-                              <span>Read</span>
-                            </div>
-                          ) : actions.isClicked ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300" title={`Opened in Curator — ${actions.openedLabel}`}>
-                              <span>{actions.openedLabel}</span>
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      {!item.bannerImage && (
-                        <div className={`mx-3.5 rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 flex items-center justify-center ${compactCards ? 'h-16' : 'h-20'}`}>
-                          <CuratorMark className="w-6 h-6 opacity-70" />
-                        </div>
-                      )}
-                      {item.bannerImage && (
-                        <div className={`relative mx-3.5 rounded-2xl overflow-hidden ${compactCards ? 'h-40 md:h-48' : 'h-56 md:h-64'} shadow-lg border border-slate-700/60`}>
-                          <img
-                            src={item.bannerImage}
-                            alt={item.title}
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                          />
-                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
-                        </div>
-                      )}
-
-                      <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
-                        <div>
-                          <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-500 mb-1">
-                            {displayFolder(item.folder)}
-                          </div>
-                          <h3 className={`font-serif font-semibold leading-snug text-slate-50 group-hover:text-amber-200 transition-colors ${compactCards ? 'text-lg' : 'text-xl'}`}>
-                            {item.title}
-                          </h3>
-                          <p className="text-sm line-clamp-2 text-slate-400 mt-1 leading-relaxed">
-                            {item.summary}
-                          </p>
-                          {item.isOutOfBubble && (
-                            <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-rose-400">Outside your bubble</p>
-                          )}
-                        </div>
-
-                        <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80">
-                          <div className="flex w-full flex-wrap items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); openArticle(item); }}
-                              className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-amber-300 hover:text-amber-200 transition"
-                            >
-                              Read in Curator <ArrowRight className="w-3.5 h-3.5" />
-                            </button>
-                            <a
-                              href={webUrlHref(item.url) || '#'}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleExternalClick(e, item.url);
-                                setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                                showToast('Opening original');
-                              }}
-                              className="ml-auto inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
-                              title={`Read original on ${item.source} (opens external browser or app)`}
-                              aria-label={`Read original on ${item.source}`}
-                            >
-                              <ExternalLink className="w-4 h-4" />
-                            </a>
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-400 transition hover:bg-amber-500/20"
-                              title="Remove from saved"
-                              aria-label={`Remove "${item.title}" from saved`}
-                              aria-pressed={savedIds.includes(item.id)}
-                            >
-                              <Bookmark className="w-4 h-4 fill-amber-400 text-amber-400" />
-                            </button>
-                          </div>
-                          <FeedbackActions
-                            isMore={actions.isVotedMore}
-                            isLess={actions.isVotedLess}
-                            onMore={() => handleMore(item)}
-                            onLess={() => handleLess(item)}
-                          />
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })}
+              <div className="space-y-8">
+                {savedVisibleItems.map((item) => renderStoryEntry(item, true))}
                 {savedVisibleItems.length > 0 && (
                   <footer className="pt-2">
                     <div aria-hidden="true" className="h-px w-full bg-slate-800/80" />
@@ -5103,7 +5042,7 @@ export default function App() {
             {/* Failures get their own list: a feed that stopped answering is not a source to
                 browse, and its error would otherwise sit buried inside a folder of working ones. */}
             {failedSources.length > 0 && (
-              <section className="rounded-3xl border border-rose-500/25 bg-rose-500/5 p-4 sm:p-5 space-y-3 w-full max-w-full">
+              <section className="space-y-3 border-t border-rose-500/30 pt-4 w-full max-w-full">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
@@ -5171,7 +5110,7 @@ export default function App() {
                     const confirming = pendingDeleteId === src.id;
                     const trying = refreshingSourceId === src.id;
                     return (
-                      <li key={src.id} className="rounded-2xl border border-slate-800/80 bg-slate-950/60 p-3 space-y-2">
+                      <li key={src.id} className="space-y-2 border-t border-slate-800/70 pt-3">
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                           <div className="min-w-0 flex-1">
                             <SourceFeedLink
@@ -5226,7 +5165,7 @@ export default function App() {
             )}
 
             {/* Google Search & RSS Investigation Tool */}
-            <section className="p-4 sm:p-5 rounded-3xl bg-slate-900/60 border border-slate-800/80 space-y-4 w-full max-w-full overflow-hidden">
+            <section className="space-y-4 border-t border-slate-800/80 pt-5">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
@@ -5318,7 +5257,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     return (
                       <div
                         key={`${item.siteUrl}-${idx}`}
-                        className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800/80 space-y-2.5"
+                        className="space-y-2.5 border-b border-slate-800/70 pb-4"
                       >
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div className="min-w-0 flex-1">
@@ -5413,7 +5352,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                           {item.sampleTitles && item.sampleTitles.length > 0 && (
                             <div className="text-xs text-slate-400 pt-1">
                               Recent items: {item.sampleTitles.join(' · ')}
-                            </div>
+                              </div>
                           )}
                         </div>
                       </div>
@@ -5454,7 +5393,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
               />
             </div>
 
-            <div className="space-y-6 w-full max-w-full">
+            <div className="space-y-6">
               {(() => {
                 // One page of rows at a time: a 85-source library built every row at once and made
                 // a 14,000-point document. The folder heading still counts the whole folder.
@@ -5474,198 +5413,192 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 return (
                   <>
                     {shown.map(([folder, folderSources]) => (
-                <div key={folder} className="space-y-3 w-full max-w-full">
+                <div key={folder} className="space-y-3">
                   <h3 className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-500 border-b border-slate-800/80 pb-2">
                     {folder} ({folderTotals[folder] ?? folderSources.length})
                   </h3>
-                  <div className="grid gap-2 w-full max-w-full">
-                    {folderSources.map((src) => {
-                      const avatarUrl = getSourceAvatar(src.feedUrl);
-                      const isRefreshing = refreshingSourceId === src.id;
-                      const descriptionOpen = expandedSourceDescriptionIds.includes(src.id);
-                      const categoryLabels = normalizeCategoryLabels(src.categories, src.folder);
-                      return (
-                        <div key={src.id} className="rounded-2xl bg-slate-900/60 border border-slate-800/80 w-full max-w-full overflow-hidden">
-                          <div className="p-3 sm:p-3.5">
-                          <div className="flex items-start justify-between gap-2 sm:gap-3">
-                            <SourceFeedLink
-                              onOpen={() => handleOpenFeedStream(src.title, src.id)}
-                              title={src.title}
-                              feedUrl={src.feedUrl}
-                              address={formatFeedUrlForDisplay(src.feedUrl)}
-                              avatarUrl={avatarUrl}
-                              onAvatarLoad={markTinyIcon}
-                              className="flex-1"
-                            />
+                  {folderSources.map((src) => {
+                    const avatarUrl = getSourceAvatar(src.feedUrl);
+                    const isRefreshing = refreshingSourceId === src.id;
+                    const descriptionOpen = expandedSourceDescriptionIds.includes(src.id);
+                    const categoryLabels = normalizeCategoryLabels(src.categories, src.folder);
+                    return (
+                      <div key={src.id} className="border-b border-slate-800/70 py-3">
+                        <div className="flex items-start justify-between gap-2 sm:gap-3">
+                          <SourceFeedLink
+                            onOpen={() => handleOpenFeedStream(src.title, src.id)}
+                            title={src.title}
+                            feedUrl={src.feedUrl}
+                            address={formatFeedUrlForDisplay(src.feedUrl)}
+                            avatarUrl={avatarUrl}
+                            onAvatarLoad={markTinyIcon}
+                            className="flex-1"
+                          />
 
-                          <div className="flex items-center gap-1 shrink-0">
-                            {src.paused && (
-                              <button
-                                type="button"
-                                onClick={() => handleResumeSource(src.id)}
-                                className="inline-flex min-h-10 items-center rounded-lg border border-amber-500/40 px-2.5 text-xs font-medium text-amber-300 transition hover:bg-amber-500/10"
-                                title={src.pausedReason || 'This feed was paused after repeated failures'}
-                              >
-                                Resume
-                              </button>
-                            )}
-                            <button 
-                              type="button"
-                              onClick={() => handleRefreshSource(src)}
-                              disabled={isRefreshing}
-                              className="p-2 min-w-10 min-h-10 flex items-center justify-center text-slate-400 hover:text-amber-400 transition"
-                              title="Force refresh this feed"
-                              aria-label="Force refresh this feed"
-                            >
-                              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-amber-400' : ''}`} />
-                            </button>
-                            {pendingDeleteId === src.id && (
-                              <span className="self-center pl-1 text-xs font-medium text-rose-300">Tap again to remove</span>
-                            )}
-                            <button 
-                              type="button"
-                              onClick={() => handleDeleteSource(src.id)}
-                              className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
-                                pendingDeleteId === src.id
-                                  ? 'bg-rose-500/15 border-rose-500/50 text-rose-300'
-                                  : 'border-transparent text-slate-400 hover:text-rose-400'
-                              }`}
-                              title={pendingDeleteId === src.id ? 'Tap again to confirm removal' : 'Remove source'}
-                              aria-label={pendingDeleteId === src.id ? 'Tap again to confirm removal' : 'Remove source'}
-                            >
-                              {pendingDeleteId === src.id ? <AlertCircle className="w-4 h-4" /> : <Trash2 className="w-4 h-4" />}
-                            </button>
-                          </div>
-                          </div>
-
-                          <div className="mt-1.5 pl-[46px]">
-                            {src.description?.trim() ? (
-                              <SourceDescription
-                                description={src.description}
-                                sourceTitle={src.title}
-                                expanded={descriptionOpen}
-                                onToggle={() => setExpandedSourceDescriptionIds(prev =>
-                                  prev.includes(src.id) ? prev.filter(id => id !== src.id) : [...prev, src.id]
-                                )}
-                              />
-                            ) : (
-                              <p className="text-xs text-slate-600">
-                                {src.descriptionFetchFailed ? (
-                                  <>
-                                    <span className="text-rose-400">Could not load this site description.</span>{' '}
-                                    <button
-                                      type="button"
-                                      onClick={() => retrySourceDescription(src.id)}
-                                      className="font-medium text-amber-300 underline underline-offset-2 transition hover:text-amber-200"
-                                    >
-                                      Try again
-                                    </button>
-                                  </>
-                                ) : src.descriptionCheckedAt
-                                  ? 'This site has not provided a description.'
-                                  : 'Loading site description…'}
-                              </p>
-                            )}
-                          </div>
-                          <div className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 pl-[46px] text-[11px] text-slate-500">
-                            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${src.lastSyncedAt ? 'bg-emerald-400' : 'bg-slate-600'}`} />
-                            <span>
-                              {src.lastSyncedAt ? formatSyncTime(src.lastSyncedAt) : 'Not synced yet'}
-                            </span>
-                            {categoryLabels.map(category => (
-                              <span key={category} className="flex items-center gap-x-1.5">
-                                <span className="text-slate-700">·</span>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setCategoryDraft('');
-                                    setCategoryEditorSourceId(src.id);
-                                  }}
-                                  title={`Edit categories for ${src.title}`}
-                                  className="text-amber-300/70 hover:text-amber-200 transition"
-                                >
-                                  {category}
-                                </button>
-                              </span>
-                            ))}
+                        <div className="flex items-center gap-1 shrink-0">
+                          {src.paused && (
                             <button
                               type="button"
-                              onClick={() => {
-                                setCategoryDraft('');
-                                setCategoryEditorSourceId(categoryEditorSourceId === src.id ? null : src.id);
-                              }}
-                              aria-expanded={categoryEditorSourceId === src.id}
-                              aria-label={`Edit categories for ${src.title}`}
-                              title="Edit categories"
-                              className={`inline-flex items-center gap-1 transition ${
-                                categoryEditorSourceId === src.id ? 'text-amber-300' : 'text-slate-600 hover:text-amber-300'
-                              }`}
+                              onClick={() => handleResumeSource(src.id)}
+                              className="inline-flex min-h-10 items-center rounded-lg border border-amber-500/40 px-2.5 text-xs font-medium text-amber-300 transition hover:bg-amber-500/10"
+                              title={src.pausedReason || 'This feed was paused after repeated failures'}
                             >
-                              <Sliders className="h-3 w-3 shrink-0" />
-                              {categoryLabels.length === 0 && <span>Categories</span>}
+                              Resume
                             </button>
-                          </div>
-                          </div>
-                          {categoryEditorSourceId === src.id && (
-                            <div className="px-3.5 sm:px-4 pb-3.5 sm:pb-4">
-                              <div className="rounded-xl bg-slate-950/70 border border-slate-800 p-3 sm:p-3.5 space-y-3">
-                                <div className="space-y-0.5">
-                                  <p className="text-xs font-medium text-slate-200">Categories</p>
-                                  <p className="text-xs text-slate-400 leading-relaxed">{TAXONOMY_NOTE}</p>
-                                </div>
-                                <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto overscroll-contain py-0.5">
-                                  {sourceCategories.map(category => {
-                                    const isSelected = normalizeCategoryLabels(src.categories, src.folder)
-                                      .some(value => value.toLowerCase() === category.toLowerCase());
-                                    return (
-                                      <button
-                                        key={category}
-                                        type="button"
-                                        onClick={() => toggleSourceCategory(src.id, category)}
-                                        aria-pressed={isSelected}
-                                        className={`inline-flex max-w-full items-center gap-1.5 rounded-full border px-3 py-2 text-xs leading-tight text-left transition ${
-                                          isSelected
-                                            ? 'border-amber-500/50 bg-amber-500/15 text-amber-100'
-                                            : 'border-slate-800 bg-slate-900/70 text-slate-300 hover:border-slate-700'
-                                        }`}
-                                      >
-                                        {isSelected && <Check className="w-3 h-3 shrink-0" />}
-                                        <span className="min-w-0 break-words">{category}</span>
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                                <form
-                                  className="flex gap-2"
-                                  onSubmit={e => {
-                                    e.preventDefault();
-                                    addSourceCategory(src);
-                                  }}
-                                >
-                                  <input
-                                    type="text"
-                                    maxLength={40}
-                                    value={categoryDraft}
-                                    onChange={e => setCategoryDraft(e.target.value)}
-                                    placeholder="New category"
-                                    aria-label={`Create a category for ${src.title}`}
-                                    className="min-w-0 flex-1 rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
-                                  />
+                          )}
+                          <button 
+                            type="button"
+                            onClick={() => handleRefreshSource(src)}
+                            disabled={isRefreshing}
+                            className="p-2 min-w-10 min-h-10 flex items-center justify-center text-slate-400 hover:text-amber-400 transition"
+                            title="Force refresh this feed"
+                            aria-label="Force refresh this feed"
+                          >
+                            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-amber-400' : ''}`} />
+                          </button>
+                          {pendingDeleteId === src.id && (
+                            <span className="self-center pl-1 text-xs font-medium text-rose-300">Tap again to remove</span>
+                          )}
+                          <button 
+                            type="button"
+                            onClick={() => handleDeleteSource(src.id)}
+                            className={`p-2 min-w-10 min-h-10 flex items-center justify-center rounded-xl border transition ${
+                              pendingDeleteId === src.id
+                                ? 'bg-rose-500/15 border-rose-500/50 text-rose-300'
+                                : 'border-transparent text-slate-400 hover:text-rose-400'
+                            }`}
+                            title={pendingDeleteId === src.id ? 'Tap again to confirm removal' : 'Remove source'}
+                            aria-label={pendingDeleteId === src.id ? 'Tap again to confirm removal' : 'Remove source'}
+                          >
+                            {pendingDeleteId === src.id ? <AlertCircle className="w-4 h-4" /> : <Trash2 className="w-4 h-4" />}
+                          </button>
+                        </div>
+                        </div>
+
+                        <div className="mt-1.5 pl-[46px]">
+                          {src.description?.trim() ? (
+                            <SourceDescription
+                              description={src.description}
+                              sourceTitle={src.title}
+                              expanded={descriptionOpen}
+                              onToggle={() => setExpandedSourceDescriptionIds(prev =>
+                                prev.includes(src.id) ? prev.filter(id => id !== src.id) : [...prev, src.id]
+                              )}
+                            />
+                          ) : (
+                            <p className="text-xs text-slate-600">
+                              {src.descriptionFetchFailed ? (
+                                <>
+                                  <span className="text-rose-400">Could not load this site description.</span>{' '}
                                   <button
-                                    type="submit"
-                                    disabled={!categoryDraft.trim()}
-                                    className="shrink-0 rounded-xl bg-amber-500/15 border border-amber-500/30 px-3 py-2 text-xs font-medium text-amber-200 disabled:opacity-40"
+                                    type="button"
+                                    onClick={() => retrySourceDescription(src.id)}
+                                    className="font-medium text-amber-300 underline underline-offset-2 transition hover:text-amber-200"
                                   >
-                                    Add
+                                    Try again
                                   </button>
-                                </form>
-                              </div>
-                            </div>
+                                </>
+                              ) : src.descriptionCheckedAt
+                                ? 'This site has not provided a description.'
+                                : 'Loading site description…'}
+                            </p>
                           )}
                         </div>
-                      );
-                    })}
-                  </div>
+                        <div className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 pl-[46px] text-[11px] text-slate-500">
+                          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${src.lastSyncedAt ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                          <span>
+                            {src.lastSyncedAt ? formatSyncTime(src.lastSyncedAt) : 'Not synced yet'}
+                          </span>
+                          {categoryLabels.map(category => (
+                            <span key={category} className="flex items-center gap-x-1.5">
+                              <span className="text-slate-700">·</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCategoryDraft('');
+                                  setCategoryEditorSourceId(src.id);
+                                }}
+                                title={`Edit categories for ${src.title}`}
+                                className="text-amber-300/70 hover:text-amber-200 transition"
+                              >
+                                {category}
+                              </button>
+                            </span>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCategoryDraft('');
+                              setCategoryEditorSourceId(categoryEditorSourceId === src.id ? null : src.id);
+                            }}
+                            aria-expanded={categoryEditorSourceId === src.id}
+                            aria-label={`Edit categories for ${src.title}`}
+                            title="Edit categories"
+                            className={`inline-flex items-center gap-1 transition ${
+                              categoryEditorSourceId === src.id ? 'text-amber-300' : 'text-slate-600 hover:text-amber-300'
+                            }`}
+                          >
+                            <Sliders className="h-3 w-3 shrink-0" />
+                            {categoryLabels.length === 0 && <span>Categories</span>}
+                          </button>
+                        </div>
+                        {categoryEditorSourceId === src.id && (
+                          <div className="space-y-3 border-t border-slate-800/70 pt-3 pl-[46px] pb-1">
+                              <div className="space-y-0.5">
+                                <p className="text-xs font-medium text-slate-200">Categories</p>
+                                <p className="text-xs text-slate-400 leading-relaxed">{TAXONOMY_NOTE}</p>
+                              </div>
+                              <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto overscroll-contain py-0.5">
+                                {sourceCategories.map(category => {
+                                  const isSelected = normalizeCategoryLabels(src.categories, src.folder)
+                                    .some(value => value.toLowerCase() === category.toLowerCase());
+                                  return (
+                                    <button
+                                      key={category}
+                                      type="button"
+                                      onClick={() => toggleSourceCategory(src.id, category)}
+                                      aria-pressed={isSelected}
+                                      className={`inline-flex max-w-full items-center gap-1.5 rounded-full border px-3 py-2 text-xs leading-tight text-left transition ${
+                                        isSelected
+                                          ? 'border-amber-500/50 bg-amber-500/15 text-amber-100'
+                                          : 'border-slate-800 bg-slate-900/70 text-slate-300 hover:border-slate-700'
+                                      }`}
+                                    >
+                                      {isSelected && <Check className="w-3 h-3 shrink-0" />}
+                                      <span className="min-w-0 break-words">{category}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <form
+                                className="flex gap-2"
+                                onSubmit={e => {
+                                  e.preventDefault();
+                                  addSourceCategory(src);
+                                }}
+                              >
+                                <input
+                                  type="text"
+                                  maxLength={40}
+                                  value={categoryDraft}
+                                  onChange={e => setCategoryDraft(e.target.value)}
+                                  placeholder="New category"
+                                  aria-label={`Create a category for ${src.title}`}
+                                  className="min-w-0 flex-1 rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 focus:border-amber-500"
+                                />
+                                <button
+                                  type="submit"
+                                  disabled={!categoryDraft.trim()}
+                                  className="shrink-0 rounded-xl bg-amber-500/15 border border-amber-500/30 px-3 py-2 text-xs font-medium text-amber-200 disabled:opacity-40"
+                                >
+                                  Add
+                                </button>
+                              </form>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               ))}
                     {total > shownCount && (
@@ -6635,171 +6568,8 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 </button>
               </div>
             ) : (
-              <div key={`stream-${feedStreamRenderKey}`} className="space-y-6">
-                {feedStreamArticles.slice(0, feedVisibleCount).map((item) => {
-                  const actions = getCardActions(item.id);
-                  return (
-                    <article
-                      key={item.id}
-                      onClick={() => openArticle(item)}
-                      // A card is a reading surface, not a button: a short name, and the four actions
-                      // inside it stay separately announced instead of being flattened into one label.
-                      aria-label={`${item.title} — ${item.source}`}
-                      tabIndex={0}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault();
-                          openArticle(item);
-                        }
-                      }}
-                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.12)] hover:border-amber-500/60 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(245,158,11,0.35)]`}
-                    >
-                      <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex items-center justify-between`}>
-                        <div className="flex items-center gap-3 min-w-0">
-                          {(() => {
-                            const itemAvatar = getSourceAvatar(item.url);
-                            return (
-                              <div className="w-9 h-9 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center overflow-hidden shrink-0 relative">
-                                {itemAvatar ? (
-                                  <img 
-                                    src={itemAvatar} 
-                                    alt={item.source} loading="lazy"
-                                    className="w-full h-full object-cover rounded-full"
-                                    onLoad={markTinyIcon}
-                                    onError={(e) => {
-                                      (e.currentTarget as HTMLElement).style.display = 'none';
-                                      const fallback = e.currentTarget.parentElement?.querySelector('.stream-card-initials');
-                                      if (fallback) fallback.classList.remove('hidden');
-                                    }}
-                                  />
-                                ) : null}
-                                <span className={`stream-card-initials text-xs font-bold text-amber-400 ${itemAvatar ? 'hidden' : ''}`}>
-                                  {item.source.slice(0, 2).toUpperCase()}
-                                </span>
-                              </div>
-                            );
-                          })()}
-                          <div className="min-w-0">
-                            <div className="truncate text-[13px] font-semibold text-slate-100">{item.source}</div>
-                            <div
-                              className="mt-0.5 truncate text-[13px] text-slate-400"
-                              title={[
-                                bylineFor(item),
-                                decodeEntities(item.publishedAt || ''),
-                                decodeEntities(item.readTime || ''),
-                              ].filter(Boolean).join(' · ')}
-                            >
-                              {[
-                                bylineFor(item),
-                                decodeEntities(item.publishedAt || ''),
-                                decodeEntities(item.readTime || ''),
-                              ].filter(Boolean).join(' · ')}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          {actions.isReadThrough ? (
-                            <div 
-                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-xs font-bold text-emerald-300 shadow-sm"
-                              title="Read through completed"
-                            >
-                              <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
-                              <span>Read</span>
-                            </div>
-                          ) : actions.isClicked ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300" title={`Opened in Curator — ${actions.openedLabel}`}>
-                              <span>{actions.openedLabel}</span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-medium text-slate-400" title="Not opened yet">
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                              <span>New</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {!item.bannerImage && (
-                        <div className={`mx-3.5 rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 flex items-center justify-center ${compactCards ? 'h-16' : 'h-20'}`}>
-                          <CuratorMark className="w-6 h-6 opacity-70" />
-                        </div>
-                      )}
-                      {item.bannerImage && (
-                        <div className={`relative mx-3.5 rounded-2xl overflow-hidden ${compactCards ? 'h-40 md:h-48' : 'h-56 md:h-64'} shadow-lg border border-slate-700/60`}>
-                          <img 
-                            src={item.bannerImage} 
-                            alt={item.title} 
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                          />
-                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
-                        </div>
-                      )}
-
-                      <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
-                        <div>
-                          <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-500 mb-1">
-                            {displayFolder(item.folder)}
-                          </div>
-                          <h3 className={`font-serif font-semibold leading-snug text-slate-50 group-hover:text-amber-200 transition-colors ${compactCards ? 'text-lg' : 'text-xl'}`}>
-                            {item.title}
-                          </h3>
-                          <p className="text-sm line-clamp-2 text-slate-400 mt-1 leading-relaxed">
-                            {item.summary}
-                          </p>
-                        </div>
-
-                        <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80">
-                          <div className="flex w-full flex-wrap items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); openArticle(item); }}
-                              className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-amber-300 hover:text-amber-200 transition"
-                            >
-                              Read in Curator <ArrowRight className="w-3.5 h-3.5" />
-                            </button>
-                            <a
-                              href={webUrlHref(item.url) || '#'}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleExternalClick(e, item.url);
-                                setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                                showToast('Opening original');
-                              }}
-                              className="ml-auto inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
-                              title={`Read original on ${item.source} (opens external browser or app)`}
-                              aria-label={`Read original on ${item.source}`}
-                            >
-                              <ExternalLink className="w-4 h-4" />
-                            </a>
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                              className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border transition ${
-                                savedIds.includes(item.id)
-                                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
-                                  : 'border-transparent text-slate-400 hover:text-amber-300'
-                              }`}
-                              title={savedIds.includes(item.id) ? 'Remove from saved' : 'Save for later'}
-                              aria-label={savedIds.includes(item.id) ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
-                              aria-pressed={savedIds.includes(item.id)}
-                            >
-                              <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
-                            </button>
-                          </div>
-                          <FeedbackActions
-                            isMore={actions.isVotedMore}
-                            isLess={actions.isVotedLess}
-                            onMore={() => handleMore(item)}
-                            onLess={() => handleLess(item)}
-                          />
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })}
+              <div key={`stream-${feedStreamRenderKey}`} className="space-y-8">
+                {feedStreamArticles.slice(0, feedVisibleCount).map((item) => renderStoryEntry(item, false))}
                 {feedStreamArticles.length > feedVisibleCount && (
                   <button
                     type="button"
@@ -7454,18 +7224,6 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 ))}
               </div>
             </div>
-
-            <button
-              type="button"
-              onClick={() => setCompactCards(value => !value)}
-              aria-pressed={compactCards}
-              className="flex w-full min-h-11 items-center justify-between gap-3 rounded-xl border border-slate-800 px-3 text-xs"
-            >
-              <span className="font-medium text-slate-200">Compact cards</span>
-              <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${compactCards ? 'bg-amber-500' : 'bg-slate-700'}`}>
-                <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-slate-950 transition-all ${compactCards ? 'left-[1.4rem]' : 'left-0.5'}`} />
-              </span>
-            </button>
 
             <div>
               <label htmlFor="serendipity-slider" className="flex items-baseline justify-between text-xs font-medium text-slate-300">
