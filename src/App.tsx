@@ -4,7 +4,7 @@ import {
   Download, Upload, Sliders, ExternalLink, ArrowLeft, Sparkles, 
   AlertCircle, X, Home, Compass,
   ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square, Headphones,
-  RotateCcw, EyeOff, BarChart3, Clock, ArrowRight, ChevronDown, Activity,
+  RotateCcw, BarChart3, Clock, ArrowRight, ChevronDown, Activity,
   HardDrive, Tags
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
@@ -305,6 +305,19 @@ function webUrlHref(url?: string | null): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+// The lead is set as prose, and the paragraph it shows is the piece's own opening rather than a
+// second telling of the summary. A stored body can start with a credit or a line of housekeeping,
+// so the first real paragraph is used; a long one is cut at a sentence, and a body with no prose
+// yields nothing at all rather than an empty line.
+function openingParagraph(text: string): string {
+  const first = buildArticleParagraphs(text).find(paragraph => paragraph.length > 80);
+  if (!first) return '';
+  if (first.length <= 520) return first;
+  const cut = first.slice(0, 520);
+  const stop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
+  return stop > 240 ? cut.slice(0, stop + 1) : `${cut.slice(0, cut.lastIndexOf(' '))}…`;
 }
 
 // Reader-side clean-up in case cached feed text still carries markup debris.
@@ -3060,36 +3073,7 @@ export default function App() {
 
     const hasAnyAction = isReadThrough || isClicked || isVotedMore || isVotedLess || isSaved;
 
-    const actionTags: Array<{ label: string; color: 'emerald' | 'amber' | 'rose' | 'sky' | 'purple' }> = [];
-
-    if (isReadThrough) {
-      actionTags.push({ label: 'Read through', color: 'emerald' });
-    } else if (isClicked) {
-      const depth = stats?.maxDepth ? `${stats.maxDepth}% read` : 'Opened in Curator';
-      actionTags.push({ label: depth, color: 'sky' });
-    }
-
-    if (isVotedMore) {
-      actionTags.push({ label: 'More like this', color: 'amber' });
-    } else if (isVotedLess) {
-      actionTags.push({ label: 'Less like this', color: 'rose' });
-    }
-
-    if (isSaved) {
-      actionTags.push({ label: 'Saved', color: 'amber' });
-    }
-
-    return {
-      hasAnyAction,
-      isReadThrough,
-      isClicked,
-      isVotedMore,
-      isVotedLess,
-      isSaved,
-      openedLabel,
-      actionTags,
-      summaryText: actionTags.length > 0 ? actionTags.map(t => t.label).join(' · ') : 'None',
-    };
+    return { hasAnyAction, isReadThrough, isClicked, isVotedMore, isVotedLess, openedLabel };
   };
 
   // The reader owns browser history entries (one per open), so the phone's back gesture
@@ -3502,10 +3486,7 @@ export default function App() {
   // Older cached editions can still hold pieces the engine already marked as unreadable. Keep
   // them out of Today immediately, even while a fresh edition is being built or the server is offline.
   const todayDigest = digest.filter(item => !item.articleUnavailable);
-  const normalDigest = todayDigest.filter(d => !d.isOutOfBubble);
-  const outOfBubbleDigest = todayDigest.filter(d => d.isOutOfBubble);
   const mutedDigestItems = todayDigest.filter(item => Boolean(mutedCards[item.id]));
-  // What the reader can actually read in this edition, for the closing card
   // The app only builds when it is opened, and a failed build leaves the cached edition on
   // screen. Once that edition is from an earlier day the heading cannot say "Today's".
   const editionIsToday = digestCuratedAt > 0
@@ -3533,8 +3514,8 @@ export default function App() {
   const readerQueueIndex = selectedArticle ? readerQueue.findIndex(item => item.id === selectedArticle.id) : -1;
   const nextInReaderQueue = readerQueueIndex >= 0 ? readerQueue[readerQueueIndex + 1] : undefined;
   const allDigestItemsMuted = todayDigest.length > 0 && mutedDigestItems.length === todayDigest.length;
-  // A story counts as dealt with in the same way its card's status changes: opened, read
-  // through, saved or voted on. Once every story is in that state, the edition is finished.
+  // A story counts as dealt with the way its actions do: opened, read through, saved or voted
+  // on. Once every story is in that state, the edition is finished.
   const allDigestItemsActioned = todayDigest.length > 0
     && todayDigest.every(item => Boolean(mutedCards[item.id]) || getCardActions(item.id).hasAnyAction);
 
@@ -3566,6 +3547,20 @@ export default function App() {
   const editionCountLabel = todayDigest.length === 0
     ? 'No stories yet'
     : `${todayDigest.length} of ${itemCount} ${itemCount === 1 ? 'story' : 'stories'}`;
+
+  // The front page sets the edition by size: one lead, two second reads, and the rest as a
+  // ruled index. The engine's order is kept inside each group, so the top of the page is still
+  // its judgement of what matters most and the stretch stories stay in the tail.
+  const readableDigest = todayDigest
+    .filter(item => !mutedCards[item.id])
+    .sort((a, b) => Number(a.isOutOfBubble) - Number(b.isOutOfBubble));
+  const leadStory = readableDigest[0];
+  const secondReads = readableDigest.slice(1, 3);
+  const indexStories = readableDigest.slice(3);
+  const setAsideStories = todayDigest.filter(item => Boolean(mutedCards[item.id]));
+  const leadActions = getCardActions(leadStory?.id || '');
+  const leadSaved = Boolean(leadStory && savedIds.includes(leadStory.id));
+  const leadOpening = openingParagraph(leadStory?.fullText || '');
 
   const restoreAllMutedCards = () => {
     const restoredIds = mutedDigestItems.map(item => item.id);
@@ -4218,7 +4213,7 @@ export default function App() {
                   onClick={() => setShowDigestSettings(true)}
                   aria-haspopup="dialog"
                   aria-expanded={showDigestSettings}
-                  aria-label={`Edition settings — ${itemCount} stories per edition${compactCards ? ', compact cards' : ''}`}
+                  aria-label={`Edition settings — ${itemCount} stories per edition`}
                   className="inline-flex min-h-9 items-center text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-300 transition hover:text-amber-300"
                 >
                   Edition
@@ -4427,458 +4422,175 @@ export default function App() {
                 onBrowseFeeds={() => setActiveTab('feeds')}
               />
             ) : (
-              <div className="space-y-8">
-                {/* Normal Curated Cards */}
-                {normalDigest.map((item) => {
-                  const actions = getCardActions(item.id);
+              <div className="space-y-12">
+                {/* The lead is set as prose, not as a card: an image bleeding to the column's
+                    edge, the largest headline on the page, the standfirst, and then the piece's
+                    own opening paragraph. Only one story in an edition gets this size. */}
+                {leadStory && (
+                  <article className="animate-fade-in">
+                    {leadStory.bannerImage && (
+                      <div className="-mx-4 mb-6 overflow-hidden bg-slate-900 sm:-mx-6">
+                        <img
+                          src={leadStory.bannerImage}
+                          alt=""
+                          className="aspect-[16/9] w-full object-cover"
+                        />
+                      </div>
+                    )}
 
-                  if (mutedCards[item.id]) {
-                    return (
-                      <div
-                        key={item.id}
-                        className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-800/80 flex items-center justify-between gap-2 text-xs animate-fade-in backdrop-blur-sm shadow-sm"
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[10px] font-semibold uppercase">
+                      <span className={`tracking-[0.22em] ${leadStory.isOutOfBubble ? 'text-rose-400' : 'text-amber-500'}`}>
+                        {leadStory.isOutOfBubble ? 'Outside your bubble' : displayFolder(leadStory.folder)}
+                      </span>
+                      <span aria-hidden="true" className="text-slate-700">·</span>
+                      <span className="tracking-[0.16em] text-slate-500">{leadStory.source}</span>
+                    </div>
+
+                    <h2 className="mt-3 text-[clamp(2rem,7.4vw,2.75rem)] font-semibold leading-[1.02] tracking-[-0.035em] text-slate-50">
+                      <button
+                        type="button"
+                        onClick={() => openArticle(leadStory)}
+                        className="text-left transition-colors hover:text-amber-200"
                       >
-                        <div className="flex items-center gap-2 min-w-0 flex-1 text-slate-300">
-                          <EyeOff className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                          <span className="min-w-0 truncate">Less like this</span>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); undoHandleLess(item.id); }}
-                            className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer shadow-sm"
-                            title="Undo — put this one story back in your digest"
-                            aria-label="Undo — put this one story back in your digest"
-                          >
-                            <RotateCcw className="w-3 h-3" />
-                            <span>Undo</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); permanentlyDismissMuted(item.id); }}
-                            className="text-slate-400 hover:text-slate-100 p-1 rounded-md transition"
-                            title="Dismiss placeholder and remove this story from today"
-                            aria-label="Dismiss placeholder and remove this story from today"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  }
+                        {leadStory.title}
+                      </button>
+                    </h2>
 
-                  return (
-                    <article 
-                      key={item.id}
-                      onClick={() => { if (!item.articleUnavailable) openArticle(item); }}
-                      // A card is a reading surface, not a button: a short name, and the four actions
-                      // inside it stay separately announced instead of being flattened into one label.
-                      // A story whose page gave up no article is not a reading surface at all, so it
-                      // stops opening the reader and the publisher's link is the way in.
-                      aria-label={`${item.title} — ${item.source}`}
-                      tabIndex={item.articleUnavailable ? -1 : 0}
-                      onKeyDown={(event) => {
-                        if (item.articleUnavailable) return;
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault();
-                          openArticle(item);
-                        }
-                      }}
-                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 overflow-hidden relative ${item.articleUnavailable ? 'cursor-default' : 'cursor-pointer'} bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.12)] hover:border-amber-500/60 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(245,158,11,0.35)]`}
-                    >
-                      {/* Author sub-header with Substack branding and Actioned status */}
-                      <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex items-center justify-between`}>
-                        <div className="flex items-center gap-3 min-w-0">
-                          {(() => {
-                            const itemAvatar = getSourceAvatar(item.url);
-                            return (
-                              <div className="w-9 h-9 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center overflow-hidden shrink-0 relative">
-                                {itemAvatar ? (
-                                  <img 
-                                    src={itemAvatar} 
-                                    alt={item.source} loading="lazy"
-                                    className="w-full h-full object-cover rounded-full"
-                                    onLoad={markTinyIcon}
-                                    onError={(e) => {
-                                      (e.currentTarget as HTMLElement).style.display = 'none';
-                                      const fallback = e.currentTarget.parentElement?.querySelector('.card-author-initials');
-                                      if (fallback) fallback.classList.remove('hidden');
-                                    }}
-                                  />
-                                ) : null}
-                                <span className={`card-author-initials text-xs font-bold text-amber-400 ${itemAvatar ? 'hidden' : ''}`}>
-                                  {item.source.slice(0, 2).toUpperCase()}
-                                </span>
-                              </div>
-                            );
-                          })()}
-                          <div className="min-w-0">
-                            <div className="truncate text-[13px] font-semibold text-slate-100">{item.source}</div>
-                            {/* One line of provenance, truncated rather than wrapped: five facts on
-                                three lines at 12px was the least readable block on the card. */}
-                            <div
-                              className="mt-0.5 truncate text-[13px] text-slate-400"
-                              title={[
-                                bylineFor(item),
-                                decodeEntities(item.publishedAt || '30m'),
-                                decodeEntities(item.readTime || ''),
-                              ].filter(Boolean).join(' · ')}
-                            >
-                              {[
-                                bylineFor(item),
-                                decodeEntities(item.publishedAt || '30m'),
-                                decodeEntities(item.readTime || ''),
-                              ].filter(Boolean).join(' · ')}
-                            </div>
+                    <p className="mt-3 max-w-[44rem] text-[1.0625rem] leading-[1.55] text-slate-300">
+                      {leadStory.summary}
+                    </p>
+
+                    {leadOpening && (
+                      <p className="mt-4 max-w-[42rem] text-[0.95rem] leading-[1.75] text-slate-400">
+                        {leadOpening}
+                      </p>
+                    )}
+
+                    <p className="mt-4 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                      {[bylineFor(leadStory), decodeEntities(leadStory.publishedAt || ''), decodeEntities(leadStory.readTime || '')]
+                        .filter(Boolean)
+                        .join(' · ')}
+                      {leadActions.isReadThrough ? ' · Read through' : leadActions.isClicked ? ` · ${leadActions.openedLabel}` : ''}
+                    </p>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-slate-800/80 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => openArticle(leadStory)}
+                        className="inline-flex min-h-11 items-center gap-1.5 text-sm font-semibold text-amber-300 transition hover:text-amber-200"
+                      >
+                        Read in Curator <ArrowRight className="h-4 w-4" />
+                      </button>
+                      <a
+                        href={webUrlHref(leadStory.url) || '#'}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => {
+                          handleExternalClick(e, leadStory.url);
+                          setReadArticleIds(prev => (prev.includes(leadStory.id) ? prev : [...prev, leadStory.id]));
+                          showToast('Opening original');
+                        }}
+                        className="inline-flex min-h-11 items-center gap-1.5 text-xs font-medium text-slate-400 transition hover:text-amber-300"
+                        aria-label={`Read original on ${leadStory.source}`}
+                      >
+                        Original <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => handleSave(leadStory)}
+                        aria-pressed={leadSaved}
+                        className={`inline-flex min-h-11 items-center gap-1.5 text-xs font-medium transition ${
+                          leadSaved ? 'text-amber-400' : 'text-slate-400 hover:text-amber-300'
+                        }`}
+                      >
+                        <Bookmark className={`h-3.5 w-3.5 ${leadSaved ? 'fill-amber-400' : ''}`} />
+                        {leadSaved ? 'Saved' : 'Save'}
+                      </button>
+                      <div className="ml-auto">
+                        <FeedbackActions
+                          isMore={leadActions.isVotedMore}
+                          isLess={leadActions.isVotedLess}
+                          onMore={() => handleMore(leadStory)}
+                          onLess={() => handleLess(leadStory)}
+                        />
+                      </div>
+                    </div>
+                  </article>
+                )}
+
+                {/* The middle: two stories one size down, headed by their publication and set
+                    with a standfirst and a byline. Nothing here is boxed either. */}
+                {secondReads.length > 0 && (
+                  <section aria-label="Second reads" className="space-y-6">
+                    {secondReads.map((item) => {
+                      const actions = getCardActions(item.id);
+                      const isSaved = savedIds.includes(item.id);
+                      return (
+                        <article key={item.id} className="border-t border-slate-800/70 pt-5">
+                          <div className="flex items-baseline justify-between gap-3 text-[10px] font-semibold uppercase">
+                            <span className={`tracking-[0.22em] ${item.isOutOfBubble ? 'text-rose-400' : 'text-amber-500'}`}>
+                              {item.isOutOfBubble ? 'Outside your bubble' : displayFolder(item.folder)}
+                            </span>
+                            <span className="shrink-0 tracking-[0.14em] text-slate-500">
+                              {decodeEntities(item.publishedAt || '')}
+                            </span>
                           </div>
-                        </div>
 
-                        <div className="flex items-center gap-2 shrink-0">
-                          {actions.isReadThrough ? (
-                            <div 
-                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-xs font-bold text-emerald-300 shadow-sm"
-                              title="Read through completed"
+                          <h3 className="mt-2 text-[1.4rem] font-semibold leading-[1.15] tracking-[-0.025em] text-slate-50 sm:text-[1.55rem]">
+                            <button
+                              type="button"
+                              onClick={() => openArticle(item)}
+                              className="text-left transition-colors hover:text-amber-200"
                             >
-                              <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
-                              <span>Read</span>
-                            </div>
-                          ) : actions.isClicked ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300" title={`Opened in Curator — ${actions.openedLabel}`}>
-                              <span>{actions.openedLabel}</span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-medium text-slate-400" title="Not opened yet">
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                              <span>New</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Billboard Hero Image Card with Bookmark Save Button right on image */}
-                      {item.bannerImage && (
-                        <div className={`relative mx-3.5 rounded-2xl overflow-hidden ${compactCards ? 'h-40 md:h-48' : 'h-60 md:h-72'} shadow-lg border border-slate-700/60`}>
-                          <img 
-                            src={item.bannerImage} 
-                            alt={item.title}
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                          />
-                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
-                          
-                        </div>
-                      )}
-
-                      <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
-                        <div>
-                          {displayFolder(item.folder) && (
-                            <div className="text-xs uppercase font-semibold tracking-wider text-slate-500 mb-1">
-                              {displayFolder(item.folder)}
-                            </div>
-                          )}
-                          <h3 className={`${compactCards ? 'text-lg' : 'text-xl'} font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors`}>
-                            {item.title}
+                              {item.title}
+                            </button>
                           </h3>
-                          <p className="text-sm line-clamp-2 text-slate-400 mt-1">
+
+                          <p className="mt-1.5 line-clamp-2 max-w-[40rem] text-[0.95rem] leading-[1.55] text-slate-400">
                             {item.summary}
                           </p>
-                        </div>
 
-                        {/* Quiet editorial why note */}
-                        <p className="text-xs text-slate-400 italic">
-                          <span className="text-amber-400/90 font-medium not-italic">Why: </span>{item.why}
-                        </p>
+                          <p className="mt-2 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                            {[bylineFor(item), item.source, decodeEntities(item.readTime || '')]
+                              .filter(Boolean)
+                              .join(' · ')}
+                            {actions.isReadThrough ? ' · Read through' : actions.isClicked ? ` · ${actions.openedLabel}` : ''}
+                          </p>
 
-                        {/* Card Curation & Reading Actions */}
-                        <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
-                          <div className="flex w-full flex-wrap items-center gap-2">
-                            {item.articleUnavailable ? (
-                              // No article came back for this piece, so the card stops offering a reader
-                              // view: the note stands where the button was, and the publisher's link reads it.
-                              <span
-                                className="inline-flex min-h-11 items-center rounded-lg px-1 text-xs font-medium text-slate-500"
-                                title="Curator could not read an article from this page. The original link beside it opens the piece on the publisher’s site."
-                              >
-                                No article or available content
-                              </span>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); openArticle(item); }}
-                                className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-amber-300 hover:text-amber-200 transition"
-                              >
-                                Read in Curator <ArrowRight className="w-3.5 h-3.5" />
-                              </button>
-                            )}
+                          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
+                            <button
+                              type="button"
+                              onClick={() => openArticle(item)}
+                              className="inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-amber-300 transition hover:text-amber-200"
+                            >
+                              Read in Curator <ArrowRight className="h-3.5 w-3.5" />
+                            </button>
                             <a
                               href={webUrlHref(item.url) || '#'}
                               target="_blank"
                               rel="noopener noreferrer"
                               onClick={(e) => {
-                                e.stopPropagation();
                                 handleExternalClick(e, item.url);
                                 setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
                                 showToast('Opening original');
                               }}
-                              className="ml-auto inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
-                              title={`Read original on ${item.source} (opens external browser or app)`}
+                              className="inline-flex min-h-11 items-center gap-1 text-xs text-slate-500 transition hover:text-amber-300"
                               aria-label={`Read original on ${item.source}`}
                             >
-                              <ExternalLink className="w-4 h-4" />
+                              Original <ExternalLink className="h-3 w-3" />
                             </a>
                             <button
                               type="button"
-                              onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                              className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border transition ${
-                                savedIds.includes(item.id)
-                                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
-                                  : 'border-transparent text-slate-400 hover:text-amber-300'
+                              onClick={() => handleSave(item)}
+                              aria-pressed={isSaved}
+                              className={`inline-flex min-h-11 items-center gap-1 text-xs transition ${
+                                isSaved ? 'text-amber-400' : 'text-slate-500 hover:text-amber-300'
                               }`}
-                              title={savedIds.includes(item.id) ? 'Remove from saved' : 'Save for later'}
-                              aria-label={savedIds.includes(item.id) ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
-                              aria-pressed={savedIds.includes(item.id)}
                             >
-                              <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
+                              <Bookmark className={`h-3 w-3 ${isSaved ? 'fill-amber-400' : ''}`} />
+                              {isSaved ? 'Saved' : 'Save'}
                             </button>
-                          </div>
-                          <FeedbackActions
-                            isMore={actions.isVotedMore}
-                            isLess={actions.isVotedLess}
-                            onMore={() => handleMore(item)}
-                            onLess={() => handleLess(item)}
-                          />
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })}
-
-                {/* Out of Bubble Stretch Section */}
-                {outOfBubbleDigest.length > 0 && (
-                  <div className="pt-6 space-y-6">
-                    <div className="flex items-center gap-2 border-b border-slate-900 pb-3">
-                      <Sparkles className="w-4 h-4 text-rose-400" />
-                      <h3 className="text-xs font-semibold uppercase tracking-wider text-rose-400">
-                        Deliberate stretch
-                      </h3>
-                    </div>
-
-                    {outOfBubbleDigest.map((item) => {
-                      const actions = getCardActions(item.id);
-
-                      if (mutedCards[item.id]) {
-                        return (
-                          <div
-                            key={item.id}
-                            className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-800/80 flex items-center justify-between gap-2 text-xs animate-fade-in backdrop-blur-sm shadow-sm"
-                          >
-                            <div className="flex items-center gap-2 min-w-0 flex-1 text-slate-300">
-                              <EyeOff className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                              <span className="min-w-0 truncate">Less like this</span>
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <button
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); undoHandleLess(item.id); }}
-                                className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer shadow-sm"
-                                title="Undo — put this one story back in your digest"
-                                aria-label="Undo — put this one story back in your digest"
-                              >
-                                <RotateCcw className="w-3 h-3" />
-                                <span>Undo</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); permanentlyDismissMuted(item.id); }}
-                                className="text-slate-400 hover:text-slate-100 p-1 rounded-md transition"
-                                title="Dismiss placeholder and remove this story from today"
-                                aria-label="Dismiss placeholder and remove this story from today"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      }
-
-                      return (
-                        <article 
-                          key={item.id}
-                          onClick={() => { if (!item.articleUnavailable) openArticle(item); }}
-                          // A card is a reading surface, not a button: a short name, and the four actions
-                          // inside it stay separately announced instead of being flattened into one label.
-                          // A story whose page gave up no article is not a reading surface at all, so it
-                          // stops opening the reader and the publisher's link is the way in.
-                          aria-label={`${item.title} — ${item.source}`}
-                          tabIndex={item.articleUnavailable ? -1 : 0}
-                          onKeyDown={(event) => {
-                            if (item.articleUnavailable) return;
-                            if (event.key === 'Enter' || event.key === ' ') {
-                              event.preventDefault();
-                              openArticle(item);
-                            }
-                          }}
-                          className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 overflow-hidden relative ${item.articleUnavailable ? 'cursor-default' : 'cursor-pointer'} bg-slate-900/95 border-2 border-rose-600/70 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(244,63,94,0.3)] hover:border-rose-500 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(244,63,94,0.45)]`}
-                        >
-                          <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex flex-wrap items-center justify-between gap-x-3 gap-y-2`}>
-                            <div className="flex items-center gap-3 min-w-0 max-w-full">
-                            {(() => {
-                            const itemAvatar = getSourceAvatar(item.url);
-                            return (
-                              <div className="w-9 h-9 rounded-full bg-slate-900 border border-rose-800 flex items-center justify-center overflow-hidden shrink-0 relative">
-                                {itemAvatar ? (
-                                  <img 
-                                    src={itemAvatar} 
-                                    alt={item.source} loading="lazy"
-                                    className="w-full h-full object-cover rounded-full"
-                                    onLoad={markTinyIcon}
-                                    onError={(e) => {
-                                      (e.currentTarget as HTMLElement).style.display = 'none';
-                                      const fallback = e.currentTarget.parentElement?.querySelector('.out-author-initials');
-                                      if (fallback) fallback.classList.remove('hidden');
-                                    }}
-                                  />
-                                ) : null}
-                                <span className={`out-author-initials text-xs font-bold text-rose-300 ${itemAvatar ? 'hidden' : ''}`}>
-                                  {item.source.slice(0, 2).toUpperCase()}
-                                </span>
-                              </div>
-                            );
-                          })()}
-                              <div className="min-w-0">
-                                <div className="text-xs font-bold text-rose-200 truncate">{item.source}</div>
-                                <div className="text-xs text-rose-400/80 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
-                                  {item.author && (
-                                    <>
-                                      <span className="min-w-0">By {item.author}</span>
-                                      <span aria-hidden="true">·</span>
-                                    </>
-                                  )}
-                                  {item.publishedAt && (
-                                    <>
-                                      <span className="min-w-0">{decodeEntities(item.publishedAt)}</span>
-                                      <span aria-hidden="true">·</span>
-                                    </>
-                                  )}
-                                  <span className="min-w-0">{displayFolder(item.folder)}</span>
-                                  <span aria-hidden="true">·</span>
-                                  <span className="shrink-0 font-medium text-rose-300">{decodeEntities(item.readTime || '')}</span>
-                                </div>
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0 min-w-0 flex-wrap justify-end">
-                              {actions.isReadThrough ? (
-                                <div 
-                                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-xs font-bold text-emerald-300 shadow-sm"
-                                  title="Read through completed"
-                                >
-                                  <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
-                                  <span>Read</span>
-                                </div>
-                              ) : actions.isClicked ? (
-                                <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300" title={`Opened in Curator — ${actions.openedLabel}`}>
-                                  <span>{actions.openedLabel}</span>
-                                </div>
-                              ) : (
-                                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-medium text-slate-400" title="Not opened yet">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                                  <span>New</span>
-                                </div>
-                              )}
-                              <span className="text-xs uppercase font-semibold tracking-wider bg-rose-950/80 text-rose-300 px-2.5 py-0.5 rounded-full border border-rose-800/60">
-                                Outside your bubble
-                              </span>
-                            </div>
-                          </div>
-
-                          {!item.bannerImage && (
-                            <div className={`mx-3.5 rounded-2xl border border-rose-900/60 bg-gradient-to-br from-rose-950/40 via-slate-950 to-slate-900 flex items-center justify-center ${compactCards ? 'h-16' : 'h-20'}`}>
-                              <CuratorMark className="w-6 h-6 opacity-70" />
-                            </div>
-                          )}
-                          {item.bannerImage && (
-                            <div className={`relative mx-3.5 rounded-2xl overflow-hidden ${compactCards ? 'h-40 md:h-48' : 'h-60 md:h-64'} shadow-lg border border-rose-800/40`}>
-                              <img 
-                                src={item.bannerImage} 
-                                alt={item.title} 
-                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                              />
-                              <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
-                              
-                            </div>
-                          )}
-
-                          <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
-                            <div>
-                              {displayFolder(item.folder) && (
-                                <div className="text-xs uppercase font-semibold tracking-wider text-slate-500 mb-1">
-                                  {displayFolder(item.folder)}
-                                </div>
-                              )}
-                              <h3 className={`${compactCards ? 'text-lg' : 'text-xl'} font-bold tracking-tight text-slate-100 group-hover:text-rose-300 transition-colors`}>
-                                {item.title}
-                              </h3>
-                              <p className="text-sm line-clamp-2 text-slate-400 mt-1">
-                                {item.summary}
-                              </p>
-                            </div>
-
-                            {/* Quiet editorial why note */}
-                            <p className="text-xs text-rose-300/80 italic">
-                              <span className="text-rose-400 font-medium not-italic">Why: </span>{item.why}
-                            </p>
-
-                            {/* Stretch Card Actions: Read more, More, Less */}
-                            <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
-                              <div className="flex w-full flex-wrap items-center gap-2">
-                                {item.articleUnavailable ? (
-                                  // No article came back for this piece, so the card stops offering a
-                                  // reader view: the note stands where the button was.
-                                  <span
-                                    className="inline-flex min-h-11 items-center rounded-lg px-1 text-xs font-medium text-slate-500"
-                                    title="Curator could not read an article from this page. The original link beside it opens the piece on the publisher’s site."
-                                  >
-                                    No article or available content
-                                  </span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => { e.stopPropagation(); openArticle(item); }}
-                                    className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-rose-300 hover:text-rose-200 transition"
-                                  >
-                                    Read in Curator <ArrowRight className="w-3.5 h-3.5" />
-                                  </button>
-                                )}
-                                <a
-                                  href={webUrlHref(item.url) || '#'}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  onClick={(e) => {
-                                e.stopPropagation();
-                                handleExternalClick(e, item.url);
-                                setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
-                                showToast('Opening original');
-                              }}
-                                  className="ml-auto inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-rose-400 hover:text-rose-300 transition-colors"
-                                  title={`Read original on ${item.source} (opens external browser or app)`}
-                                  aria-label={`Read original on ${item.source}`}
-                                >
-                                  <ExternalLink className="w-4 h-4" />
-                                </a>
-                                <button
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                                  className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border transition ${
-                                    savedIds.includes(item.id)
-                                      ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
-                                      : 'border-transparent text-slate-400 hover:text-amber-300'
-                                  }`}
-                                  title={savedIds.includes(item.id) ? 'Remove from saved' : 'Save for later'}
-                                  aria-label={savedIds.includes(item.id) ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
-                                  aria-pressed={savedIds.includes(item.id)}
-                                >
-                                  <Bookmark className={`w-4 h-4 ${savedIds.includes(item.id) ? 'fill-amber-400 text-amber-400' : ''}`} />
-                                </button>
-                              </div>
+                            <div className="ml-auto">
                               <FeedbackActions
                                 isMore={actions.isVotedMore}
                                 isLess={actions.isVotedLess}
@@ -4890,7 +4602,83 @@ export default function App() {
                         </article>
                       );
                     })}
-                  </div>
+                  </section>
+                )}
+
+                {/* The tail: everything else as a ruled index — headline, one line of summary,
+                    publication and time. No images, no boxes, no second column of buttons. */}
+                {(indexStories.length > 0 || setAsideStories.length > 0) && (
+                  <section aria-labelledby="also-in-edition">
+                    <div aria-hidden="true" className="h-[2px] w-full bg-slate-300/30" />
+                    <h3 id="also-in-edition" className="mt-2 text-[10px] font-semibold uppercase tracking-[0.3em] text-slate-500">
+                      Also in this edition
+                    </h3>
+
+                    <ul className="mt-2 border-t border-slate-800/70">
+                      {indexStories.map((item) => (
+                        <li key={item.id} className="flex items-start gap-2 border-b border-slate-800/70 py-3">
+                          <div className="min-w-0 flex-1">
+                            <button
+                              type="button"
+                              onClick={() => openArticle(item)}
+                              className="block w-full text-left text-[0.95rem] font-medium leading-snug text-slate-100 transition-colors hover:text-amber-300 sm:text-base"
+                            >
+                              {item.title}
+                            </button>
+                            <p className="mt-1 truncate text-xs leading-relaxed text-slate-400">{item.summary}</p>
+                            <p className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                              <span className="whitespace-nowrap">
+                                {[item.source, decodeEntities(item.publishedAt || ''), decodeEntities(item.readTime || '')]
+                                  .filter(Boolean)
+                                  .join(' · ')}
+                              </span>
+                              {item.isOutOfBubble && (
+                                <span className="whitespace-nowrap text-rose-400">Outside your bubble</span>
+                              )}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleSave(item)}
+                            aria-pressed={savedIds.includes(item.id)}
+                            aria-label={savedIds.includes(item.id) ? `Remove "${item.title}" from saved` : `Save "${item.title}" for later`}
+                            className={`inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center transition ${
+                              savedIds.includes(item.id) ? 'text-amber-400' : 'text-slate-600 hover:text-amber-300'
+                            }`}
+                          >
+                            <Bookmark className={`h-3.5 w-3.5 ${savedIds.includes(item.id) ? 'fill-amber-400' : ''}`} />
+                          </button>
+                        </li>
+                      ))}
+
+                      {/* A set-aside story keeps a row so Undo stays where the story was. */}
+                      {setAsideStories.map((item) => (
+                        <li key={item.id} className="flex items-center justify-between gap-3 border-b border-slate-800/70 py-2">
+                          <span className="min-w-0 truncate text-xs text-slate-500">
+                            Set aside · {item.title}
+                          </span>
+                          <span className="flex shrink-0 items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => undoHandleLess(item.id)}
+                              className="inline-flex min-h-9 items-center gap-1 px-1 text-[11px] font-semibold text-amber-300 transition hover:text-amber-200"
+                            >
+                              <RotateCcw className="h-3 w-3" />
+                              Undo
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => permanentlyDismissMuted(item.id)}
+                              aria-label="Remove this story from today"
+                              className="inline-flex min-h-9 min-w-9 items-center justify-center text-slate-500 transition hover:text-slate-200"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
                 )}
 
                 {/* The full stop. A printed edition ends with a rule and a sentence, not a
