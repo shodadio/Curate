@@ -25,6 +25,7 @@ import { readVideoEmbed, type VideoEmbed } from '../lib/videoEmbed';
 import { loadInterests, saveInterests, emptyInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
 import { clearAppData, safeGetItem, safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, readAppData, type StorageFailure } from './storage';
 import { readBackupFile, restorePlan } from '../lib/backup';
+import { migrateStoredMarkdown } from '../lib/markdownMigration';
 import { migrateStoryIds } from '../lib/storyIdMigration';
 import { editionDayLabel, editionMinutes as editionMinutesFor, readEditions, recordEdition, type Edition } from '../lib/editions';
 import { formatBytes, measureStorage, pruneArticleBodies, pruneReadingStats, type StorageReport } from '../lib/storageHealth';
@@ -827,7 +828,7 @@ export default function App() {
 
     // The file may have been written before stories had ids of their own, so it is converted
     // here rather than left to the reload: what lands in storage is already current.
-    const plan = restorePlan(readAppData(), migrateStoryIds(read.data).data);
+    const plan = restorePlan(readAppData(), migrateStoredMarkdown(migrateStoryIds(read.data).data).data);
     let refused = 0;
     plan.write.forEach(entry => {
       if (!safeSetItem(entry.key, entry.value)) refused += 1;
