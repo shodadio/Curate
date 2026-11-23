@@ -50,6 +50,10 @@ test('a summary without that furniture is left alone', () => {
   // Prose that merely mentions the publication keeps its words.
   const prose = 'The archive is free to read on Aeon’s site, with a note on every essay.';
   assert.equal(trimSummaryFurniture(prose), prose);
+  // A summary that is nothing but the call to action stays, so a card is never blank.
+  assert.equal(trimSummaryFurniture('Read on Aeon'), 'Read on Aeon');
+});
+
 test('a blurb written in Markdown reaches the page as prose', () => {
   assert.equal(
     stripMarkdownSyntax('Essays on [markets](https://example.com) and **growth**, plus `inline code`.'),
@@ -93,10 +97,6 @@ test('a Markdown link in a feed summary keeps its words and loses its address', 
   );
   // Ordinary parentheses are prose, not a link.
   assert.equal(cleanHtml('Growth (and its costs) in one chart'), 'Growth (and its costs) in one chart');
-});
-
-  // A summary that is nothing but the call to action stays, so a card is never blank.
-  assert.equal(trimSummaryFurniture('Read on Aeon'), 'Read on Aeon');
 });
 
 // ---------------------------------------------------------------------------
