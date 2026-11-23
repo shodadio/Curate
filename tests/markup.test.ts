@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { articleLooksIncomplete, articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, repairSplitDigits, splitDenseParagraph, splitSentences, stripMarkdownSyntax, trimSummaryFurniture } from '../lib/markup.ts';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, repairSplitDigits, splitDenseParagraph, splitSentences, stripMarkdownEmphasis, stripMarkdownSyntax, trimSummaryFurniture } from '../lib/markup.ts';
 
 test('only a piece saved before links were kept is refreshed', () => {
   assert.equal(articleNeedsLinkRefresh({ url: 'https://example.com/story' }), true);
@@ -62,6 +62,13 @@ test('a blurb written in Markdown reaches the page as prose', () => {
 test('cleanHtml treats a headline written in Markdown as words', () => {
   assert.equal(cleanHtml('<title>*The Great Enrichment*</title>'), 'The Great Enrichment');
   assert.equal(cleanHtml('Static **and** dynamic typing'), 'Static and dynamic typing');
+});
+
+test('emphasis comes off without touching a link address', () => {
+  assert.equal(
+    stripMarkdownEmphasis('**Read** the [piece](https://example.com/a_b) `today`'),
+    'Read the [piece](https://example.com/a_b) today',
+  );
 });
 
 test('a Markdown link in a feed summary keeps its words and loses its address', () => {

@@ -68,3 +68,14 @@ test('a paragraph that is only an address is not spoken at all', () => {
   assert.equal(spoken.some(text => /https?:\/\/|url=|metadata=/.test(text)), false, JSON.stringify(spoken));
   assert.equal(spoken.includes('A real closing paragraph.'), true, JSON.stringify(spoken));
 });
+
+test('read-aloud reads Markdown emphasis as plain words, like the screen', () => {
+  assert.equal(
+    normaliseForSpeech('Essays on **growth**, plus `inline code`.'),
+    'Essays on growth, plus inline code.',
+  );
+  const queue = buildSpeechQueue(article('Essays on **growth**.\n\nA *quiet* staying case.'));
+  const spoken = queue.map(chunk => chunk.text);
+  assert.equal(spoken.includes('Essays on growth.'), true, JSON.stringify(spoken));
+  assert.equal(spoken.includes('A quiet staying case.'), true, JSON.stringify(spoken));
+});

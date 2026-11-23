@@ -71,7 +71,7 @@ import {
   splitIntoSentences,
 } from '../lib/speech';
 import { formatBuildStamp } from '../lib/buildStamp';
-import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, isPlayerChrome, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, isPlayerChrome, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
 
 // One-click provider addresses: the popular OpenAI-compatible services, so a working setup
 // starts with a name and a key rather than a copied URL and a guessed model ID.
@@ -440,23 +440,26 @@ function linkifyBareUrls(text: string): ParagraphToken[] {
 const MARKDOWN_LINK = /\[([^\]\n]{1,240})\]\(([^)]+)\)/g;
 
 function linkifyParagraph(paragraph: string): ParagraphToken[] {
+  // Prose reads as words; a link keeps its address for the anchor below.
+  const prose = (segment: string) => linkifyBareUrls(stripMarkdownEmphasis(segment));
   const tokens: ParagraphToken[] = [];
   let cursor = 0;
   MARKDOWN_LINK.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = MARKDOWN_LINK.exec(paragraph)) !== null) {
-    tokens.push(...linkifyBareUrls(paragraph.slice(cursor, match.index)));
+    tokens.push(...prose(paragraph.slice(cursor, match.index)));
     // Whitespace inside the address is cleaner debris; only a followable one becomes a link.
     const href = match[2].replace(/\s+/g, '');
     tokens.push(REAL_URL.test(href) ? { text: match[1], href } : { text: match[0] });
     cursor = match.index + match[0].length;
   }
-  tokens.push(...linkifyBareUrls(paragraph.slice(cursor)));
+  tokens.push(...prose(paragraph.slice(cursor)));
   return tokens;
 }
 
-// Paragraph text with its links live. The tap is kept from the paragraph underneath, so
-// following a link does not also start read-aloud from that paragraph.
+// Paragraph text with its links live. A body written in Markdown is read as prose: emphasis
+// and code marks come off, while a link keeps its address. The tap is kept from the paragraph
+// underneath, so following a link does not also start read-aloud from that paragraph.
 function renderParagraphText(paragraph: string) {
   const tokens = linkifyParagraph(paragraph);
   if (tokens.length === 1 && !tokens[0].href) return tokens[0].text;

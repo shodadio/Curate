@@ -39,15 +39,20 @@ export const decodeEntities = (str: string): string =>
 export const linkLabelsOnly = (paragraph: string): string =>
   paragraph.replace(/\[([^\]\n]*)\]\((?:[^)]*)\)/g, '$1');
 
-// A blurb written in Markdown reaches the page as prose: a link keeps its label, and the
-// emphasis and code marks come off. A lone asterisk or underscore is left where it is.
-export const stripMarkdownSyntax = (text: string): string =>
-  linkLabelsOnly(text)
+// Emphasis and code marks come off a line of prose. A lone asterisk or underscore stays where
+// it is, and a link is left exactly as written, so its address survives for the reader.
+export const stripMarkdownEmphasis = (text: string): string =>
+  text
     .replace(/`([^`\n]+)`/g, '$1')
     .replace(/\*\*([^*\n]+)\*\*/g, '$1')
     .replace(/__([^_\n]+)__/g, '$1')
     .replace(/(^|[\s(])\*([^*\s][^*\n]*?)\*/g, '$1$2')
     .replace(/(^|[\s(])_([^_\s][^_\n]*?)_/g, '$1$2');
+
+// A blurb written in Markdown reaches the page as prose: a link keeps its label, and the
+// emphasis and code marks come off.
+export const stripMarkdownSyntax = (text: string): string =>
+  stripMarkdownEmphasis(linkLabelsOnly(text));
 
 // One line of plain text: for summaries, titles, dates and feed descriptions. Markdown
 // reaches these cleaners as often as markup does, so its links and emphasis marks come off here.
