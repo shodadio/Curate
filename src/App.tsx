@@ -3484,18 +3484,21 @@ export default function App() {
       return terms.every(term => haystack.includes(term));
     });
   })();
-  const normalDigest = digest.filter(d => !d.isOutOfBubble);
-  const outOfBubbleDigest = digest.filter(d => d.isOutOfBubble);
-  const mutedDigestItems = digest.filter(item => Boolean(mutedCards[item.id]));
+  // Older cached editions can still hold pieces the engine already marked as unreadable. Keep
+  // them out of Today immediately, even while a fresh edition is being built or the server is offline.
+  const todayDigest = digest.filter(item => !item.articleUnavailable);
+  const normalDigest = todayDigest.filter(d => !d.isOutOfBubble);
+  const outOfBubbleDigest = todayDigest.filter(d => d.isOutOfBubble);
+  const mutedDigestItems = todayDigest.filter(item => Boolean(mutedCards[item.id]));
   // What the reader can actually read in this edition, for the closing card
   // The app only builds when it is opened, and a failed build leaves the cached edition on
   // screen. Once that edition is from an earlier day the heading cannot say "Today's".
   const editionIsToday = digestCuratedAt > 0
     && new Date(digestCuratedAt).toDateString() === new Date().toDateString();
-  const editionHeading = digest.length === 0 || editionIsToday ? "Today's Digest" : 'Your last edition';
+  const editionHeading = todayDigest.length === 0 || editionIsToday ? "Today's Digest" : 'Your last edition';
   // The settings sheet names the same edition the page is showing, so the two never disagree.
-  const editionSheetTitle = digest.length === 0 || editionIsToday ? 'Today\u2019s edition' : 'Your last edition';
-  const editionItems = digest.filter(item => !mutedCards[item.id]);
+  const editionSheetTitle = todayDigest.length === 0 || editionIsToday ? 'Today\u2019s edition' : 'Your last edition';
+  const editionItems = todayDigest.filter(item => !mutedCards[item.id]);
   const editionMinutes = editionItems.reduce((total, item) => total + (parseInt(item.readTime, 10) || 0), 0);
   // The piece after the open one in the list the reader came from, so the end of an article can
   // continue into the next story instead of simply stopping.
@@ -3503,14 +3506,14 @@ export default function App() {
     ? savedDigestItems
     : activeTab === 'feeds'
       ? feedStreamArticles
-      : digest;
+      : todayDigest;
   const readerQueueIndex = selectedArticle ? readerQueue.findIndex(item => item.id === selectedArticle.id) : -1;
   const nextInReaderQueue = readerQueueIndex >= 0 ? readerQueue[readerQueueIndex + 1] : undefined;
-  const allDigestItemsMuted = digest.length > 0 && mutedDigestItems.length === digest.length;
+  const allDigestItemsMuted = todayDigest.length > 0 && mutedDigestItems.length === todayDigest.length;
   // A story counts as dealt with in the same way its card's status changes: opened, read
   // through, saved or voted on. Once every story is in that state, the edition is finished.
-  const allDigestItemsActioned = digest.length > 0
-    && digest.every(item => Boolean(mutedCards[item.id]) || getCardActions(item.id).hasAnyAction);
+  const allDigestItemsActioned = todayDigest.length > 0
+    && todayDigest.every(item => Boolean(mutedCards[item.id]) || getCardActions(item.id).hasAnyAction);
 
   // A new round replaces the edition under the reader's feet, so land them on its first story
   // rather than wherever the finished edition had scrolled to. Only move when the edition
@@ -3537,9 +3540,9 @@ export default function App() {
   // One count, said once: the stories that arrived, out of the length the reader asked for.
   // "6 stories worth your time" beside a pill reading "15 stories" left the reader to work out
   // which number was the setting and which was the edition.
-  const editionCountLabel = digest.length === 0
+  const editionCountLabel = todayDigest.length === 0
     ? 'No stories yet'
-    : `${digest.length} of ${itemCount} ${itemCount === 1 ? 'story' : 'stories'}`;
+    : `${todayDigest.length} of ${itemCount} ${itemCount === 1 ? 'story' : 'stories'}`;
   const archivedStoryCount = editionStoryCount(editions);
 
   const restoreAllMutedCards = () => {
@@ -3589,6 +3592,31 @@ export default function App() {
   const speechPercent = speechProgress.total > 0
     ? Math.min(100, Math.round((speechProgress.index / speechProgress.total) * 100))
     : 0;
+
+  // Which paragraph the reader is on now: the first one still in view below the sticky header.
+  const readerParagraphOnScreen = () => {
+    for (let i = 0; i < articleParagraphs.length; i += 1) {
+      const element = document.getElementById(`reader-paragraph-${i}`);
+      if (!element) continue;
+      if (element.getBoundingClientRect().bottom > 96) return i;
+    }
+    return 0;
+  };
+
+  // One listen control, reachable from any scroll position. Starting mid-article speaks from the
+  // paragraph on screen rather than dropping the reader back at the headline; once listening, the
+  // same control pauses and resumes, and the floating bar carries the rest.
+  const handleListenTap = (article: DigestItem) => {
+    if (readAloudActive) {
+      setSpeechPanelOpen(true);
+      handleToggleReadAloud(article);
+      return;
+    }
+    const queue = buildSpeechQueue(article);
+    const fromParagraph = readerParagraphOnScreen();
+    const at = queue.findIndex(chunk => chunk.paragraphIndex >= fromParagraph);
+    startSpeech(article, at === -1 ? 0 : at);
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-slate-800 selection:text-white w-full max-w-full overflow-x-clip">
@@ -3703,6 +3731,27 @@ export default function App() {
             </button>
 
             <div className="flex items-center gap-1">
+              {/* The voice is one tap away wherever the reader is: the byline's Listen sits at the
+                  top of the page and scrolls away, so this is the copy that stays. */}
+              <button
+                type="button"
+                onClick={() => handleListenTap(selectedArticle)}
+                aria-pressed={readAloudActive}
+                className={`reader-icon ${readAloudActive ? 'is-on' : ''}`}
+                title={
+                  readAloudActive
+                    ? (speechPaused ? 'Resume reading aloud' : 'Pause reading aloud')
+                    : 'Listen — read aloud from here'
+                }
+                aria-label={
+                  readAloudActive
+                    ? (speechPaused ? 'Resume reading aloud' : 'Pause reading aloud')
+                    : `Listen — read aloud from here with ${speechVoiceLabel}`
+                }
+              >
+                <Headphones className="w-4 h-4" />
+              </button>
+
               <button
                 type="button"
                 onClick={() => handleSave(selectedArticle)}
@@ -3877,13 +3926,14 @@ export default function App() {
                 <span aria-hidden="true">·</span>
                 <button
                   type="button"
-                  onClick={() => {
-                    setSpeechPanelOpen(true);
-                    if (!readAloudActive) startSpeech(selectedArticle);
-                  }}
+                  onClick={() => handleListenTap(selectedArticle)}
                   aria-pressed={readAloudActive}
                   className="reader-listen-trigger inline-flex min-h-10 items-center gap-1.5 rounded-full px-1 text-[0.75rem] font-semibold transition-colors"
-                  aria-label={readAloudActive ? 'Show the reading aloud controls' : `Listen — read aloud with ${speechVoiceLabel}`}
+                  aria-label={
+                    readAloudActive
+                      ? (speechPaused ? 'Resume reading aloud' : 'Pause reading aloud')
+                      : `Listen — read aloud with ${speechVoiceLabel}`
+                  }
                 >
                   <Headphones className="w-3.5 h-3.5" />
                   <span>{readAloudActive ? 'Listening' : 'Listen'}</span>
@@ -4184,17 +4234,17 @@ export default function App() {
               <div>
                 <h2 className="text-2xl font-semibold tracking-tight text-slate-100">{editionHeading}</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  {loadingDigest && digest.length === 0
+                  {loadingDigest && todayDigest.length === 0
                     ? "Synthesizing today's list…"
                     : `${digestCuratedAt > 0
                         ? `Built ${formatCuratedAt(digestCuratedAt)}`
-                        : digest.length > 0
+                        : todayDigest.length > 0
                           ? 'Edition date not recorded'
                           : `Today's digest · ${new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}`
                       } · ${editionCountLabel}${
                         editionMinutes > 0 ? ` · ${editionMinutes} min` : ''
                       }${
-                        editionIsToday && digest.length > 0
+                        editionIsToday && todayDigest.length > 0
                           ? ' · from the last 24 hours'
                           : ''
                       }${
@@ -4283,7 +4333,7 @@ export default function App() {
               </details>
             )}
 
-            {digestOffline && digest.length > 0 && (
+            {digestOffline && todayDigest.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-200">
                 <AlertCircle className="w-3.5 h-3.5 shrink-0" />
                 <span className="min-w-0 flex-1">
@@ -4334,7 +4384,7 @@ export default function App() {
               </div>
             )}
 
-            {loadingDigest && digest.length === 0 ? (
+            {loadingDigest && todayDigest.length === 0 ? (
               <div className="py-20 text-center text-slate-400 space-y-3">
                 <RefreshCw className="w-6 h-6 animate-spin mx-auto text-amber-500" />
                 <p className="text-sm">Synthesizing your morning reading list...</p>
@@ -4354,7 +4404,7 @@ export default function App() {
                   </div>
                 )}
               </div>
-            ) : digestError && digest.length === 0 ? (
+            ) : digestError && todayDigest.length === 0 ? (
               <div className="py-16 text-center space-y-3">
                 <AlertCircle className="w-6 h-6 mx-auto text-amber-400" />
                 <p className="text-sm font-medium text-slate-200">Couldn’t build today’s edition</p>
@@ -4374,7 +4424,7 @@ export default function App() {
                 onRestoreMuted={restoreAllMutedCards}
                 onManageSources={() => setActiveTab('sources')}
               />
-            ) : digest.length === 0 ? (
+            ) : todayDigest.length === 0 ? (
               <DigestEmptyState
                 mode="quiet"
                 mutedCount={0}

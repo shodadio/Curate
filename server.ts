@@ -31,6 +31,7 @@ import {
 import { parseOpmlText } from './lib/opml';
 import { articleLooksIncomplete, cleanHtml, htmlToReadableText, trimSummaryFurniture } from './lib/markup';
 import { parseArticleAuthor, parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
+import { buildReadableDigest } from './lib/digestAvailability';
 import { legacyStoryIdFor, storyIdFor } from './lib/storyId';
 import { findVideoEmbed, videoEmbedFromUrl, type VideoEmbed } from './lib/videoEmbed';
 import { apifyCandidatesFromDataset, apifySearchInput, apifySearchUrl } from './lib/apifySearch';
@@ -2085,8 +2086,14 @@ CURATION RULES:
 
           const aiDigest = selectDiverse(rankedItems, itemCount, maxPerSource, chosenArticles);
           if (aiDigest.length >= Math.min(itemCount, Math.max(1, candidatePool.length))) {
-            const enrichedDigest = await enrichSelectedArticles(aiDigest);
-            return res.json({ digest: enrichedDigest, generatedByAI: true, semanticSummary, feedReport });
+            const readableDigest = await buildReadableDigest(
+              aiDigest,
+              rankedItems,
+              itemCount,
+              maxPerSource,
+              enrichSelectedArticles,
+            );
+            return res.json({ digest: readableDigest, generatedByAI: true, semanticSummary, feedReport });
           }
         }
       }
@@ -2097,9 +2104,15 @@ CURATION RULES:
         maxPerSource,
         likedFeedback: feedbackExamples,
       });
-      const enrichedDigest = await enrichSelectedArticles(digest);
+      const readableDigest = await buildReadableDigest(
+        digest,
+        rankedItems,
+        itemCount,
+        maxPerSource,
+        enrichSelectedArticles,
+      );
 
-      res.json({ digest: enrichedDigest, generatedByAI: false, semanticSummary, feedReport });
+      res.json({ digest: readableDigest, generatedByAI: false, semanticSummary, feedReport });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to generate digest' });
     }
