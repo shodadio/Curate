@@ -295,9 +295,13 @@ const authorBioRole = /\b(?:editor|reporter|correspondent|columnist|writer|produ
 const authorBioTrace = /@[\w.-]+\.\w+|https?:\/\/|can be reached|follow (?:him|her|them)|\b(?:he|she|they|his|her|their)\b/i;
 const authorBioPublication = /\b(?:at|for|with)\s+\p{Lu}/u;
 
-// A stripped table can leave a comment link standing on its own ("| [20 Comments](https://…#comments)"),
-// which then reads as a bare link in the middle of the piece. Only a paragraph that holds
-// nothing but separators and comment links counts, so prose that merely mentions comments
+const sidebarActionLabel = /^(?:view all|view more|log in|sign in|sign up|subscribe|see all)$/i;
+const watchOnPublication = /^(?:watch|listen|view|play|read|see)\s+(?:on|at|in|via)\s+\p{Lu}[\p{L}\s.&'’]{1,30}$/u;
+
+// A stripped table can leave furniture links standing on their own
+// ("| [20 Comments](https://…#comments)", "| [Share](https://…) | [Print](https://…)"),
+// which then read as bare links in the middle of the piece. Only a paragraph that holds
+// nothing but separators and furniture links counts, so prose that merely mentions comments
 // or links elsewhere is left alone.
 export const isStrayCommentLink = (paragraph: string): boolean => {
   const trimmed = paragraph.trim();
@@ -309,8 +313,10 @@ export const isStrayCommentLink = (paragraph: string): boolean => {
     .filter(label => label.length > 0);
   if (!labels.length) return false;
   return labels.every(label =>
-    commentSummary.test(label) || commentPrompt.test(label) || commentSort.test(label) ||
-    threadControl.test(label));
+    label.length <= 40 && (
+      commentSummary.test(label) || commentPrompt.test(label) || commentSort.test(label) ||
+      threadControl.test(label) || toolLink.test(label) || footnoteBacklink.test(label) ||
+      sidebarActionLabel.test(label) || watchOnPublication.test(label)));
 };
 
 const isAuthorBio = (paragraph: string): boolean => {

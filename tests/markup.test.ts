@@ -459,6 +459,26 @@ test('htmlToReadableText drops a pipe plus comment link left by a stripped table
   assert.equal(prose, 'The 20 comments below shaped the piece.');
 });
 
+test('htmlToReadableText drops other content-free link debris in the same pipe shape', () => {
+  const tools = htmlToReadableText(
+    '<p>Real article text.</p><p>| <a href="https://example.com/share">Share</a> | <a href="https://example.com/print">Print</a></p><p>Real article text continues.</p>',
+  );
+  assert.equal(tools, 'Real article text.\n\nReal article text continues.');
+  const social = htmlToReadableText(
+    '<p>Real article text.</p><p>| <a href="https://example.com/t">Twitter</a> | <a href="https://example.com/f">Facebook</a></p><p>Real article text continues.</p>',
+  );
+  assert.equal(social, 'Real article text.\n\nReal article text continues.');
+  const backlink = htmlToReadableText(
+    '<p>Real article text.</p><p>| <a href="https://example.com/story#fn1">return</a></p><p>Real article text continues.</p>',
+  );
+  assert.equal(backlink, 'Real article text.\n\nReal article text continues.');
+  // A genuine single-link paragraph with real words is not furniture.
+  const genuine = htmlToReadableText(
+    '<p>Real article text.</p><p>| <a href="https://example.com/data">The full dataset</a></p><p>Real article text continues.</p>',
+  );
+  assert.equal(genuine, 'Real article text.\n\n| [The full dataset](https://example.com/data)\n\nReal article text continues.');
+});
+
 test('htmlToReadableText drops the comment thread controls after the article', () => {
   const body = htmlToReadableText(
     '<p>Real article text.</p><p>Comments</p><p>Sort by Top Sort by Recent Sort by Controversial</p><p><a href="https://example.com/story#">Hide Replies</a></p><p>Continue this thread →</p>',
