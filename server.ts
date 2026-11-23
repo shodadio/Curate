@@ -33,6 +33,7 @@ import { articleLooksIncomplete, cleanHtml, htmlToReadableText, trimSummaryFurni
 import { parseArticleAuthor, parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
 import { legacyStoryIdFor, storyIdFor } from './lib/storyId';
 import { findVideoEmbed, videoEmbedFromUrl, type VideoEmbed } from './lib/videoEmbed';
+import { apifyCandidatesFromDataset, apifySearchInput, apifySearchUrl } from './lib/apifySearch';
 
 dotenv.config();
 
@@ -55,6 +56,31 @@ interface RateBucket {
 }
 
 const rateBuckets = new Map<string, RateBucket>();
+
+// Source discovery can also spend an Apify token, which Apify meters per scraped search page.
+// The route is public and the app has no accounts, so the whole deployment gets one shared
+// ceiling per UTC day: whatever any caller does, the bill stops there. Like the rate buckets it
+// lives in memory and starts again on a redeploy, and APIFY_DAILY_LIMIT=0 turns it off.
+const apifyLimitSetting = Number(process.env.APIFY_DAILY_LIMIT || 100);
+const APIFY_DAILY_LIMIT = Number.isFinite(apifyLimitSetting) ? Math.max(0, Math.trunc(apifyLimitSetting)) : 100;
+let apifyDay = '';
+let apifySearchesToday = 0;
+
+function takeApifySearchAllowance(now = Date.now()): boolean {
+  const day = new Date(now).toISOString().slice(0, 10);
+  if (day !== apifyDay) {
+    apifyDay = day;
+    apifySearchesToday = 0;
+  }
+  if (APIFY_DAILY_LIMIT === 0 || apifySearchesToday >= APIFY_DAILY_LIMIT) return false;
+  apifySearchesToday += 1;
+  return true;
+}
+
+// Apify has to start the actor, put Google behind a proxy and only then answer: a cold run
+// measured 70 seconds end to end, where a warm one is far shorter. The socket waits longer than
+// the usual provider call for that reason, and a run that misses it falls back to the directory.
+const APIFY_SEARCH_TIMEOUT_MS = 75_000;
 
 function rateLimit(scope: string, limit: number, windowMs = RATE_WINDOW_MS) {
   return (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -134,6 +160,7 @@ async function requestProviderJson(
   targetUrl: string,
   headers: Record<string, string>,
   body?: unknown,
+  timeoutMs = 30000,
 ): Promise<any> {
   const url = await assertPublicHttpUrl(targetUrl);
   if (url.protocol !== 'https:') throw new Error('AI provider endpoints must use HTTPS.');
@@ -174,14 +201,14 @@ async function requestProviderJson(
       res.on('error', reject);
     });
 
-    req.setTimeout(30000, () => req.destroy(new Error('AI provider request timed out.')));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('AI provider request timed out.')));
     req.on('error', reject);
     req.end(body === undefined ? undefined : JSON.stringify(body));
   });
 }
 
-const postProviderJson = (targetUrl: string, headers: Record<string, string>, body: unknown) =>
-  requestProviderJson('POST', targetUrl, headers, body);
+const postProviderJson = (targetUrl: string, headers: Record<string, string>, body: unknown, timeoutMs?: number) =>
+  requestProviderJson('POST', targetUrl, headers, body, timeoutMs);
 
 const getProviderJson = (targetUrl: string, headers: Record<string, string>) =>
   requestProviderJson('GET', targetUrl, headers);
@@ -2760,8 +2787,10 @@ CURATION RULES:
     return score;
   };
 
-  // Google Search Grounding + RSS Feed Investigation endpoint
-  app.post('/api/discover-sources', rateLimit('discover-sources', 6), requestBudget('Source discovery', 45_000), async (req, res) => {
+  // Google Search Grounding + RSS Feed Investigation endpoint. The budget is the slowest the
+  // route may answer: a grounded Gemini call fits in seconds, but Apify's actor can spend a
+  // minute starting up, and the RSS probes run after whichever search answered.
+  app.post('/api/discover-sources', rateLimit('discover-sources', 6), requestBudget('Source discovery', 100_000), async (req, res) => {
     try {
       const { query, apiKey: clientApiKey, existing } = req.body;
       if (!query || typeof query !== 'string' || !query.trim()) {
@@ -2885,6 +2914,33 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
         }
       }
 
+      // Which search answered, so the screen can say so: a grounded Gemini call, Apify's Google
+      // Search actor, or the built-in directory.
+      let discoveryVia: 'gemini' | 'apify' | 'directory' =
+        discoveryAi && parsedCandidates.length > 0 ? 'gemini' : 'directory';
+
+      // Apify's Google Search actor is the second way out to the open web. It needs no key from
+      // the reader — the deployment owns the token — and it answers with the same kind of
+      // candidate (a publication and a sentence about it), so the RSS investigation below is
+      // unchanged. It runs only when nothing cheaper already answered, and only while the day's
+      // shared allowance lasts.
+      const apifyToken = (process.env.APIFY_TOKEN || '').trim();
+      if (parsedCandidates.length === 0 && apifyToken && takeApifySearchAllowance()) {
+        try {
+          const dataset = await postProviderJson(apifySearchUrl(apifyToken), {}, apifySearchInput(query), APIFY_SEARCH_TIMEOUT_MS);
+          const found = apifyCandidatesFromDataset(dataset);
+          if (found.length > 0) {
+            parsedCandidates = found.map(candidate => ({
+              ...candidate,
+              folder: query.trim().slice(0, 24),
+            }));
+            discoveryVia = 'apify';
+          }
+        } catch (err: any) {
+          console.warn('[Curator] Apify search unavailable, using the curated directory:', err?.message || err);
+        }
+      }
+
       // A grounded search can name a publication the reader already follows, which would only
       // repeat what is already in the library.
       parsedCandidates = parsedCandidates.filter(candidate =>
@@ -2931,8 +2987,10 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
 
       res.json({
         query: query.trim(),
-        // Lets the client (and a test) tell a grounded search from the built-in directory
-        aiAssisted: Boolean(discoveryAi),
+        // Which search answered. `aiAssisted` stays for clients that predate `discoveryVia`:
+        // anything that reached the web is not the built-in directory.
+        aiAssisted: discoveryVia !== 'directory',
+        discoveryVia,
         allMatchesAlreadyFollowed,
         webSearchQueries,
         groundingLinks: groundingChunks.slice(0, 8),

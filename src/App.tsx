@@ -5296,14 +5296,14 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   {discoverAllInLibrary
                     ? 'Everything Curator matched for those terms is already in your library. Try a different subject.'
                     : discoverAiAssisted === false
-                      ? 'Nothing in Curator’s built-in directory matches those terms. Add a Gemini API key in Settings to search the wider web.'
+                      ? 'Nothing in Curator’s built-in directory matches those terms. Add a Gemini API key in Settings, or an Apify token on the server, to search the wider web.'
                       : 'No matching publications found for those search terms. Try broader keywords.'}
                 </p>
               )}
 
               {discoverAiAssisted === false && discoverResults.length > 0 && (
                 <p className="text-xs text-slate-400 pb-1">
-                  Matched from Curator’s built-in directory. Add a Gemini API key in Settings to search the wider web.
+                  Matched from Curator’s built-in directory. Add a Gemini API key in Settings, or an Apify token on the server, to search the wider web.
                 </p>
               )}
 

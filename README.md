@@ -93,6 +93,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 ### 4. Google Search RSS Discovery & Feed Synthesis
 - **Search Authors & Outlets**: Enter the name of any publication, thinker, or newsletter (e.g., *Stratechery*, *Marginal Revolution*, *Dan Luu*).
 - **RSS Availability Check**: Powered by Google Search grounding to detect whether the site provides native RSS/Atom feeds, Substack endpoints, or WordPress feeds.
+- **Two Ways Out to the Web**: a grounded Google Search for readers who add their own Gemini key, and — for a deployment that owns one — an Apify token that searches through Apify's Google Search actor when no key answers, so the search still reaches the open web rather than a fixed list. Either way the results are publications, and each is probed for a real feed before it is offered.
 - **Automatic Feed Synthesis**: For publications without native feeds, Curator extracts article links and generates a clean, parsable RSS 2.0 XML endpoint via `/api/generated-feed`.
 
 ### 5. Outbound SSRF Hardening & Network Security
@@ -105,7 +106,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - Digest curation can use a configurable OpenAI-compatible chat endpoint, Anthropic, optional Gemini, or the built-in deterministic engine.
 - Semantic ranking uses a separately configured OpenAI-compatible embeddings endpoint or optional Gemini embeddings, with provider/model/base URL settings in the app.
 - Feedback examples remain browser-local; embedding vectors are short-lived server-memory cache entries. If an API is unavailable, Curator falls back to deterministic ranking.
-- Google Search grounding is an optional source-discovery adapter; without it, source discovery uses Curator's built-in publication directory.
+- Google Search grounding and Apify's Google Search actor are both optional source-discovery adapters; when neither answers, source discovery uses Curator's built-in publication directory.
 
 ### 7. OPML Import & Export
 - **One-Click Migration**: Import existing subscriptions from Feedly, Inoreader, NetNewsWire, Readwise Reader, Reeder, or NewsBlur.
@@ -313,7 +314,11 @@ Proves a feed URL works before it is added to the watch list, using the same out
 ### `POST /api/discover-sources`
 Performs a grounded search using Google Search to discover publications, assess RSS availability, and extract sample headlines.
 
-Without a Gemini key (the caller's own, or the server's when `ALLOW_SERVER_KEY=1`) the route answers from Curator's built-in publication directory instead, matched to the search terms: each directory entry names the subjects it covers, the query's words are scored against those subjects, its title, folder and summary, and the best six come back. A query the directory knows nothing about returns no results rather than an unrelated list. `aiAssisted` in the response says which path answered, and the app tells the reader when a list came from the directory.
+The route tries three ways to answer, in order, and reports which one did in `discoveryVia`.
+
+A Gemini key (the caller's own, or the server's when `ALLOW_SERVER_KEY=1`) runs a grounded Google Search. Failing that, a deployment that sets `APIFY_TOKEN` runs a search through Apify's Google Search actor — the open web again, paid for by the deployment rather than the reader. Because that token is metered per scraped page and this route is public, all callers share one ceiling per UTC day (`APIFY_DAILY_LIMIT`, default 100); a caller's search that finds the ceiling spent simply gets the next answer down.
+
+When neither reaches the web the route answers from Curator's built-in publication directory, matched to the search terms: each directory entry names the subjects it covers, the query's words are scored against those subjects, its title, folder and summary, and the best six come back. A query the directory knows nothing about returns no results rather than an unrelated list. `aiAssisted` stays true for any answer that reached the web, and the app tells the reader when a list came from the directory.
 
 Feeds the reader already follows are left out, by host, so a search never offers the same publications again.
 
@@ -326,7 +331,7 @@ Feeds the reader already follows are left out, by host, so a search never offers
 }
 ```
 
-**Response:** `{ "results": [...], "aiAssisted": false, "webSearchQueries": [], "groundingLinks": [] }`. Each result carries `title`, `siteUrl`, `folder`, `summary`, `feedUrl`, `feedFormat`, `rssStatus` (`native`, `generatable` or `none`), `sampleTitles` and an `investigationNote`.
+**Response:** `{ "results": [...], "aiAssisted": false, "discoveryVia": "directory", "webSearchQueries": [], "groundingLinks": [] }`. `discoveryVia` is `gemini`, `apify` or `directory`. Each result carries `title`, `siteUrl`, `folder`, `summary`, `feedUrl`, `feedFormat`, `rssStatus` (`native`, `generatable` or `none`), `sampleTitles` and an `investigationNote`.
 
 ---
 
@@ -403,7 +408,7 @@ Running token and cost accounting for the AI and outbound traffic the server has
 ### Prerequisites
 - **Bun**: v1.1 or higher — the committed `bun.lock` is the one authoritative lockfile, and installs are `bun install --frozen-lockfile`
 - **Node.js**: v22 — the runtime the Docker image ships (`node:22-slim`); Bun runs the server locally via `tsx`, so no separate build step is needed for development
-- *(Optional)* Provider API keys: configure an OpenAI-compatible endpoint, Anthropic, or Gemini in Curator's Settings. A server-side Gemini key is optional for Google Search-grounded discovery and Gemini-provider fallback.
+- *(Optional)* Provider API keys: configure an OpenAI-compatible endpoint, Anthropic, or Gemini in Curator's Settings. A server-side Gemini key is optional for Google Search-grounded discovery and Gemini-provider fallback, and an `APIFY_TOKEN` is optional for searching the web through Apify when no Gemini key answers.
 
 ### Installation
 
@@ -425,6 +430,13 @@ Create a `.env` file in the project root:
 # Optional server-side Gemini key for Google Search grounding,
 # or when Gemini is selected as the curation/embedding provider.
 GEMINI_API_KEY=your_gemini_api_key_here
+
+# Optional Apify token for source discovery, used when no Gemini key answers.
+# Apify bills it per scraped search page, so every caller shares one ceiling per
+# day; 0 turns Apify discovery off. An Apify token is created at
+# https://console.apify.com/account/integrations
+APIFY_TOKEN=your_apify_token_here
+APIFY_DAILY_LIMIT=100
 
 # Server port (defaults to 3000)
 PORT=3000
