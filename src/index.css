@@ -6,7 +6,8 @@
    means the browser either has it within ~100ms or keeps the fallback for that page load —
    the chrome never changes face after it is painted.
 
-   Literata carries what the reader actually reads: article bodies and the edition's headlines
+   Literata carries what the reader actually reads: article bodies and article titles
+   in the Today edition, the Feeds stream, and the Saved queue
    (and the wordmark, which was already asking for a serif). It is a text-first serif drawn in
    an optical-size axis, so the same file sets a headline at 24px and a paragraph at 18px
    properly. It uses `swap` rather than `optional`: on a reading app the wrong face on the
