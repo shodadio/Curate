@@ -1010,10 +1010,13 @@ export default function App() {
   // Settings
   // Three lengths, named rather than a row of bare numbers: the reader is picking a dose of
   // reading, so each one says what it costs in minutes as well as how many stories.
+  // Ranges, not a single number: the edition's minutes come from the stories it found, and
+  // measured editions ran 14 minutes at five, 40 at eight, and 47 at a Deep that could only
+  // fill ten of its fifteen. A fixed guess contradicted the dateline on the first screen.
   const DIGEST_DOSES = [
-    { count: 5, label: 'Brief', hint: '~20 min' },
-    { count: 8, label: 'Standard', hint: '~35 min' },
-    { count: 15, label: 'Deep', hint: '~70 min' },
+    { count: 5, label: 'Brief', hint: '10–20 min' },
+    { count: 8, label: 'Standard', hint: '30–45 min' },
+    { count: 15, label: 'Deep', hint: '45–75 min' },
   ] as const;
   const DIGEST_ITEM_COUNTS: number[] = DIGEST_DOSES.map(dose => dose.count);
   const READ_THROUGH_DEPTH = 85;
@@ -3696,7 +3699,7 @@ export default function App() {
             type="button"
             onClick={() => setItemCount(dose.count)}
             aria-pressed={selected}
-            aria-label={`${dose.label} — ${dose.count} stories, about ${dose.hint.replace('~', '')}`}
+            aria-label={`${dose.label} — ${dose.count} stories, ${dose.hint}`}
             className={`min-h-[68px] rounded-xl px-2 py-2.5 text-center transition ${
               selected ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'
             }`}
