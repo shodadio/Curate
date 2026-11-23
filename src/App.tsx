@@ -1008,7 +1008,14 @@ export default function App() {
   const startupApiCheckStartedRef = React.useRef(false);
 
   // Settings
-  const DIGEST_ITEM_COUNTS = [3, 5, 8, 12, 15] as const;
+  // Three lengths, named rather than a row of bare numbers: the reader is picking a dose of
+  // reading, so each one says what it costs in minutes as well as how many stories.
+  const DIGEST_DOSES = [
+    { count: 5, label: 'Brief', hint: '~20 min' },
+    { count: 8, label: 'Standard', hint: '~35 min' },
+    { count: 15, label: 'Deep', hint: '~70 min' },
+  ] as const;
+  const DIGEST_ITEM_COUNTS: number[] = DIGEST_DOSES.map(dose => dose.count);
   const READ_THROUGH_DEPTH = 85;
   // 75s covers a Cloud Run cold start plus a feed sweep; the softer hint at 20s gives the
   // reader a way out long before that.
@@ -3677,12 +3684,41 @@ export default function App() {
       window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
     }
   }, [loadingDigest, digest, activeTab]);
+  // One row of doses, drawn the same in the Today edition sheet and in Settings: the word
+  // carries the intent, the number the count, and the hint the time it will take.
+  const renderDoseRow = (ariaLabel: string) => (
+    <div role="group" aria-label={ariaLabel} className="grid grid-cols-3 gap-2">
+      {DIGEST_DOSES.map((dose) => {
+        const selected = itemCount === dose.count;
+        return (
+          <button
+            key={dose.count}
+            type="button"
+            onClick={() => setItemCount(dose.count)}
+            aria-pressed={selected}
+            aria-label={`${dose.label} — ${dose.count} stories, about ${dose.hint.replace('~', '')}`}
+            className={`min-h-[68px] rounded-xl px-2 py-2.5 text-center transition ${
+              selected ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span className="block text-[10px] font-semibold uppercase tracking-[0.14em]">{dose.label}</span>
+            <span className="mt-1 block text-lg font-semibold leading-none">{dose.count}</span>
+            <span className={`mt-1 block text-[10px] leading-none ${selected ? 'text-slate-400' : 'text-slate-500'}`}>{dose.hint}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+
   // One count, said once: the stories that arrived, out of the length the reader asked for.
   // "6 stories worth your time" beside a pill reading "15 stories" left the reader to work out
   // which number was the setting and which was the edition.
+  // The dose has a name now, so the header uses it: "Standard · 8 of 8 stories · 35 min" says
+  // which length the reader chose without making them open the sheet to find out.
+  const currentDose = DIGEST_DOSES.find(dose => dose.count === itemCount) ?? DIGEST_DOSES[1];
   const editionCountLabel = todayDigest.length === 0
-    ? 'No stories yet'
-    : `${todayDigest.length} of ${itemCount} ${itemCount === 1 ? 'story' : 'stories'}`;
+    ? `${currentDose.label} · no stories yet`
+    : `${currentDose.label} · ${todayDigest.length} of ${itemCount} ${itemCount === 1 ? 'story' : 'stories'}`;
 
   // The front page sets the edition by size: one lead, two second reads, and the rest as a
   // ruled index. The engine's order is kept inside each group, so the top of the page is still
@@ -4354,10 +4390,11 @@ export default function App() {
                   onClick={() => setShowDigestSettings(true)}
                   aria-haspopup="dialog"
                   aria-expanded={showDigestSettings}
-                  aria-label={`Edition settings — ${itemCount} stories per edition`}
-                  className="inline-flex min-h-9 items-center text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-300 transition hover:text-amber-300"
+                  aria-label={`Edition settings — ${currentDose.label}, ${itemCount} stories per edition`}
+                  className="inline-flex min-h-9 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-300 transition hover:text-amber-300"
                 >
                   Edition
+                  <span className="text-amber-300/90">{currentDose.label}</span>
                 </button>
                 <span aria-hidden="true" className="text-[10px] text-slate-700">·</span>
                 <button
@@ -6178,21 +6215,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
               <div className="space-y-4 rounded-2xl border border-slate-700/60 bg-slate-950/40 p-4">
                 <div>
                   <span className="block text-xs font-medium text-slate-300 mb-2">Stories per edition</span>
-                  <div role="group" aria-label="Stories per edition in settings" className="grid grid-cols-5 gap-1.5">
-                    {DIGEST_ITEM_COUNTS.map(num => (
-                      <button
-                        key={num}
-                        type="button"
-                        onClick={() => setItemCount(num)}
-                        aria-pressed={itemCount === num}
-                        className={`min-h-11 rounded-xl text-sm font-medium transition ${
-                          itemCount === num ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'
-                        }`}
-                      >
-                        {num}
-                      </button>
-                    ))}
-                  </div>
+                  {renderDoseRow('Stories per edition in settings')}
                 </div>
                 <div>
                   <label htmlFor="serendipity-slider-settings" className="flex items-baseline justify-between text-xs font-medium text-slate-300">
@@ -7246,21 +7269,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
             <div>
               <span className="block text-xs font-medium text-slate-300 mb-2">Stories per edition</span>
-              <div role="group" aria-label="Stories per edition" className="grid grid-cols-5 gap-1.5">
-                {DIGEST_ITEM_COUNTS.map(num => (
-                  <button
-                    key={num}
-                    type="button"
-                    onClick={() => setItemCount(num)}
-                    aria-pressed={itemCount === num}
-                    className={`min-h-11 rounded-xl text-sm font-medium transition ${
-                      itemCount === num ? 'bg-slate-800 text-slate-100 shadow-inner' : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    {num}
-                  </button>
-                ))}
-              </div>
+              {renderDoseRow('Stories per edition')}
             </div>
 
             <div>
