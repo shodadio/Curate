@@ -2987,6 +2987,9 @@ export default function App() {
     // Only show Opened when there is a matching in-reader timestamp or reading progress.
     const hasReaderOpenRecord = readArticleIds.includes(itemId) && Boolean(stats?.lastRead);
     const isClicked = hasReaderOpenRecord || Boolean(stats?.maxDepth && stats.maxDepth > 0);
+    // The one word a card's status slot can say. Votes and saves are already visible on their own
+    // controls, so they never take this slot: it only answers "have I been in this piece?".
+    const openedLabel = stats?.maxDepth ? `${stats.maxDepth}% read` : 'Opened';
     const isVotedMore = Boolean(signals.moreIds?.includes(itemId));
     const isVotedLess = Boolean(signals.lessIds?.includes(itemId));
     const isSaved = savedIds.includes(itemId);
@@ -3019,6 +3022,7 @@ export default function App() {
       isVotedMore,
       isVotedLess,
       isSaved,
+      openedLabel,
       actionTags,
       summaryText: actionTags.length > 0 ? actionTags.map(t => t.label).join(' · ') : 'None',
     };
@@ -3328,7 +3332,6 @@ export default function App() {
     }
   }, [digest, feedStreamArticles, savedIds]);
 
-  const unreadSourceCount = sources.filter(source => !readSourceIds.includes(source.id)).length;
   const sourcesByFolder = sources.reduce((acc, src) => {
     const folder = displayFolder(src.folder);
     if (!acc[folder]) acc[folder] = [];
@@ -3439,8 +3442,8 @@ export default function App() {
   const editionItems = digest.filter(item => !mutedCards[item.id]);
   const editionMinutes = editionItems.reduce((total, item) => total + (parseInt(item.readTime, 10) || 0), 0);
   const allDigestItemsMuted = digest.length > 0 && mutedDigestItems.length === digest.length;
-  // A story counts as dealt with in the same way its card turns green: opened, read through,
-  // saved or voted on. Once every story is in that state, the edition is finished for now.
+  // A story counts as dealt with in the same way its card's status changes: opened, read
+  // through, saved or voted on. Once every story is in that state, the edition is finished.
   const allDigestItemsActioned = digest.length > 0
     && digest.every(item => Boolean(mutedCards[item.id]) || getCardActions(item.id).hasAnyAction);
 
@@ -3466,12 +3469,12 @@ export default function App() {
       window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
     }
   }, [loadingDigest, digest, activeTab]);
-  // Say how much is actually readable, so a fully muted digest never claims items are waiting.
-  const digestSummaryLabel = digest.length === 0
+  // One count, said once: the stories that arrived, out of the length the reader asked for.
+  // "6 stories worth your time" beside a pill reading "15 stories" left the reader to work out
+  // which number was the setting and which was the edition.
+  const editionCountLabel = digest.length === 0
     ? 'No stories yet'
-    : mutedDigestItems.length > 0
-      ? `${digest.length} ${digest.length === 1 ? 'story' : 'stories'} · ${mutedDigestItems.length} hidden`
-      : `${digest.length} ${digest.length === 1 ? 'story' : 'stories'} worth your time`;
+    : `${digest.length} of ${itemCount} ${itemCount === 1 ? 'story' : 'stories'}`;
   const archivedStoryCount = editionStoryCount(editions);
 
   const restoreAllMutedCards = () => {
@@ -4089,18 +4092,18 @@ export default function App() {
                   {loadingDigest && digest.length === 0
                     ? "Synthesizing today's list…"
                     : `${digestCuratedAt > 0
-                        ? `Built ${formatCuratedAt(digestCuratedAt)}${editionIsToday ? '' : ' — not today’s'}`
+                        ? `Built ${formatCuratedAt(digestCuratedAt)}`
                         : digest.length > 0
                           ? 'Edition date not recorded'
                           : `Today's digest · ${new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}`
-                      } · ${digestSummaryLabel}${
+                      } · ${editionCountLabel}${
+                        editionMinutes > 0 ? ` · ${editionMinutes} min` : ''
+                      }${
                         editionIsToday && digest.length > 0
                           ? ' · from the last 24 hours'
                           : ''
                       }${
-                        semanticSummary && semanticSummary.feedbackExamples > 0
-                          ? ` · ranked from ${semanticSummary.feedbackExamples} vote example${semanticSummary.feedbackExamples === 1 ? '' : 's'}`
-                          : ''
+                        mutedDigestItems.length > 0 ? ` · ${mutedDigestItems.length} hidden` : ''
                       }`}
                 </p>
               </div>
@@ -4110,10 +4113,11 @@ export default function App() {
                   onClick={() => setShowDigestSettings(true)}
                   aria-haspopup="dialog"
                   aria-expanded={showDigestSettings}
+                  aria-label={`Edition settings — ${itemCount} stories per edition${compactCards ? ', compact cards' : ''}`}
                   className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/60 px-3 font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300"
                 >
                   <Sliders className="w-3.5 h-3.5 text-amber-400" />
-                  <span>{itemCount} stories</span>
+                  <span>{itemCount} per edition</span>
                   {compactCards && <span className="text-slate-400">· compact</span>}
                 </button>
               </div>
@@ -4188,7 +4192,7 @@ export default function App() {
               <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-200">
                 <AlertCircle className="w-3.5 h-3.5 shrink-0" />
                 <span className="min-w-0 flex-1">
-                  Can’t reach the server, so this is your last edition{digestCuratedAt > 0 ? ` from ${formatCuratedAt(digestCuratedAt)}` : ''} — not today’s.
+                  Can’t reach the server, so this is your last edition{digestCuratedAt > 0 ? ` from ${formatCuratedAt(digestCuratedAt)}` : ''}.
                 </span>
                 <button
                   type="button"
@@ -4341,11 +4345,7 @@ export default function App() {
                           openArticle(item);
                         }
                       }}
-                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 overflow-hidden relative ${item.articleUnavailable ? 'cursor-default' : 'cursor-pointer'} ${
-                        actions.hasAnyAction
-                          ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
-                          : 'bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.12)] hover:border-amber-500/60 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(245,158,11,0.35)]'
-                      }`}
+                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 overflow-hidden relative ${item.articleUnavailable ? 'cursor-default' : 'cursor-pointer'} bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.12)] hover:border-amber-500/60 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(245,158,11,0.35)]`}
                     >
                       {/* Author sub-header with Substack branding and Actioned status */}
                       <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex items-center justify-between`}>
@@ -4402,21 +4402,13 @@ export default function App() {
                               <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
                               <span>Read</span>
                             </div>
-                          ) : actions.isVotedMore ? (
-                            <div className="flex items-center px-2 py-1 rounded-full bg-amber-950/90 border border-amber-500/50" title="More like this">
-                              <ThumbsUp className="w-3.5 h-3.5 text-amber-400" />
-                            </div>
-                          ) : actions.isVotedLess ? (
-                            <div className="flex items-center px-2 py-1 rounded-full bg-rose-950/90 border border-rose-500/50" title="Less like this">
-                              <ThumbsDown className="w-3.5 h-3.5 text-rose-400" />
-                            </div>
                           ) : actions.isClicked ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300">
-                              <span>Opened</span>
+                            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300" title={`Opened in Curator — ${actions.openedLabel}`}>
+                              <span>{actions.openedLabel}</span>
                             </div>
                           ) : (
-                            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-medium text-slate-400">
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-medium text-slate-400" title="Not opened yet">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                               <span>New</span>
                             </div>
                           )}
@@ -4471,7 +4463,10 @@ export default function App() {
                             {item.articleUnavailable ? (
                               // No article came back for this piece, so the card stops offering a reader
                               // view: the note stands where the button was, and the publisher's link reads it.
-                              <span className="inline-flex min-h-11 items-center rounded-lg px-1 text-xs font-medium text-slate-500">
+                              <span
+                                className="inline-flex min-h-11 items-center rounded-lg px-1 text-xs font-medium text-slate-500"
+                                title="Curator could not read an article from this page. The original link beside it opens the piece on the publisher’s site."
+                              >
                                 No article or available content
                               </span>
                             ) : (
@@ -4591,11 +4586,7 @@ export default function App() {
                               openArticle(item);
                             }
                           }}
-                          className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 overflow-hidden relative ${item.articleUnavailable ? 'cursor-default' : 'cursor-pointer'} ${
-                            actions.hasAnyAction
-                              ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
-                              : 'bg-slate-900/95 border-2 border-rose-600/70 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(244,63,94,0.3)] hover:border-rose-500 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(244,63,94,0.45)]'
-                          }`}
+                          className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 overflow-hidden relative ${item.articleUnavailable ? 'cursor-default' : 'cursor-pointer'} bg-slate-900/95 border-2 border-rose-600/70 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(244,63,94,0.3)] hover:border-rose-500 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(244,63,94,0.45)]`}
                         >
                           <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex flex-wrap items-center justify-between gap-x-3 gap-y-2`}>
                             <div className="flex items-center gap-3 min-w-0 max-w-full">
@@ -4652,19 +4643,16 @@ export default function App() {
                                   <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
                                   <span>Read</span>
                                 </div>
-                              ) : actions.isVotedMore ? (
-                                <div className="flex items-center px-2 py-1 rounded-full bg-amber-950/90 border border-amber-500/50" title="More like this">
-                                  <ThumbsUp className="w-3.5 h-3.5 text-amber-400" />
-                                </div>
-                              ) : actions.isVotedLess ? (
-                                <div className="flex items-center px-2 py-1 rounded-full bg-rose-950/90 border border-rose-500/50" title="Less like this">
-                                  <ThumbsDown className="w-3.5 h-3.5 text-rose-400" />
-                                </div>
                               ) : actions.isClicked ? (
-                                <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300">
-                                  <span>Opened</span>
+                                <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300" title={`Opened in Curator — ${actions.openedLabel}`}>
+                                  <span>{actions.openedLabel}</span>
                                 </div>
-                              ) : null}
+                              ) : (
+                                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-medium text-slate-400" title="Not opened yet">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                                  <span>New</span>
+                                </div>
+                              )}
                               <span className="text-xs uppercase font-semibold tracking-wider bg-rose-950/80 text-rose-300 px-2.5 py-0.5 rounded-full border border-rose-800/60">
                                 Outside your bubble
                               </span>
@@ -4711,7 +4699,10 @@ export default function App() {
                                 {item.articleUnavailable ? (
                                   // No article came back for this piece, so the card stops offering a
                                   // reader view: the note stands where the button was.
-                                  <span className="inline-flex min-h-11 items-center rounded-lg px-1 text-xs font-medium text-slate-500">
+                                  <span
+                                    className="inline-flex min-h-11 items-center rounded-lg px-1 text-xs font-medium text-slate-500"
+                                    title="Curator could not read an article from this page. The original link beside it opens the piece on the publisher’s site."
+                                  >
                                     No article or available content
                                   </span>
                                 ) : (
@@ -4916,11 +4907,7 @@ export default function App() {
                           openArticle(item);
                         }
                       }}
-                      className={`p-5 rounded-2xl transition-all duration-300 cursor-pointer space-y-3 relative ${
-                        actions.hasAnyAction
-                          ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_16px_40px_-6px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.3)] hover:border-emerald-400'
-                          : 'bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_16px_40px_-6px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.1)] hover:border-amber-500/50'
-                      }`}
+                      className="relative cursor-pointer space-y-3 rounded-2xl border-2 border-slate-700/80 bg-slate-900/95 p-5 shadow-[0_16px_40px_-6px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.1)] transition-all duration-300 hover:border-amber-500/50"
                     >
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
                         <span title={item.source} className="font-semibold text-slate-200 min-w-0 truncate">{item.source}</span>
@@ -4931,8 +4918,8 @@ export default function App() {
                           <Bookmark className="w-3 h-3 fill-amber-400" /> Saved
                         </span>
                         {actions.isReadThrough && (
-                          <span className="text-emerald-400 font-semibold inline-flex items-center gap-1">
-                            <Check className="w-3 h-3 stroke-[3]" /> Read through
+                          <span className="text-emerald-400 font-semibold inline-flex items-center gap-1" title="Read through completed">
+                            <Check className="w-3 h-3 stroke-[3]" /> Read
                           </span>
                         )}
                       </div>
@@ -6485,11 +6472,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                           openArticle(item);
                         }
                       }}
-                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative ${
-                        actions.hasAnyAction
-                          ? 'bg-slate-900/95 border-2 border-emerald-500/60 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(16,185,129,0.35)] hover:border-emerald-400 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(16,185,129,0.5)]'
-                          : 'bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.12)] hover:border-amber-500/60 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(245,158,11,0.35)]'
-                      }`}
+                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.12)] hover:border-amber-500/60 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(245,158,11,0.35)]`}
                     >
                       <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex items-center justify-between`}>
                         <div className="flex items-center gap-3 min-w-0">
@@ -6549,21 +6532,13 @@ Search for writers, publications, or topics. Curator checks whether each result 
                               <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
                               <span>Read</span>
                             </div>
-                          ) : actions.isVotedMore ? (
-                            <div className="flex items-center px-2 py-1 rounded-full bg-amber-950/90 border border-amber-500/50" title="More like this">
-                              <ThumbsUp className="w-3.5 h-3.5 text-amber-400" />
-                            </div>
-                          ) : actions.isVotedLess ? (
-                            <div className="flex items-center px-2 py-1 rounded-full bg-rose-950/90 border border-rose-500/50" title="Less like this">
-                              <ThumbsDown className="w-3.5 h-3.5 text-rose-400" />
-                            </div>
                           ) : actions.isClicked ? (
-                            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300">
-                              <span>Opened</span>
+                            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300" title={`Opened in Curator — ${actions.openedLabel}`}>
+                              <span>{actions.openedLabel}</span>
                             </div>
                           ) : (
-                            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-medium text-slate-400">
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-medium text-slate-400" title="Not opened yet">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                               <span>New</span>
                             </div>
                           )}
@@ -6678,31 +6653,23 @@ Search for writers, publications, or topics. Curator checks whether each result 
           <button 
             type="button"
             onClick={() => setActiveTab('feeds')}
-            aria-label={unreadSourceCount > 0 ? `Feeds, ${unreadSourceCount} unread` : 'Feeds'}
             className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'feeds' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
-            <div className="relative">
-              <Rss className="w-5 h-5" />
-              {unreadSourceCount > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 inline-flex h-[1.15rem] min-w-[1.15rem] items-center justify-center rounded-full bg-orange-500 px-1 text-[10px] font-bold leading-none text-slate-950">
-                  {unreadSourceCount > 9 ? '9+' : unreadSourceCount}
-                </span>
-              )}
-            </div>
+            <Rss className="w-5 h-5" />
             <span className="text-xs tracking-tight">Feeds</span>
           </button>
 
           <button 
             type="button"
             onClick={() => setActiveTab('saved')}
-            aria-label={savedIds.length > 0 ? `Saved, ${savedIds.length} saved` : 'Saved'}
+            aria-label={savedDigestItems.length > 0 ? `Saved, ${savedDigestItems.length} saved` : 'Saved'}
             className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'saved' ? 'text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <div className="relative">
               <Bookmark className="w-5 h-5" />
-              {savedIds.length > 0 && (
+              {savedDigestItems.length > 0 && (
                 <span className="absolute -top-1.5 -right-1.5 inline-flex h-[1.15rem] min-w-[1.15rem] items-center justify-center rounded-full bg-orange-500 px-1 text-[10px] font-bold leading-none text-slate-950">
-                  {savedIds.length > 9 ? '9+' : savedIds.length}
+                  {savedDigestItems.length > 99 ? '99+' : savedDigestItems.length}
                 </span>
               )}
             </div>
