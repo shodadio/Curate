@@ -1243,6 +1243,18 @@ export default function App() {
     if (activeTab !== 'settings') lastTabBeforeSettingsRef.current = activeTab;
   }, [activeTab]);
 
+  // Each tab keeps its own scroll position. Returning to Saved used to land at whatever offset
+  // the previous tab had scrolled to, halfway down a list the reader had not moved.
+  const tabScrollPositionsRef = React.useRef<Record<string, number>>({});
+  const previousTabRef = React.useRef(activeTab);
+  useEffect(() => {
+    const previous = previousTabRef.current;
+    if (previous === activeTab) return;
+    tabScrollPositionsRef.current[previous] = window.scrollY;
+    previousTabRef.current = activeTab;
+    window.scrollTo({ top: tabScrollPositionsRef.current[activeTab] ?? 0, left: 0, behavior: 'auto' });
+  }, [activeTab]);
+
   // A new stream, a new filter or a typed search starts the list again at one page.
   useEffect(() => { setFeedVisibleCount(LIST_PAGE_SIZE); }, [selectedFeedSource, feedStreamRenderKey]);
   useEffect(() => { setSourceVisibleCount(LIST_PAGE_SIZE); }, [sourceSearch]);
@@ -2565,6 +2577,14 @@ export default function App() {
     return String(Math.round(safe));
   };
 
+  // A Substack feed often carries the writer's name in the publication's own title, which put
+  // "By Sam Freedman" straight after "Comment is Freed (Sam Freedman)". Say it once.
+  const bylineFor = (item: { author?: string; source: string }): string => {
+    const author = (item.author || '').trim();
+    if (!author) return '';
+    return item.source.toLowerCase().includes(author.toLowerCase()) ? '' : `By ${author}`;
+  };
+
   const getShortSourceTitle = (title: string): string => {
     if (!title) return '';
     let clean = title.trim();
@@ -2632,6 +2652,15 @@ export default function App() {
     } finally {
       setRefreshingSourceId(null);
     }
+  };
+
+  // A description that failed once is not a dead end: clearing the record and the failure flag
+  // lets the description effect ask for it again, so the reader does not have to reload the app.
+  const retrySourceDescription = (sourceId: string) => {
+    sourceDescriptionRequestsRef.current.delete(sourceId);
+    setSources(prev => prev.map(source => source.id === sourceId
+      ? { ...source, descriptionFetchFailed: false, descriptionCheckedAt: undefined }
+      : source));
   };
 
   // Re-read every watched feed — and only the feeds. It never rebuilds the digest, so a refresh
@@ -3420,9 +3449,16 @@ export default function App() {
   }, [selectedArticle, activeTab]);
 
   // Editable feed categories, rather than organizational folders, seed interest suggestions.
-  const interestSuggestions = suggestionsFromFolders(sources.flatMap(src =>
-    normalizeCategoryLabels(src.categories, src.folder)
-  ));
+  // A folder carried by several feeds is a subject worth offering; a label carried by one feed is
+  // that feed's own name (a folder called "Substack"), which made a poor suggestion either way.
+  const interestSuggestions = suggestionsFromFolders((() => {
+    const counts = new Map<string, number>();
+    sources.forEach(src => {
+      const labels = new Set(normalizeCategoryLabels(src.categories, src.folder).map(label => label.trim()).filter(Boolean));
+      labels.forEach(label => counts.set(label, (counts.get(label) || 0) + 1));
+    });
+    return [...counts.entries()].filter(([, count]) => count > 1).map(([label]) => label);
+  })());
 
   // Pieces saved before the cleaner kept links, which the Saved header can upgrade in one pass.
   const staleSavedCount = savedArticles.filter(articleNeedsLinkRefresh).length;
@@ -3461,6 +3497,15 @@ export default function App() {
   const editionSheetTitle = digest.length === 0 || editionIsToday ? 'Today\u2019s edition' : 'Your last edition';
   const editionItems = digest.filter(item => !mutedCards[item.id]);
   const editionMinutes = editionItems.reduce((total, item) => total + (parseInt(item.readTime, 10) || 0), 0);
+  // The piece after the open one in the list the reader came from, so the end of an article can
+  // continue into the next story instead of simply stopping.
+  const readerQueue = activeTab === 'saved'
+    ? savedDigestItems
+    : activeTab === 'feeds'
+      ? feedStreamArticles
+      : digest;
+  const readerQueueIndex = selectedArticle ? readerQueue.findIndex(item => item.id === selectedArticle.id) : -1;
+  const nextInReaderQueue = readerQueueIndex >= 0 ? readerQueue[readerQueueIndex + 1] : undefined;
   const allDigestItemsMuted = digest.length > 0 && mutedDigestItems.length === digest.length;
   // A story counts as dealt with in the same way its card's status changes: opened, read
   // through, saved or voted on. Once every story is in that state, the edition is finished.
@@ -3944,6 +3989,36 @@ export default function App() {
                   </button>
                 )}
               </div>
+
+              {savedIds.includes(selectedArticle.id) && (
+                <p className="reader-dim mt-3 inline-flex items-center gap-1.5 text-xs">
+                  <Bookmark className="w-3 h-3 fill-current" />
+                  Saved to your queue
+                </p>
+              )}
+
+              {/* The page ends with somewhere to go: the next story in the list it came from, and
+                  the way back to that list. Reaching the bottom used to be a dead end. */}
+              <div className="mt-6 flex w-full flex-wrap items-center justify-center gap-2">
+                {nextInReaderQueue && (
+                  <button
+                    type="button"
+                    onClick={() => openArticle(nextInReaderQueue)}
+                    className="reader-button inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full border px-4 text-xs font-semibold transition"
+                    title={`Next: ${nextInReaderQueue.title}`}
+                  >
+                    <span className="truncate">Next: {nextInReaderQueue.title}</span>
+                    <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={closeArticle}
+                  className="reader-dim-button inline-flex min-h-11 items-center rounded-full border border-transparent px-4 text-xs font-medium transition"
+                >
+                  {readerBackLabel}
+                </button>
+              </div>
             </footer>
           </main>
 
@@ -4400,13 +4475,13 @@ export default function App() {
                             <div
                               className="mt-0.5 truncate text-[13px] text-slate-400"
                               title={[
-                                item.author ? `By ${item.author}` : '',
+                                bylineFor(item),
                                 decodeEntities(item.publishedAt || '30m'),
                                 decodeEntities(item.readTime || ''),
                               ].filter(Boolean).join(' · ')}
                             >
                               {[
-                                item.author ? `By ${item.author}` : '',
+                                bylineFor(item),
                                 decodeEntities(item.publishedAt || '30m'),
                                 decodeEntities(item.readTime || ''),
                               ].filter(Boolean).join(' · ')}
@@ -4926,7 +5001,7 @@ export default function App() {
                     >
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
                         <span title={item.source} className="font-semibold text-slate-200 min-w-0 truncate">{item.source}</span>
-                        {item.author && <span className="min-w-0 truncate">By {item.author}</span>}
+                        {bylineFor(item) && <span className="min-w-0 truncate">{bylineFor(item)}</span>}
                         {item.publishedAt && <span>{decodeEntities(item.publishedAt)}</span>}
                         <span>{item.readTime}</span>
                         <span className="text-amber-400 font-semibold inline-flex items-center gap-1">
@@ -4974,7 +5049,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                          className="inline-flex min-h-11 items-center rounded-xl px-3 text-xs text-rose-300 hover:bg-rose-500/10 hover:text-rose-200 font-medium transition"
+                          className="inline-flex min-h-11 items-center rounded-xl px-3 text-xs text-slate-400 hover:bg-slate-800/60 hover:text-amber-300 font-medium transition"
                           aria-label={`Unsave ${item.title}`}
                         >
                           Unsave
@@ -4983,6 +5058,11 @@ export default function App() {
                     </article>
                   );
                 })}
+                {savedVisibleItems.length > 0 && (
+                  <p className="pt-2 text-center text-xs text-slate-500">
+                    End of your saved queue · {savedVisibleItems.length} {savedVisibleItems.length === 1 ? 'story' : 'stories'}
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -5468,12 +5548,21 @@ Search for writers, publications, or topics. Curator checks whether each result 
                                 )}
                               />
                             ) : (
-                              <p className={`text-xs ${src.descriptionFetchFailed ? 'text-rose-400' : 'text-slate-600'}`}>
-                                {src.descriptionFetchFailed
-                                  ? 'Could not load this site description.'
-                                  : src.descriptionCheckedAt
-                                    ? 'This site has not provided a description.'
-                                    : 'Loading site description…'}
+                              <p className="text-xs text-slate-600">
+                                {src.descriptionFetchFailed ? (
+                                  <>
+                                    <span className="text-rose-400">Could not load this site description.</span>{' '}
+                                    <button
+                                      type="button"
+                                      onClick={() => retrySourceDescription(src.id)}
+                                      className="font-medium text-amber-300 underline underline-offset-2 transition hover:text-amber-200"
+                                    >
+                                      Try again
+                                    </button>
+                                  </>
+                                ) : src.descriptionCheckedAt
+                                  ? 'This site has not provided a description.'
+                                  : 'Loading site description…'}
                               </p>
                             )}
                           </div>
@@ -6145,7 +6234,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     aria-valuetext={`${serendipityDial}% outside your usual interests`}
                     className="mt-2 w-full accent-amber-500 cursor-pointer"
                   />
-                  <p className="mt-1 text-xs leading-relaxed text-slate-400">of the edition comes from outside your usual interests</p>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-400">{loadingDigest ? 'Rebuilding your edition…' : 'of the edition comes from outside your usual interests'}</p>
                 </div>
               </div>
 
@@ -6329,7 +6418,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     disabled={sources.length === 0}
                     className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl border border-rose-500/40 px-3.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    Reset all sources
+                    Delete {sources.length} subscription{sources.length === 1 ? '' : 's'}
                   </button>
                 </div>
                 <div className="flex flex-col gap-3 rounded-2xl border border-rose-500/20 bg-rose-500/5 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -6345,7 +6434,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     disabled={!hasReadingProfile}
                     className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl border border-rose-500/40 px-3.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    Reset reading preferences
+                    Clear votes and interests
                   </button>
                 </div>
                 <div className="flex flex-col gap-3 rounded-2xl border border-rose-500/30 bg-rose-500/10 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -6360,7 +6449,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     onClick={factoryReset}
                     className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl bg-rose-500/15 px-3.5 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/25"
                   >
-                    Factory reset
+                    Erase everything in this browser
                   </button>
                 </div>
               </div>
@@ -6530,7 +6619,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
             {loadingFeedStream ? (
               <div className="py-20 text-center text-slate-400 space-y-3">
                 <RefreshCw className="w-6 h-6 animate-spin mx-auto text-amber-500" />
-                <p className="text-sm">Loading feed stream...</p>
+                <span className="sr-only">Loading feed stream</span>
               </div>
             ) : feedStreamArticles.length === 0 ? (
               <div className="py-20 text-center text-slate-400 space-y-2">
@@ -6595,13 +6684,13 @@ Search for writers, publications, or topics. Curator checks whether each result 
                             <div
                               className="mt-0.5 truncate text-[13px] text-slate-400"
                               title={[
-                                item.author ? `By ${item.author}` : '',
+                                bylineFor(item),
                                 decodeEntities(item.publishedAt || ''),
                                 decodeEntities(item.readTime || ''),
                               ].filter(Boolean).join(' · ')}
                             >
                               {[
-                                item.author ? `By ${item.author}` : '',
+                                bylineFor(item),
                                 decodeEntities(item.publishedAt || ''),
                                 decodeEntities(item.readTime || ''),
                               ].filter(Boolean).join(' · ')}
@@ -6723,6 +6812,11 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     Show {Math.min(LIST_PAGE_SIZE, feedStreamArticles.length - feedVisibleCount)} more entries
                     <span className="text-slate-500"> · {feedStreamArticles.length - feedVisibleCount} left</span>
                   </button>
+                )}
+                {feedStreamArticles.length > 0 && feedStreamArticles.length <= feedVisibleCount && (
+                  <p className="pt-2 text-center text-xs text-slate-500">
+                    End of the stream · {feedStreamArticles.length} {feedStreamArticles.length === 1 ? 'entry' : 'entries'}
+                  </p>
                 )}
               </div>
             )}
@@ -7388,7 +7482,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 aria-valuetext={`${serendipityDial}% outside your usual interests`}
                 className="mt-2 w-full accent-amber-500 cursor-pointer"
               />
-              <p className="mt-1 text-xs leading-relaxed text-slate-400">of the edition comes from outside your usual interests</p>
+              <p className="mt-1 text-xs leading-relaxed text-slate-400">{loadingDigest ? 'Rebuilding your edition…' : 'of the edition comes from outside your usual interests'}</p>
             </div>
 
             <button

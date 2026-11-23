@@ -101,7 +101,9 @@ function InterestRow({
         </button>
       </div>
 
-      {unusedSuggestions.length > 0 && (
+      {/* Suggestions belong to the "more" list only: offering the same folder chips under both
+          lists read as a stray chip repeated, not as a choice. */}
+      {group === 'more' && unusedSuggestions.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs text-slate-400">From your folders:</span>
           {unusedSuggestions.map(label => (

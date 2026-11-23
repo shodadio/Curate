@@ -79,13 +79,21 @@ body {
   bottom: max(0.75rem, env(safe-area-inset-bottom));
 }
 
+/* The dock is a row of buttons on a dark pill, so it takes the app's accent as its focus ring.
+   The browser's default blue rectangle read as a rendering fault rather than a focus cue. */
+.safe-dock button:focus-visible {
+  outline: 2px solid #f59e0b;
+  outline-offset: 2px;
+  border-radius: 0.85rem;
+}
+
 .safe-modal {
   padding-top: max(0.75rem, env(safe-area-inset-top));
   padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
 }
 
 .safe-main {
-  padding-bottom: calc(8rem + env(safe-area-inset-bottom));
+  padding-bottom: calc(10rem + env(safe-area-inset-bottom));
 }
 
 /* ---- Reader appearance ---------------------------------------------------
