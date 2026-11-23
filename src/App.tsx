@@ -922,6 +922,9 @@ export default function App() {
   const totalWeeklyMinutes = weeklyRecent.reduce((acc, it) => acc + (it.minutesSpent ?? 0), 0);
   const displayFolder = (folder?: string) =>
     (!folder || folder.trim().toLowerCase() === 'uncategorized') ? 'General' : folder;
+  // Feed writers type their excerpts in Markdown, so a standfirst can arrive as
+  // "[Headline](https://…)". The words are what the reader wants, on every page that shows one.
+  const standfirst = (item: { summary?: string }) => linkLabelsOnly(item.summary || '');
 
   // The folder that took the most of this week's reading time
   const topWeeklyTopic = (() => {
@@ -2608,6 +2611,16 @@ export default function App() {
     return item.source.toLowerCase().includes(author.toLowerCase()) ? '' : `By ${author}`;
   };
 
+  // A byline wraps like typeset copy: the dot stays with the word before it, so a narrow screen
+  // never opens a line with a stray "·". The read time drops out below the small breakpoint.
+  const bylineLineFor = (item: { author?: string; source: string; publishedAt?: string; readTime?: string }) => {
+    // "Today · 12h ago" is one chunk: it moves to the next line whole rather than splitting "12h"
+    // from "ago". The author's name is still free to wrap.
+    const published = decodeEntities(item.publishedAt || '').replace(/ /g, '\u00A0');
+    const lead = [bylineFor(item), published].filter(Boolean).join('\u00A0· ');
+    return { lead, readTime: decodeEntities(item.readTime || '') };
+  };
+
   const getShortSourceTitle = (title: string): string => {
     if (!title) return '';
     let clean = title.trim();
@@ -3077,9 +3090,9 @@ export default function App() {
   const renderStoryEntry = (item: DigestItem, inSavedQueue: boolean) => {
     const actions = getCardActions(item.id);
     const isSaved = inSavedQueue || savedIds.includes(item.id);
-    const byline = [bylineFor(item), decodeEntities(item.publishedAt || ''), decodeEntities(item.readTime || '')]
-      .filter(Boolean)
-      .join(' · ');
+    const byline = bylineLineFor(item);
+    const status = actions.isReadThrough ? 'Read through' : actions.isClicked ? actions.openedLabel : '';
+    const sourceIcon = getSourceAvatar(item.url);
 
     return (
       <article
@@ -3113,18 +3126,30 @@ export default function App() {
             {item.isOutOfBubble ? 'Outside your bubble' : displayFolder(item.folder)}
           </span>
           <span aria-hidden="true" className="text-slate-700">·</span>
-          <span className="tracking-[0.16em] text-slate-500">{item.source}</span>
+          <span className="flex items-center gap-1.5 tracking-[0.16em] text-slate-500">
+            {sourceIcon && (
+              <img
+                src={sourceIcon}
+                alt=""
+                loading="lazy"
+                className="h-4 w-4 shrink-0 rounded-[2px] object-cover"
+                onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+              />
+            )}
+            {item.source}
+          </span>
         </div>
 
         <h3 className="mt-2 font-serif text-[1.4rem] font-semibold leading-[1.15] text-slate-50 transition-colors group-hover:text-amber-200 sm:text-[1.55rem]">
           {item.title}
         </h3>
 
-        <p className="mt-2 line-clamp-2 text-[0.95rem] leading-[1.55] text-slate-400">{item.summary}</p>
+        <p className="mt-2 line-clamp-2 text-[0.95rem] leading-[1.55] text-slate-400">{standfirst(item)}</p>
 
         <p className="mt-3 text-[11px] uppercase tracking-[0.14em] text-slate-500">
-          {byline}
-          {actions.isReadThrough ? ' · Read through' : actions.isClicked ? ` · ${actions.openedLabel}` : ''}
+          {byline.lead}
+          {byline.readTime && <span className="hidden sm:inline"> · {byline.readTime}</span>}
+          {status ? `\u00A0· ${status}` : ''}
         </p>
 
         <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-slate-800/80 pt-2">
@@ -3163,7 +3188,7 @@ export default function App() {
             <Bookmark className={`h-3.5 w-3.5 ${isSaved ? 'fill-amber-400' : ''}`} />
             {isSaved ? 'Saved' : 'Save'}
           </button>
-          <div className="ml-auto">
+          <div className="sm:ml-auto">
             <FeedbackActions
               isMore={actions.isVotedMore}
               isLess={actions.isVotedLess}
@@ -3659,6 +3684,8 @@ export default function App() {
   const indexStories = readableDigest.slice(3);
   const setAsideStories = todayDigest.filter(item => Boolean(mutedCards[item.id]));
   const leadActions = getCardActions(leadStory?.id || '');
+  const leadStatus = leadActions.isReadThrough ? 'Read through' : leadActions.isClicked ? leadActions.openedLabel : '';
+  const leadByline = leadStory ? bylineLineFor(leadStory) : { lead: '', readTime: '' };
   const leadSaved = Boolean(leadStory && savedIds.includes(leadStory.id));
   const leadOpening = openingParagraph(leadStory?.fullText || '');
 
@@ -4580,20 +4607,19 @@ export default function App() {
                     </h2>
 
                     <p className="mt-3 max-w-[44rem] text-[1.0625rem] leading-[1.55] text-slate-300">
-                      {leadStory.summary}
+                      {standfirst(leadStory)}
                     </p>
 
                     {leadOpening && (
                       <p className="mt-4 max-w-[42rem] text-[0.95rem] leading-[1.75] text-slate-400">
-                        {leadOpening}
+                        {linkLabelsOnly(leadOpening)}
                       </p>
                     )}
 
                     <p className="mt-4 text-[11px] uppercase tracking-[0.14em] text-slate-500">
-                      {[bylineFor(leadStory), decodeEntities(leadStory.publishedAt || ''), decodeEntities(leadStory.readTime || '')]
-                        .filter(Boolean)
-                        .join(' · ')}
-                      {leadActions.isReadThrough ? ' · Read through' : leadActions.isClicked ? ` · ${leadActions.openedLabel}` : ''}
+                      {leadByline.lead}
+                      {leadByline.readTime && <span className="hidden sm:inline"> · {leadByline.readTime}</span>}
+                      {leadStatus ? `\u00A0· ${leadStatus}` : ''}
                     </p>
 
                     <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-slate-800/80 pt-2">
@@ -4629,7 +4655,7 @@ export default function App() {
                         <Bookmark className={`h-3.5 w-3.5 ${leadSaved ? 'fill-amber-400' : ''}`} />
                         {leadSaved ? 'Saved' : 'Save'}
                       </button>
-                      <div className="ml-auto">
+                      <div className="sm:ml-auto">
                         <FeedbackActions
                           isMore={leadActions.isVotedMore}
                           isLess={leadActions.isVotedLess}
@@ -4648,6 +4674,8 @@ export default function App() {
                     {secondReads.map((item) => {
                       const actions = getCardActions(item.id);
                       const isSaved = savedIds.includes(item.id);
+                      const byline = bylineLineFor(item);
+                      const status = actions.isReadThrough ? 'Read through' : actions.isClicked ? actions.openedLabel : '';
                       return (
                         <article key={item.id} className="border-t border-slate-800/70 pt-5">
                           <div className="flex items-baseline justify-between gap-3 text-[10px] font-semibold uppercase">
@@ -4670,14 +4698,13 @@ export default function App() {
                           </h3>
 
                           <p className="mt-1.5 line-clamp-2 max-w-[40rem] text-[0.95rem] leading-[1.55] text-slate-400">
-                            {item.summary}
+                            {standfirst(item)}
                           </p>
 
                           <p className="mt-2 text-[11px] uppercase tracking-[0.14em] text-slate-500">
-                            {[bylineFor(item), item.source, decodeEntities(item.readTime || '')]
-                              .filter(Boolean)
-                              .join(' · ')}
-                            {actions.isReadThrough ? ' · Read through' : actions.isClicked ? ` · ${actions.openedLabel}` : ''}
+                            {[byline.lead, item.source].filter(Boolean).join('\u00A0· ')}
+                            {byline.readTime && <span className="hidden sm:inline"> · {byline.readTime}</span>}
+                            {status ? `\u00A0· ${status}` : ''}
                           </p>
 
                           <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
@@ -4713,7 +4740,7 @@ export default function App() {
                               <Bookmark className={`h-3 w-3 ${isSaved ? 'fill-amber-400' : ''}`} />
                               {isSaved ? 'Saved' : 'Save'}
                             </button>
-                            <div className="ml-auto">
+                            <div className="sm:ml-auto">
                               <FeedbackActions
                                 isMore={actions.isVotedMore}
                                 isLess={actions.isVotedLess}
@@ -4748,7 +4775,7 @@ export default function App() {
                             >
                               {item.title}
                             </button>
-                            <p className="mt-1 truncate text-xs leading-relaxed text-slate-400">{item.summary}</p>
+                            <p className="mt-1 truncate text-xs leading-relaxed text-slate-400">{standfirst(item)}</p>
                             <p className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                               <span className="whitespace-nowrap">
                                 {[item.source, decodeEntities(item.publishedAt || ''), decodeEntities(item.readTime || '')]
@@ -5314,7 +5341,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                         </div>
 
                         {item.summary && (
-                          <p className="text-xs text-slate-300">{item.summary}</p>
+                          <p className="text-xs text-slate-300">{standfirst(item)}</p>
                         )}
 
                         <div className="text-xs pt-1 border-t border-slate-800/80 space-y-1">
@@ -6913,7 +6940,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       {currentCalibrationItem.title}
                     </h4>
                     <p className="text-xs text-slate-400 leading-relaxed line-clamp-3">
-                      {currentCalibrationItem.summary}
+                      {standfirst(currentCalibrationItem)}
                     </p>
                     <div className="flex gap-2 pt-1">
                       <button

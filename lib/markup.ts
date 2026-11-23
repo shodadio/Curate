@@ -33,7 +33,23 @@ export const decodeEntities = (str: string): string =>
     .replace(/&gt;/gi, '>')
     .replace(/&amp;/gi, '&');
 
-// One line of plain text: for card summaries, titles, dates and feed descriptions.
+// A link reaches a cleaner as "[label](url)", but the reader wants the words: a promo line that
+// happens to be a link ("Learn more") stays a promo line, and a standfirst written in Markdown
+// keeps its label and loses its address.
+export const linkLabelsOnly = (paragraph: string): string =>
+  paragraph.replace(/\[([^\]\n]*)\]\((?:[^)]*)\)/g, '$1');
+
+// A blurb written in Markdown reaches the page as prose: a link keeps its label, and the
+// emphasis and code marks come off. A lone asterisk or underscore is left where it is.
+export const stripMarkdownSyntax = (text: string): string =>
+  linkLabelsOnly(text)
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+    .replace(/__([^_\n]+)__/g, '$1')
+    .replace(/(^|[\s(])\*([^*\s][^*\n]*?)\*/g, '$1$2')
+    .replace(/(^|[\s(])_([^_\s][^_\n]*?)_/g, '$1$2');
+
+// One line of plain text: for summaries, titles, dates and feed descriptions.
 export const cleanHtml = (str: string): string => {
   if (!str) return '';
   // Strip, decode, strip again. A tag must also open with a letter, slash or bang, so prose
@@ -45,17 +61,12 @@ export const cleanHtml = (str: string): string => {
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<[a-zA-Z/!][^>]*>/g, ' ');
 
-  return withoutTags(decodeEntities(withoutTags(str)))
+  return linkLabelsOnly(withoutTags(decodeEntities(withoutTags(str))))
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/[ \t\u00a0]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 };
-
-// A link reaches the cleaner as "[label](url)", but the filters below decide what a paragraph is
-// by its words: a promo line that happens to be a link ("Learn more") is still a promo line.
-export const linkLabelsOnly = (paragraph: string): string =>
-  paragraph.replace(/\[([^\]\n]*)\]\((?:[^)]*)\)/g, '$1');
 
 // Site chrome: display-settings widgets in the publisher's page reach feeds as a run of very
 // short paragraphs (Ars Technica's "Story text / Size / Small Standard Large / Width * /

@@ -1,9 +1,9 @@
-import { cleanHtml } from './markup';
+import { cleanHtml, stripMarkdownSyntax } from './markup';
 
 const DESCRIPTION_LIMIT = 300;
 
 const trimDescription = (raw: string): string => {
-  const description = cleanHtml(raw);
+  const description = stripMarkdownSyntax(cleanHtml(raw));
   if (description.length <= DESCRIPTION_LIMIT) return description;
   return `${description.slice(0, DESCRIPTION_LIMIT - 3).replace(/\s+\S*$/, '')}…`;
 };

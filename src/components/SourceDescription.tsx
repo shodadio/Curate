@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { stripMarkdownSyntax } from '../../lib/markup';
 
 interface SourceDescriptionProps {
   description: string;
@@ -28,7 +29,7 @@ export function SourceDescription({ description, sourceTitle, expanded, onToggle
   return (
     <div>
       <p ref={textRef} className={`text-xs text-slate-400 leading-relaxed ${expanded ? '' : 'line-clamp-2'}`}>
-        {description}
+        {stripMarkdownSyntax(description)}
       </p>
       {(clipped || expanded) && (
         <button

@@ -8,6 +8,11 @@ test('reads the channel description without mistaking an article description for
   assert.equal(parseFeedChannelDescription(feed), 'A journal about science and society.');
 });
 
+test('a publication blurb in Markdown loses its syntax before it reaches the page', () => {
+  const feed = '<rss><channel><description>Essays on [markets](https://example.com) and **growth**.</description></channel></rss>';
+  assert.equal(parseFeedChannelDescription(feed), 'Essays on markets and growth.');
+});
+
 test('reads an Atom subtitle and returns an empty description when feed metadata is absent', () => {
   assert.equal(parseFeedChannelDescription('<feed><subtitle>Independent reporting from the region.</subtitle><entry/></feed>'), 'Independent reporting from the region.');
   assert.equal(parseFeedChannelDescription('<rss><channel><item><description>Article only</description></item></channel></rss>'), '');

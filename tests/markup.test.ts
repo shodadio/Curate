@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { articleLooksIncomplete, articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, repairSplitDigits, splitDenseParagraph, splitSentences, trimSummaryFurniture } from '../lib/markup.ts';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, repairSplitDigits, splitDenseParagraph, splitSentences, stripMarkdownSyntax, trimSummaryFurniture } from '../lib/markup.ts';
 
 test('only a piece saved before links were kept is refreshed', () => {
   assert.equal(articleNeedsLinkRefresh({ url: 'https://example.com/story' }), true);
@@ -50,6 +50,24 @@ test('a summary without that furniture is left alone', () => {
   // Prose that merely mentions the publication keeps its words.
   const prose = 'The archive is free to read on Aeon’s site, with a note on every essay.';
   assert.equal(trimSummaryFurniture(prose), prose);
+test('a blurb written in Markdown reaches the page as prose', () => {
+  assert.equal(
+    stripMarkdownSyntax('Essays on [markets](https://example.com) and **growth**, plus `inline code`.'),
+    'Essays on markets and growth, plus inline code.',
+  );
+  // Emphasis only: an asterisk or underscore in ordinary prose stays where it is.
+  assert.equal(stripMarkdownSyntax('A *quiet* case where 5 * 3 = 15.'), 'A quiet case where 5 * 3 = 15.');
+});
+
+test('a Markdown link in a feed summary keeps its words and loses its address', () => {
+  assert.equal(
+    cleanHtml('1. [Why so many arranged marriages in South Asia?](https://www.gdd.world/p/why-do-south-asian-parents-often) 2. [Markets and migration](https://example.com/a)'),
+    '1. Why so many arranged marriages in South Asia? 2. Markets and migration',
+  );
+  // Ordinary parentheses are prose, not a link.
+  assert.equal(cleanHtml('Growth (and its costs) in one chart'), 'Growth (and its costs) in one chart');
+});
+
   // A summary that is nothing but the call to action stays, so a card is never blank.
   assert.equal(trimSummaryFurniture('Read on Aeon'), 'Read on Aeon');
 });
