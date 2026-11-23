@@ -1008,7 +1008,16 @@ export default function App() {
   const startupApiCheckStartedRef = React.useRef(false);
 
   // Settings
-  const DIGEST_ITEM_COUNTS = [3, 5, 8, 12, 15] as const;
+  // Three lengths, named rather than a row of bare numbers: the reader is picking a dose of
+  // reading, so each one says what it costs in minutes as well as how many stories.
+  // Ranges, not a single number: the edition's minutes come from the stories it found, and
+  // measured editions ran 14 minutes at five, 40 at eight, and 47 at a Deep that could only
+  // fill ten of its fifteen. A fixed guess contradicted the dateline on the first screen.
+  const DIGEST_DOSES = [
+    { count: 5, label: 'Brief', hint: '10–20 min' },
+    { count: 8, label: 'Standard', hint: '30–45 min' },
+    { count: 15, label: 'Deep', hint: '45–75 min' },
+  ] as const;
   const READ_THROUGH_DEPTH = 85;
   // 75s covers a Cloud Run cold start plus a feed sweep; the softer hint at 20s gives the
   // reader a way out long before that.
@@ -1037,15 +1046,13 @@ export default function App() {
     }
   });
   const [itemCount, setItemCount] = useState<number>(() => {
-    const saved = safeGetItem('curator_item_count');
-    if (!saved) return 8;
-    const savedCount = Number(saved);
-    if (DIGEST_ITEM_COUNTS.some(count => count === savedCount)) return savedCount;
-    if (!Number.isFinite(savedCount)) return 8;
-    return DIGEST_ITEM_COUNTS.reduce((closest, count) =>
-      Math.abs(count - savedCount) < Math.abs(closest - savedCount) ? count : closest,
-      8
-    );
+    const savedCount = Number(safeGetItem('curator_item_count'));
+    if (!Number.isFinite(savedCount) || savedCount <= 0) return 8;
+    // Earlier builds offered 3, 5, 8, 12 and 15, so a saved count snaps to the nearest dose
+    // rather than resetting a reader who had picked 3 or 12 to the default.
+    return DIGEST_DOSES.reduce((closest, dose) =>
+      Math.abs(dose.count - savedCount) < Math.abs(closest.count - savedCount) ? dose : closest
+    ).count;
   });
   // Bumped when an edition has to be built again outside the auto-build's own triggers: the
   // reader cleared their votes, or a settings change had to wait for a fresh search.
@@ -3677,12 +3684,39 @@ export default function App() {
       window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
     }
   }, [loadingDigest, digest, activeTab]);
-  // One count, said once: the stories that arrived, out of the length the reader asked for.
-  // "6 stories worth your time" beside a pill reading "15 stories" left the reader to work out
-  // which number was the setting and which was the edition.
+  // One row of doses, drawn the same in the Today edition sheet and in Settings: the word
+  // carries the intent, the number the count, and the hint the time it will take.
+  const renderDoseRow = (ariaLabel: string) => (
+    <div role="group" aria-label={ariaLabel} className="grid grid-cols-3 gap-2">
+      {DIGEST_DOSES.map((dose) => {
+        const selected = itemCount === dose.count;
+        return (
+          <button
+            key={dose.count}
+            type="button"
+            onClick={() => setItemCount(dose.count)}
+            aria-pressed={selected}
+            aria-label={`${dose.label} — ${dose.count} stories, ${dose.hint}`}
+            className={`min-h-[68px] rounded-xl px-2 py-2.5 text-center transition ${
+              selected ? 'bg-[#1c1a17] text-[#f6f1e7]' : 'border border-[#c9bc9f] text-[#6f675c] hover:text-[#1c1a17]'
+            }`}
+          >
+            {/* No wrap: this row is narrower in Settings, where "Standard" broke in two. */}
+            <span className="block whitespace-nowrap text-[9px] font-semibold uppercase leading-none tracking-[0.1em]">{dose.label}</span>
+            <span className="mt-1 block text-lg font-semibold leading-none">{dose.count}</span>
+            <span className={`mt-1 block text-[10px] leading-none ${selected ? 'text-[#c9bc9f]' : 'text-[#6f675c]'}`}>{dose.hint}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  // The dose is named once, in the masthead pill, so the dateline reports only what the
+  // edition actually holds — a short Deep edition reads "13 stories", not the setting.
+  const currentDose = DIGEST_DOSES.find(dose => dose.count === itemCount) ?? DIGEST_DOSES[1];
   const editionCountLabel = todayDigest.length === 0
     ? 'No stories yet'
-    : `${todayDigest.length} of ${itemCount} ${itemCount === 1 ? 'story' : 'stories'}`;
+    : `${todayDigest.length} ${todayDigest.length === 1 ? 'story' : 'stories'}`;
 
   // The front page sets the edition by size: one lead, two second reads, and the rest as a
   // ruled index. The engine's order is kept inside each group, so the top of the page is still
@@ -4371,10 +4405,11 @@ export default function App() {
                   onClick={() => setShowDigestSettings(true)}
                   aria-haspopup="dialog"
                   aria-expanded={showDigestSettings}
-                  aria-label={`Edition settings — ${itemCount} stories per edition`}
-                  className="inline-flex min-h-9 items-center text-[10px] font-semibold uppercase tracking-[0.18em] text-[#3f3a33] transition hover:text-[#1c1a17]"
+                  aria-label={`Edition settings — ${currentDose.label}, ${itemCount} stories per edition`}
+                  className="inline-flex min-h-9 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#3f3a33] transition hover:text-[#1c1a17]"
                 >
                   Edition
+                  <span className="text-[#8a5a24]">{currentDose.label}</span>
                 </button>
                 <span aria-hidden="true" className="text-[10px] text-[#b9ad97]">·</span>
                 <button
@@ -6299,21 +6334,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
               <div className="space-y-4 rounded-2xl border border-[#d3c7ae] bg-[#e9e1cf] p-4">
                 <div>
                   <span className="block text-xs font-medium text-[#3f3a33] mb-2">Stories per edition</span>
-                  <div role="group" aria-label="Stories per edition in settings" className="grid grid-cols-5 gap-1.5">
-                    {DIGEST_ITEM_COUNTS.map(num => (
-                      <button
-                        key={num}
-                        type="button"
-                        onClick={() => setItemCount(num)}
-                        aria-pressed={itemCount === num}
-                        className={`min-h-11 rounded-xl text-sm font-medium transition ${
-                          itemCount === num ? 'bg-[#1c1a17] text-[#f6f1e7]' : 'text-[#6f675c] hover:text-[#1c1a17] border border-[#c9bc9f]'
-                        }`}
-                      >
-                        {num}
-                      </button>
-                    ))}
-                  </div>
+                  {renderDoseRow('Stories per edition in settings')}
                 </div>
                 <div>
                   <label htmlFor="serendipity-slider-settings" className="flex items-baseline justify-between text-xs font-medium text-[#3f3a33]">
@@ -7371,21 +7392,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
             <div>
               <span className="block text-xs font-medium text-[#3f3a33] mb-2">Stories per edition</span>
-              <div role="group" aria-label="Stories per edition" className="grid grid-cols-5 gap-1.5">
-                {DIGEST_ITEM_COUNTS.map(num => (
-                  <button
-                    key={num}
-                    type="button"
-                    onClick={() => setItemCount(num)}
-                    aria-pressed={itemCount === num}
-                    className={`min-h-11 rounded-xl text-sm font-medium transition ${
-                      itemCount === num ? 'bg-[#1c1a17] text-[#f6f1e7]' : 'text-[#6f675c] hover:text-[#1c1a17] border border-[#c9bc9f]'
-                    }`}
-                  >
-                    {num}
-                  </button>
-                ))}
-              </div>
+              {renderDoseRow('Stories per edition')}
             </div>
 
             <div>
