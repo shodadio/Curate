@@ -135,7 +135,7 @@ export function InterestsEditor({ value, suggestions, onChange }: InterestsEdito
         onChange={onChange}
       />
 
-      <div className="border-t border-slate-900" />
+      <div className="border-t border-slate-800/80" />
 
       <InterestRow
         group="less"

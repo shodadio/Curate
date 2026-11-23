@@ -4164,9 +4164,12 @@ export default function App() {
         <header inert={backgroundInert} className="w-full">
           <div className="mx-auto w-full max-w-3xl px-4 pb-3 pt-[max(1rem,env(safe-area-inset-top))] sm:px-6 sm:pt-[max(1.25rem,env(safe-area-inset-top))]">
             <div className="flex items-start justify-between gap-3">
-              <h1 className="flex min-w-0 items-baseline gap-[0.14em] text-[clamp(2.1rem,8.5vw,2.8rem)] leading-none">
-                <span className="text-[0.42em] font-semibold uppercase leading-none tracking-[0.36em] text-amber-500">The</span>
-                <span className="font-semibold uppercase leading-none tracking-[0.015em] text-slate-50">Curator</span>
+              <h1 className="flex min-w-0 items-center gap-2.5 text-[clamp(2.1rem,8.5vw,2.8rem)] leading-none">
+                <CuratorMark className="h-[1.1em] w-[1.1em] shrink-0" />
+                <span className="flex items-baseline gap-[0.14em]">
+                  <span className="text-[0.42em] font-semibold uppercase leading-none tracking-[0.36em] text-amber-500">The</span>
+                  <span className="font-semibold uppercase leading-none tracking-[0.015em] text-slate-50">Curator</span>
+                </span>
               </h1>
               {todayDigest.length > 0 && editionNumber > 0 && (
                 <p className="shrink-0 pt-1.5 text-[10px] font-medium uppercase leading-none tabular-nums tracking-[0.28em] text-slate-500">
@@ -4231,40 +4234,60 @@ export default function App() {
           </div>
         </header>
       ) : (
-        <header inert={backgroundInert} className="sticky top-0 z-40 w-full safe-header bg-slate-950/95 backdrop-blur-md border-b border-slate-900/80 px-4 sm:px-6 pb-3 shrink-0 shadow-sm">
-        <div className="max-w-3xl w-full mx-auto flex items-center justify-between gap-2 sm:gap-3">
-          {/* Official Brand Logo & Subtitle */}
-          <button 
-            type="button" 
-            onClick={() => setActiveTab('today')}
-            className="flex min-w-0 items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 group cursor-pointer"
-            title="The Curator — Home"
-          >
-            <CuratorMark className="w-9 h-9 sm:w-10 sm:h-10 shrink-0 drop-shadow-md group-hover:scale-105 transition-transform" />
-            <div className="min-w-0">
-              <div className="flex items-baseline gap-1.5 leading-none whitespace-nowrap">
-                <span className="font-serif text-[15px] font-semibold tracking-[0.08em] text-amber-500/90">THE</span>
-                <span className="font-serif text-[15px] font-semibold tracking-[0.08em] text-slate-100">CURATOR</span>
-              </div>
-              <p className="text-xs text-slate-400 mt-1 truncate hidden sm:block">Your morning reading editor</p>
-            </div>
-          </button>
-
-          <div className="hidden sm:block flex-1" aria-hidden="true" />
-          <button
-            type="button"
-            onClick={() => setActiveTab(prev => prev === 'settings' ? 'today' : 'settings')}
-            className={`w-11 h-11 shrink-0 rounded-full border flex items-center justify-center transition cursor-pointer shadow-sm ${
-                activeTab === 'settings'
-                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
-                  : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-slate-100 hover:border-slate-700'
-              }`}
-              title="Settings & Preferences"
-              aria-label="Settings & Preferences"
-              aria-pressed={activeTab === 'settings'}
+        <header inert={backgroundInert} className="sticky top-0 z-40 w-full safe-header bg-slate-950/95 backdrop-blur-md border-b border-slate-800/80 px-4 sm:px-6 pb-3 shrink-0">
+        <div className="mx-auto w-full max-w-3xl">
+          <div className="flex items-start justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => setActiveTab('today')}
+              className="flex min-w-0 items-center gap-2 text-left leading-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+              title="The Curator — Home"
             >
-            <Sliders className="w-4 h-4" />
-          </button>
+              <CuratorMark className="h-9 w-9 shrink-0" />
+              <span className="flex items-baseline gap-[0.14em] text-[clamp(1.35rem,5.5vw,1.6rem)]">
+                <span className="text-[0.42em] font-semibold uppercase leading-none tracking-[0.36em] text-amber-500">The</span>
+                <span className="font-semibold uppercase leading-none tracking-[0.015em] text-slate-50">Curator</span>
+              </span>
+            </button>
+            <p className="shrink-0 pt-1 text-[10px] font-medium uppercase leading-none tabular-nums tracking-[0.28em] text-slate-500">
+              {activeTab === 'feeds' ? 'Stream' : activeTab === 'saved' ? 'Saved' : activeTab === 'sources' ? 'Sources' : 'Settings'}
+            </p>
+          </div>
+
+          <div aria-hidden="true" className="mt-2.5 flex flex-col gap-[3px]">
+            <span className="h-[2px] w-full bg-slate-300/60" />
+            <span className="h-px w-full bg-slate-300/20" />
+          </div>
+
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <p className="text-[10px] font-medium uppercase leading-none tracking-[0.24em] text-slate-400">
+              {activeTab === 'feeds'
+                ? 'Chronological reading stream'
+                : activeTab === 'saved'
+                  ? 'Your re-reading queue'
+                  : activeTab === 'sources'
+                    ? 'Watched subscriptions'
+                    : 'Preferences & library'}
+            </p>
+            <nav aria-label="Masthead" className="flex shrink-0 items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => setActiveTab('today')}
+                className="inline-flex min-h-9 items-center text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-300 transition hover:text-amber-300"
+              >
+                Today
+              </button>
+              <span aria-hidden="true" className="text-[10px] text-slate-700">·</span>
+              <button
+                type="button"
+                onClick={() => setActiveTab(prev => prev === 'settings' ? 'today' : 'settings')}
+                aria-pressed={activeTab === 'settings'}
+                className={`inline-flex min-h-9 items-center text-[10px] font-semibold uppercase tracking-[0.18em] transition hover:text-amber-300 ${activeTab === 'settings' ? 'text-amber-300' : 'text-slate-300'}`}
+              >
+                Settings
+              </button>
+            </nav>
+          </div>
         </div>
         </header>
       )}
@@ -4780,10 +4803,11 @@ export default function App() {
         {/* TAB 2: SAVED */}
         {activeTab === 'saved' && (
           <div className="space-y-6 animate-fade-in">
-            <div className="border-b border-slate-900 pb-4 flex items-start justify-between gap-3">
+            <div className="border-b border-slate-800/80 pb-4 flex items-start justify-between gap-3">
               <div>
-                <h2 className="text-2xl font-semibold tracking-tight text-slate-100">Saved Items</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Your personal re-reading queue ({savedDigestItems.length})</p>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-500">Re-reading queue</p>
+                <h2 className="mt-1 font-serif text-[1.6rem] font-semibold leading-tight text-slate-50">Saved</h2>
+                <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">{savedDigestItems.length} {savedDigestItems.length === 1 ? 'story' : 'stories'} kept</p>
               </div>
               {/* A piece saved before the cleaner kept links reads without its citations until it
                   is refetched. This does that in one pass, for the pieces you never reopen, and
@@ -4850,15 +4874,15 @@ export default function App() {
             )}
 
             {savedDigestItems.length === 0 ? (
-              <div className="py-20 text-center text-slate-400 space-y-2">
+              <div className="rounded-3xl border border-slate-800 bg-slate-900/60 px-6 py-16 text-center shadow-sm space-y-2">
                 <Bookmark className="w-8 h-8 mx-auto text-slate-700 mb-2" />
-                <p className="text-sm">No saved items yet.</p>
-                <p className="text-xs text-slate-400">Tap the bookmark icon on any digest item to save it here.</p>
+                <p className="font-serif text-lg font-semibold text-slate-100">No saved stories yet</p>
+                <p className="text-xs leading-relaxed text-slate-400">Tap the bookmark icon on any digest item to save it here.</p>
               </div>
             ) : savedVisibleItems.length === 0 ? (
-              <div className="py-16 text-center text-slate-400 space-y-2">
+              <div className="rounded-3xl border border-slate-800 bg-slate-900/60 px-6 py-14 text-center shadow-sm space-y-2">
                 <Search className="w-7 h-7 mx-auto text-slate-700 mb-1" />
-                <p className="text-sm">No saved stories match “{savedQuery.trim()}”.</p>
+                <p className="font-serif text-lg font-semibold text-slate-100">No saved stories match “{savedQuery.trim()}”.</p>
                 <button
                   type="button"
                   onClick={() => setSavedQuery('')}
@@ -4872,7 +4896,7 @@ export default function App() {
                 {savedVisibleItems.map((item) => {
                   const actions = getCardActions(item.id);
                   return (
-                    <article 
+                    <article
                       key={item.id}
                       onClick={() => openArticle(item)}
                       // A card is a reading surface, not a button: a short name, and the four actions
@@ -4885,71 +4909,159 @@ export default function App() {
                           openArticle(item);
                         }
                       }}
-                      className="relative cursor-pointer space-y-3 rounded-2xl border-2 border-slate-700/80 bg-slate-900/95 p-5 shadow-[0_16px_40px_-6px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.1)] transition-all duration-300 hover:border-amber-500/50"
+                      className={`group ${compactCards ? 'rounded-2xl' : 'rounded-3xl'} transition-all duration-300 cursor-pointer overflow-hidden relative bg-slate-900/95 border-2 border-slate-700/80 shadow-[0_22px_50px_-8px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.12)] hover:border-amber-500/60 hover:shadow-[0_28px_60px_-8px_rgba(0,0,0,0.98),0_0_0_1.5px_rgba(245,158,11,0.35)]`}
                     >
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
-                        <span title={item.source} className="font-semibold text-slate-200 min-w-0 truncate">{item.source}</span>
-                        {bylineFor(item) && <span className="min-w-0 truncate">{bylineFor(item)}</span>}
-                        {item.publishedAt && <span>{decodeEntities(item.publishedAt)}</span>}
-                        <span>{item.readTime}</span>
-                        <span className="text-amber-400 font-semibold inline-flex items-center gap-1">
-                          <Bookmark className="w-3 h-3 fill-amber-400" /> Saved
-                        </span>
-                        {actions.isReadThrough && (
-                          <span className="text-emerald-400 font-semibold inline-flex items-center gap-1" title="Read through completed">
-                            <Check className="w-3 h-3 stroke-[3]" /> Read
-                          </span>
-                        )}
+                      <div className={`${compactCards ? 'p-4 pb-2' : 'p-5 pb-3'} flex items-center justify-between`}>
+                        <div className="flex items-center gap-3 min-w-0">
+                          {(() => {
+                            const itemAvatar = getSourceAvatar(item.url);
+                            return (
+                              <div className="w-9 h-9 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center overflow-hidden shrink-0 relative">
+                                {itemAvatar ? (
+                                  <img
+                                    src={itemAvatar}
+                                    alt={item.source} loading="lazy"
+                                    className="w-full h-full object-cover rounded-full"
+                                    onLoad={markTinyIcon}
+                                    onError={(e) => {
+                                      (e.currentTarget as HTMLElement).style.display = 'none';
+                                      const fallback = e.currentTarget.parentElement?.querySelector('.stream-card-initials');
+                                      if (fallback) fallback.classList.remove('hidden');
+                                    }}
+                                  />
+                                ) : null}
+                                <span className={`stream-card-initials text-xs font-bold text-amber-400 ${itemAvatar ? 'hidden' : ''}`}>
+                                  {item.source.slice(0, 2).toUpperCase()}
+                                </span>
+                              </div>
+                            );
+                          })()}
+                          <div className="min-w-0">
+                            <div className="truncate text-[13px] font-semibold text-slate-100">{item.source}</div>
+                            <div
+                              className="mt-0.5 truncate text-[13px] text-slate-400"
+                              title={[
+                                bylineFor(item),
+                                decodeEntities(item.publishedAt || ''),
+                                decodeEntities(item.readTime || ''),
+                              ].filter(Boolean).join(' · ')}
+                            >
+                              {[
+                                bylineFor(item),
+                                decodeEntities(item.publishedAt || ''),
+                                decodeEntities(item.readTime || ''),
+                              ].filter(Boolean).join(' · ')}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/40 text-xs font-semibold text-amber-300" title="Saved for later">
+                            <Bookmark className="w-3 h-3 fill-amber-400" />
+                            <span>Saved</span>
+                          </div>
+                          {actions.isReadThrough ? (
+                            <div
+                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-xs font-bold text-emerald-300 shadow-sm"
+                              title="Read through completed"
+                            >
+                              <Check className="w-3 h-3 text-emerald-400 stroke-[3]" />
+                              <span>Read</span>
+                            </div>
+                          ) : actions.isClicked ? (
+                            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-950/90 border border-sky-500/40 text-xs font-medium text-sky-300" title={`Opened in Curator — ${actions.openedLabel}`}>
+                              <span>{actions.openedLabel}</span>
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
 
-                      <h3 className="text-base font-semibold text-slate-100 hover:text-amber-300 transition">
-                        {item.title}
-                      </h3>
-                      <p className="text-sm text-slate-400 line-clamp-2">{item.summary}</p>
+                      {!item.bannerImage && (
+                        <div className={`mx-3.5 rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 flex items-center justify-center ${compactCards ? 'h-16' : 'h-20'}`}>
+                          <CuratorMark className="w-6 h-6 opacity-70" />
+                        </div>
+                      )}
+                      {item.bannerImage && (
+                        <div className={`relative mx-3.5 rounded-2xl overflow-hidden ${compactCards ? 'h-40 md:h-48' : 'h-56 md:h-64'} shadow-lg border border-slate-700/60`}>
+                          <img
+                            src={item.bannerImage}
+                            alt={item.title}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
+                        </div>
+                      )}
 
-                      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80 pt-3">
-                        <div className="flex flex-1 flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); openArticle(item); }}
-                            className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-amber-300 hover:text-amber-200 transition"
-                          >
-                            Read in Curator <ArrowRight className="w-3.5 h-3.5" />
-                          </button>
-                          <a
-                            href={webUrlHref(item.url) || '#'}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => {
+                      <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
+                        <div>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-500 mb-1">
+                            {displayFolder(item.folder)}
+                          </div>
+                          <h3 className={`font-serif font-semibold leading-snug text-slate-50 group-hover:text-amber-200 transition-colors ${compactCards ? 'text-lg' : 'text-xl'}`}>
+                            {item.title}
+                          </h3>
+                          <p className="text-sm line-clamp-2 text-slate-400 mt-1 leading-relaxed">
+                            {item.summary}
+                          </p>
+                          {item.isOutOfBubble && (
+                            <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-rose-400">Outside your bubble</p>
+                          )}
+                        </div>
+
+                        <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80">
+                          <div className="flex w-full flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); openArticle(item); }}
+                              className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-amber-300 hover:text-amber-200 transition"
+                            >
+                              Read in Curator <ArrowRight className="w-3.5 h-3.5" />
+                            </button>
+                            <a
+                              href={webUrlHref(item.url) || '#'}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => {
                                 e.stopPropagation();
                                 handleExternalClick(e, item.url);
                                 setReadArticleIds(prev => (prev.includes(item.id) ? prev : [...prev, item.id]));
                                 showToast('Opening original');
                               }}
-                            className="ml-auto inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
-                            title={`Read original on ${item.source} (opens external browser or app)`}
-                            aria-label={`Read original on ${item.source}`}
-                          >
-                            <ExternalLink className="w-4 h-4" />
-                          </a>
+                              className="ml-auto inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-slate-400 hover:text-amber-300 transition-colors"
+                              title={`Read original on ${item.source} (opens external browser or app)`}
+                              aria-label={`Read original on ${item.source}`}
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                            </a>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleSave(item); }}
+                              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-400 transition hover:bg-amber-500/20"
+                              title="Remove from saved"
+                              aria-label={`Remove "${item.title}" from saved`}
+                              aria-pressed={savedIds.includes(item.id)}
+                            >
+                              <Bookmark className="w-4 h-4 fill-amber-400 text-amber-400" />
+                            </button>
+                          </div>
+                          <FeedbackActions
+                            isMore={actions.isVotedMore}
+                            isLess={actions.isVotedLess}
+                            onMore={() => handleMore(item)}
+                            onLess={() => handleLess(item)}
+                          />
                         </div>
-
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); handleSave(item); }}
-                          className="inline-flex min-h-11 items-center rounded-xl px-3 text-xs text-slate-400 hover:bg-slate-800/60 hover:text-amber-300 font-medium transition"
-                          aria-label={`Unsave ${item.title}`}
-                        >
-                          Unsave
-                        </button>
                       </div>
                     </article>
                   );
                 })}
                 {savedVisibleItems.length > 0 && (
-                  <p className="pt-2 text-center text-xs text-slate-500">
-                    End of your saved queue · {savedVisibleItems.length} {savedVisibleItems.length === 1 ? 'story' : 'stories'}
-                  </p>
+                  <footer className="pt-2">
+                    <div aria-hidden="true" className="h-px w-full bg-slate-800/80" />
+                    <p className="pt-3 text-center text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-500">
+                      End of your saved queue · {savedVisibleItems.length} {savedVisibleItems.length === 1 ? 'story' : 'stories'}
+                    </p>
+                  </footer>
                 )}
               </div>
             )}
@@ -4961,17 +5073,18 @@ export default function App() {
             so opening one of them never mounts this page underneath. */}
         {activeTab === 'sources' && (
           <div className="space-y-8 animate-fade-in">
-            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-900 pb-4">
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
               <div>
-                <h2 className="text-2xl font-semibold tracking-tight text-slate-100">Watched Sources</h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  {sources.length} {sources.length === 1 ? 'source' : 'sources'} across {Object.keys(sourcesByFolder).length} {Object.keys(sourcesByFolder).length === 1 ? 'folder' : 'folders'}
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-500">Subscriptions</p>
+                <h2 className="mt-1 font-serif text-[1.6rem] font-semibold leading-tight text-slate-50">Sources</h2>
+                <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                  {sources.length} {sources.length === 1 ? 'source' : 'sources'} · {Object.keys(sourcesByFolder).length} {Object.keys(sourcesByFolder).length === 1 ? 'folder' : 'folders'}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => setShowAddSourceModal(true)}
-                  className="px-3 py-1.5 text-xs font-medium rounded-xl bg-amber-500 text-slate-950 font-semibold hover:bg-amber-400 transition flex items-center gap-1.5"
+                  className="px-3 py-1.5 text-xs rounded-xl bg-amber-500 text-slate-950 font-semibold hover:bg-amber-400 transition flex items-center gap-1.5"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Add Source</span>
@@ -5113,7 +5226,7 @@ export default function App() {
             )}
 
             {/* Google Search & RSS Investigation Tool */}
-            <section className="p-4 sm:p-5 rounded-3xl bg-slate-900/40 border border-slate-900 space-y-4 w-full max-w-full overflow-hidden">
+            <section className="p-4 sm:p-5 rounded-3xl bg-slate-900/60 border border-slate-800/80 space-y-4 w-full max-w-full overflow-hidden">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
@@ -5265,7 +5378,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                           <p className="text-xs text-slate-300">{item.summary}</p>
                         )}
 
-                        <div className="text-xs pt-1 border-t border-slate-900 space-y-1">
+                        <div className="text-xs pt-1 border-t border-slate-800/80 space-y-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <span
                               className={`font-medium ${
@@ -5308,7 +5421,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   })}
 
                   {discoverGroundingLinks.length > 0 && (
-                    <div className="pt-2 border-t border-slate-900 text-xs text-slate-400 space-y-1">
+                    <div className="pt-2 border-t border-slate-800/80 text-xs text-slate-400 space-y-1">
                       <span className="block font-medium text-slate-300">Google Search sources</span>
                       <div className="flex flex-wrap gap-x-3 gap-y-1">
                         {discoverGroundingLinks.map((link, idx) => (
@@ -5362,7 +5475,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   <>
                     {shown.map(([folder, folderSources]) => (
                 <div key={folder} className="space-y-3 w-full max-w-full">
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 border-b border-slate-900 pb-2">
+                  <h3 className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-500 border-b border-slate-800/80 pb-2">
                     {folder} ({folderTotals[folder] ?? folderSources.length})
                   </h3>
                   <div className="grid gap-2 w-full max-w-full">
@@ -5372,7 +5485,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       const descriptionOpen = expandedSourceDescriptionIds.includes(src.id);
                       const categoryLabels = normalizeCategoryLabels(src.categories, src.folder);
                       return (
-                        <div key={src.id} className="rounded-xl bg-slate-900/30 border border-slate-900/80 w-full max-w-full overflow-hidden">
+                        <div key={src.id} className="rounded-2xl bg-slate-900/60 border border-slate-800/80 w-full max-w-full overflow-hidden">
                           <div className="p-3 sm:p-3.5">
                           <div className="flex items-start justify-between gap-2 sm:gap-3">
                             <SourceFeedLink
@@ -5594,12 +5707,15 @@ Search for writers, publications, or topics. Curator checks whether each result 
         {/* TAB 4: SETTINGS */}
         {activeTab === 'settings' && (
           <div className="no-sideways space-y-4 animate-fade-in">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-2xl font-semibold tracking-tight text-slate-100">Settings</h2>
+            <div className="flex items-start justify-between gap-3 border-b border-slate-800/80 pb-4">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-500">Preferences & library</p>
+                <h2 className="mt-1 font-serif text-[1.6rem] font-semibold leading-tight text-slate-50">Settings</h2>
+              </div>
               <button
                 type="button"
                 onClick={() => setActiveTab(lastTabBeforeSettingsRef.current)}
-                className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-slate-800 px-3 text-xs font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300"
+                className="inline-flex min-h-11 shrink-0 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-300 transition hover:text-amber-300"
               >
                 <ArrowLeft className="w-3.5 h-3.5" />
                 <span>Back to {TAB_LABELS[lastTabBeforeSettingsRef.current]}</span>
@@ -6439,22 +6555,18 @@ Search for writers, publications, or topics. Curator checks whether each result 
             </div>
 
             {/* Stream Header */}
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-900 pb-4">
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="min-w-0 break-words text-2xl font-semibold tracking-tight text-slate-100">
-                    {selectedFeedSource && selectedFeedSource !== 'all' ? selectedFeedSource : 'All Feeds Stream'}
-                  </h2>
-                  {selectedFeedSource && selectedFeedSource !== 'all' && (
-                    <span className="text-xs uppercase font-mono tracking-wider bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">
-                      Feed Stream
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-slate-400 mt-0.5">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
+              <div className="min-w-0">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-500">
+                  {selectedFeedSource && selectedFeedSource !== 'all' ? 'Feed stream' : 'Chronological stream'}
+                </p>
+                <h2 className="mt-1 min-w-0 break-words font-serif text-[1.6rem] font-semibold leading-tight text-slate-50">
+                  {selectedFeedSource && selectedFeedSource !== 'all' ? selectedFeedSource : 'All feeds'}
+                </h2>
+                <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
                   {loadingFeedStream
                     ? 'Loading stream…'
-                    : `Traditional chronological reading stream · ${feedStreamArticles.length} ${feedStreamArticles.length === 1 ? 'entry' : 'entries'} · every story, including ones older than today's digest`}
+                    : `${feedStreamArticles.length} ${feedStreamArticles.length === 1 ? 'entry' : 'entries'} · every story, including ones older than today's edition`}
                 </p>
               </div>
 
@@ -6484,7 +6596,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   <button
                     type="button"
                     onClick={markAllSourcesAsUnread}
-                    className="px-3 py-1.5 text-xs font-medium rounded-xl bg-slate-900/60 border border-slate-800 text-slate-400 hover:text-slate-200 transition text-xs"
+                    className="px-3 py-1.5 text-xs font-medium rounded-xl bg-slate-900/60 border border-slate-800 text-slate-400 hover:text-slate-200 transition"
                     title="Reset unread dots"
                   >
                     Reset unread dots
@@ -6621,21 +6733,18 @@ Search for writers, publications, or topics. Curator checks whether each result 
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                           />
                           <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-transparent" />
-                          
                         </div>
                       )}
 
                       <div className={`${compactCards ? 'p-4 space-y-3 pt-3' : 'p-5 space-y-4 pt-4'}`}>
                         <div>
-                          {displayFolder(item.folder) && (
-                            <div className="text-xs uppercase font-semibold tracking-wider text-slate-500 mb-1">
-                              {displayFolder(item.folder)}
-                            </div>
-                          )}
-                          <h3 className={`${compactCards ? 'text-lg' : 'text-xl'} font-bold tracking-tight text-slate-100 group-hover:text-amber-300 transition-colors`}>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-500 mb-1">
+                            {displayFolder(item.folder)}
+                          </div>
+                          <h3 className={`font-serif font-semibold leading-snug text-slate-50 group-hover:text-amber-200 transition-colors ${compactCards ? 'text-lg' : 'text-xl'}`}>
                             {item.title}
                           </h3>
-                          <p className="text-sm line-clamp-2 text-slate-400 mt-1">
+                          <p className="text-sm line-clamp-2 text-slate-400 mt-1 leading-relaxed">
                             {item.summary}
                           </p>
                         </div>
@@ -6702,9 +6811,12 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   </button>
                 )}
                 {feedStreamArticles.length > 0 && feedStreamArticles.length <= feedVisibleCount && (
-                  <p className="pt-2 text-center text-xs text-slate-500">
-                    End of the stream · {feedStreamArticles.length} {feedStreamArticles.length === 1 ? 'entry' : 'entries'}
-                  </p>
+                  <footer className="pt-2">
+                    <div aria-hidden="true" className="h-px w-full bg-slate-800/80" />
+                    <p className="pt-3 text-center text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-500">
+                      End of the stream · {feedStreamArticles.length} {feedStreamArticles.length === 1 ? 'entry' : 'entries'}
+                    </p>
+                  </footer>
                 )}
               </div>
             )}

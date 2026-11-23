@@ -19,7 +19,7 @@ export function SettingsSection({ id, icon, title, meta, children }: SettingsSec
     >
       <summary className="flex cursor-pointer list-none items-center gap-2.5 px-5 py-4 [&::-webkit-details-marker]:hidden">
         <span className="shrink-0 text-amber-400">{icon}</span>
-        <span className="text-sm font-semibold text-slate-100">{title}</span>
+        <span className="font-serif text-[1.05rem] font-semibold text-slate-50">{title}</span>
         <span className="ml-auto min-w-0 truncate text-xs text-slate-400 tabular-nums">{meta}</span>
         <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />
       </summary>
