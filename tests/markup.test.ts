@@ -445,6 +445,20 @@ test('htmlToReadableText drops a comment count printed as a list line', () => {
   assert.equal(body, 'Real article text.');
 });
 
+test('htmlToReadableText drops a pipe plus comment link left by a stripped table', () => {
+  const body = htmlToReadableText(
+    '<p>Real article text.</p><p>| <a href="https://example.com/story#comments">20 Comments</a></p><p>Real article text continues.</p>',
+  );
+  assert.equal(body, 'Real article text.\n\nReal article text continues.');
+  const prompt = htmlToReadableText(
+    '<p>Real article text.</p><p>| <a href="https://example.com/story#comments">Join the discussion</a> |</p><p>Real article text continues.</p>',
+  );
+  assert.equal(prompt, 'Real article text.\n\nReal article text continues.');
+  // Prose that merely mentions comments keeps its words, as does a comment link with real context.
+  const prose = htmlToReadableText('<p>The 20 comments below shaped the piece.</p>');
+  assert.equal(prose, 'The 20 comments below shaped the piece.');
+});
+
 test('htmlToReadableText drops the comment thread controls after the article', () => {
   const body = htmlToReadableText(
     '<p>Real article text.</p><p>Comments</p><p>Sort by Top Sort by Recent Sort by Controversial</p><p><a href="https://example.com/story#">Hide Replies</a></p><p>Continue this thread →</p>',

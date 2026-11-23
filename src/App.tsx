@@ -73,7 +73,7 @@ import {
   splitIntoSentences,
 } from '../lib/speech';
 import { formatBuildStamp } from '../lib/buildStamp';
-import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, isPlayerChrome, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
+import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, isPlayerChrome, isStrayCommentLink, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
 
 // One-click provider addresses: the popular OpenAI-compatible services, so a working setup
 // starts with a name and a key rather than a copied URL and a guessed model ID.
@@ -377,7 +377,8 @@ function buildArticleParagraphs(text: string): string[] {
     .filter(paragraph => !isPlayerChrome(linkLabelsOnly(paragraph).trim()))
     // A caption that is nothing but a hashtag ("#nofilter") is image furniture.
     .filter(paragraph => !/^#[\p{L}\d_]{2,30}$/u.test(paragraph))
-    .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph));
+    .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph))
+    .filter(paragraph => !isStrayCommentLink(paragraph));
 
   // A quotation and the attribution a publisher printed as its own paragraph are one
   // sentence; the reader and the voice both take their paragraphs from this list.

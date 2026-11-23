@@ -295,6 +295,24 @@ const authorBioRole = /\b(?:editor|reporter|correspondent|columnist|writer|produ
 const authorBioTrace = /@[\w.-]+\.\w+|https?:\/\/|can be reached|follow (?:him|her|them)|\b(?:he|she|they|his|her|their)\b/i;
 const authorBioPublication = /\b(?:at|for|with)\s+\p{Lu}/u;
 
+// A stripped table can leave a comment link standing on its own ("| [20 Comments](https://…#comments)"),
+// which then reads as a bare link in the middle of the piece. Only a paragraph that holds
+// nothing but separators and comment links counts, so prose that merely mentions comments
+// or links elsewhere is left alone.
+export const isStrayCommentLink = (paragraph: string): boolean => {
+  const trimmed = paragraph.trim();
+  if (!trimmed.includes('|') || !trimmed.includes('](')) return false;
+  const withoutLinks = trimmed.replace(/\[[^\]\n]*\]\([^)\n]*\)/g, ' ');
+  if (withoutLinks.replace(/[\s|•*·←\-–—[\]()]/g, '').length !== 0) return false;
+  const labels = [...trimmed.matchAll(/\[([^\]\n]*)\]\([^)\n]*\)/g)]
+    .map(match => match[1].trim())
+    .filter(label => label.length > 0);
+  if (!labels.length) return false;
+  return labels.every(label =>
+    commentSummary.test(label) || commentPrompt.test(label) || commentSort.test(label) ||
+    threadControl.test(label));
+};
+
 const isAuthorBio = (paragraph: string): boolean => {
   const text = linkLabelsOnly(paragraph).trim();
   if (text.length > 600) return false;
@@ -519,7 +537,9 @@ export const htmlToReadableText = (html: string, baseUrl = ''): string => {
     .filter(paragraph => !isPlayerChrome(linkLabelsOnly(paragraph).trim()))
     // A caption that is nothing but a hashtag ("#nofilter") is image furniture.
     .filter(paragraph => !/^#[\p{L}\d_]{2,30}$/u.test(paragraph))
-    .filter(paragraph => !/^the post .+ appeared first on /i.test(linkLabelsOnly(paragraph)));
+    .filter(paragraph => !/^the post .+ appeared first on /i.test(linkLabelsOnly(paragraph)))
+    // A stripped table cell leaves "| [20 Comments](https://…)": a bare link, not prose.
+    .filter(paragraph => !isStrayCommentLink(paragraph));
 
   return joinContinuedParagraphs(dropEndingFurniture(dropBylineFurniture(dropRepeatedShortParagraphs(dropChromeRuns(paragraphs))))).join('\n\n');
 };
