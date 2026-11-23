@@ -23,7 +23,7 @@ jobs:
     name: Build and publish the container image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # The update notice can say what changed. A repository variable names that line when it is
       # set; otherwise the commit subject is used with its conventional prefix removed, so a
