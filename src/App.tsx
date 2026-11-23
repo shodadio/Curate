@@ -3710,15 +3710,15 @@ export default function App() {
     </div>
   );
 
-  // One count, said once: the stories that arrived, out of the length the reader asked for.
-  // "6 stories worth your time" beside a pill reading "15 stories" left the reader to work out
-  // which number was the setting and which was the edition.
-  // The dose has a name now, so the header uses it: "Standard · 8 of 8 stories · 35 min" says
-  // which length the reader chose without making them open the sheet to find out.
+  // One count, said once: the stories that arrived, beside the dose that named the length.
+  // "Standard · 8 stories · 35 min" is three things the reader can check at a glance — the
+  // length they chose, what arrived, and what it costs — with the setting's own number said
+  // only by the dose name. A short edition still shows its real count, so "Deep · 13 stories"
+  // stays honest about a pool that could not fill.
   const currentDose = DIGEST_DOSES.find(dose => dose.count === itemCount) ?? DIGEST_DOSES[1];
   const editionCountLabel = todayDigest.length === 0
     ? `${currentDose.label} · no stories yet`
-    : `${currentDose.label} · ${todayDigest.length} of ${itemCount} ${itemCount === 1 ? 'story' : 'stories'}`;
+    : `${currentDose.label} · ${todayDigest.length} ${todayDigest.length === 1 ? 'story' : 'stories'}`;
 
   // The front page sets the edition by size: one lead, two second reads, and the rest as a
   // ruled index. The engine's order is kept inside each group, so the top of the page is still
