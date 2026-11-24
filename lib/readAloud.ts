@@ -21,6 +21,27 @@ export const SPEECH_RATE_MAX = 1.5;
 export const SPEECH_ENGINE_STORAGE_KEY = 'curator_speech_engine';
 export const SPEECH_PIPER_VOICE_STORAGE_KEY = 'curator_speech_piper_voice';
 export const SPEECH_GEMINI_VOICE_STORAGE_KEY = 'curator_speech_gemini_voice';
+export const SPEECH_GEMINI_KEY_STORAGE_KEY = 'curator_speech_gemini_key';
+
+export type GeminiSpeechKeySource = 'read-aloud' | 'digest' | 'server' | 'none';
+
+// Reading aloud may be given its own Gemini key, so a digest written by another provider does
+// not leave the Gemini voice without one. The reader's own key wins, then the digest's Gemini
+// key, then the server's. The browser sends a key; an empty one asks the server to use its own.
+export function resolveGeminiSpeechKey(input: {
+  readAloudKey: string;
+  digestKey: string;
+  digestProvider: string;
+  serverKeyAvailable: boolean;
+}): { key: string; source: GeminiSpeechKeySource } {
+  const own = input.readAloudKey.trim();
+  if (own) return { key: own, source: 'read-aloud' };
+
+  const digest = input.digestKey.trim();
+  if (digest && input.digestProvider === 'gemini') return { key: digest, source: 'digest' };
+
+  return { key: '', source: input.serverKeyAvailable ? 'server' : 'none' };
+}
 
 // What the reader is told about the downloaded voice, in every state it can be in.
 export function piperStatusLabel(state: PiperDownloadState, voice: PiperVoice): string {

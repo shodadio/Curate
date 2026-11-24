@@ -76,11 +76,13 @@ import {
 import { PIPER_DEFAULT_VOICE_ID, findPiperVoice } from '../lib/piperVoices';
 import {
   SPEECH_ENGINE_STORAGE_KEY,
+  SPEECH_GEMINI_KEY_STORAGE_KEY,
   SPEECH_GEMINI_VOICE_STORAGE_KEY,
   SPEECH_PIPER_VOICE_STORAGE_KEY,
   SPEECH_RATE_DEFAULT,
   SPEECH_RATE_MAX,
   SPEECH_RATE_MIN,
+  resolveGeminiSpeechKey,
   type PiperDownloadState,
   type SpeechEngine,
 } from '../lib/readAloud';
@@ -1342,6 +1344,11 @@ export default function App() {
   const [geminiVoice, setGeminiVoice] = useState<string>(
     () => safeGetItem(SPEECH_GEMINI_VOICE_STORAGE_KEY) || GEMINI_TTS_DEFAULT_VOICE
   );
+  // Reading aloud can carry its own Gemini key, so a digest written by another provider still
+  // has a Gemini voice to speak with
+  const [geminiTtsKey, setGeminiTtsKey] = useState<string>(
+    () => safeGetItem(SPEECH_GEMINI_KEY_STORAGE_KEY) || ''
+  );
   const [piperDownloadState, setPiperDownloadState] = useState<PiperDownloadState>({ status: 'idle', progress: 0 });
 
   useEffect(() => {
@@ -1356,7 +1363,8 @@ export default function App() {
     safeSetItem(SPEECH_ENGINE_STORAGE_KEY, speechEngine);
     safeSetItem(SPEECH_PIPER_VOICE_STORAGE_KEY, piperVoiceId);
     safeSetItem(SPEECH_GEMINI_VOICE_STORAGE_KEY, geminiVoice);
-  }, [speechEngine, piperVoiceId, geminiVoice]);
+    safeSetItem(SPEECH_GEMINI_KEY_STORAGE_KEY, geminiTtsKey);
+  }, [speechEngine, piperVoiceId, geminiVoice, geminiTtsKey]);
 
   // A downloaded voice lives in this origin's private storage, so whether it is there is asked
   // of the browser rather than remembered here.
@@ -1423,10 +1431,13 @@ export default function App() {
   }, [speechEngine, piperVoiceId, geminiVoice, activeSpeechVoice]);
 
   const piperVoiceChoice = findPiperVoice(piperVoiceId);
-  // A Gemini key typed for the digest serves the voice too; a server key does as well
-  const geminiSpeechConfigured = Boolean(
-    (aiProvider === 'gemini' && customApiKey.trim()) || serverGeminiAvailable
-  );
+  // A key entered for reading aloud wins, then the digest's Gemini key, then the server's
+  const geminiSpeechKey = resolveGeminiSpeechKey({
+    readAloudKey: geminiTtsKey,
+    digestKey: customApiKey,
+    digestProvider: aiProvider,
+    serverKeyAvailable: serverGeminiAvailable,
+  });
 
   // One entry per voice, English first, by name
   const speechVoiceOptions = React.useMemo(
@@ -3116,7 +3127,7 @@ export default function App() {
     return synthesizeGeminiSpeech({
       text,
       voice: geminiVoice,
-      apiKey: aiProvider === 'gemini' ? customApiKey : '',
+      apiKey: geminiSpeechKey.key,
     });
   };
 
@@ -6348,7 +6359,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
               onPiperRemove={handleRemovePiperVoice}
               geminiVoice={geminiVoice}
               onGeminiVoiceChange={setGeminiVoice}
-              geminiReady={geminiSpeechConfigured}
+              geminiKey={geminiTtsKey}
+              onGeminiKeyChange={setGeminiTtsKey}
+              geminiKeySource={geminiSpeechKey.source}
               onPreview={handlePreviewSpeech}
             />
 

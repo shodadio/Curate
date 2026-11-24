@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { base64ToBytes, bytesToBase64, pcm16ToWavBytes, silentWavDataUri, speechAudioBlob } from '../lib/wav.ts';
 import { PIPER_DEFAULT_VOICE_ID, PIPER_VOICES, findPiperVoice, piperDownloadMb } from '../lib/piperVoices.ts';
-import { piperStatusLabel } from '../lib/readAloud.ts';
+import { piperStatusLabel, resolveGeminiSpeechKey } from '../lib/readAloud.ts';
 
 const ascii = (bytes: Uint8Array, offset: number, length: number) =>
   String.fromCharCode(...bytes.subarray(offset, offset + length));
@@ -68,4 +68,27 @@ test('a downloaded voice says what it is doing, and what to do next', () => {
   // A failure shows the browser's own reason rather than a generic apology
   assert.equal(piperStatusLabel({ status: 'error', progress: 0, error: 'No space left' }, cori), 'No space left');
   assert.equal(piperStatusLabel({ status: 'error', progress: 0 }, cori), 'The download did not finish.');
+});
+
+test('reading aloud prefers its own Gemini key, then the digest’s, then the server’s', () => {
+  const base = { readAloudKey: '', digestKey: '', digestProvider: 'deterministic', serverKeyAvailable: false };
+
+  // A key typed for reading aloud wins even when another provider writes the digest
+  assert.deepEqual(
+    resolveGeminiSpeechKey({ ...base, readAloudKey: ' speech-key ', digestKey: 'digest-key', digestProvider: 'openai-compatible', serverKeyAvailable: true }),
+    { key: 'speech-key', source: 'read-aloud' },
+  );
+  // With none of its own, the digest's Gemini key is reused rather than asking for a second one
+  assert.deepEqual(
+    resolveGeminiSpeechKey({ ...base, digestKey: 'digest-key', digestProvider: 'gemini' }),
+    { key: 'digest-key', source: 'digest' },
+  );
+  // A Gemini key saved for an OpenAI-compatible digest is not silently sent to Gemini
+  assert.deepEqual(
+    resolveGeminiSpeechKey({ ...base, readAloudKey: '   ', digestKey: 'digest-key', digestProvider: 'openai-compatible' }),
+    { key: '', source: 'none' },
+  );
+  // Nothing typed anywhere: the server's own key speaks, or there is none to speak with
+  assert.deepEqual(resolveGeminiSpeechKey({ ...base, serverKeyAvailable: true }), { key: '', source: 'server' });
+  assert.deepEqual(resolveGeminiSpeechKey(base), { key: '', source: 'none' });
 });
