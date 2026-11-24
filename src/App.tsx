@@ -4970,14 +4970,15 @@ export default function App() {
               >
                 Today
               </button>
-              <span aria-hidden="true" className="text-[10px] text-[#b9ad97]">·</span>
               <button
                 type="button"
                 onClick={() => setActiveTab(prev => prev === 'settings' ? 'today' : 'settings')}
                 aria-pressed={activeTab === 'settings'}
-                className={`inline-flex min-h-9 items-center text-[10px] font-semibold uppercase tracking-[0.18em] transition hover:text-[#1c1a17] ${activeTab === 'settings' ? 'text-[#1c1a17]' : 'text-[#3f3a33]'}`}
+                aria-label="Settings"
+                title="Settings"
+                className={`-mr-2.5 inline-flex min-h-9 min-w-9 items-center justify-center transition hover:text-[#1c1a17] ${activeTab === 'settings' ? 'text-[#1c1a17]' : 'text-[#3f3a33]'}`}
               >
-                Settings
+                <Sliders aria-hidden="true" className="h-4 w-4" />
               </button>
             </nav>
           </div>
