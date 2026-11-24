@@ -56,9 +56,9 @@
 
 /* The edition is paper, not slate: the browsing screens (Today, Feeds, Saved, Sources,
    Settings) are a printed page — ink #1c1a17 on #f6f1e7 — so they read in black and white.
-   The single amber accent (#8a5a24, shared with the reader's light theme) has one job:
-   the editor's flag — the piece flagged as outside the reader's bubble — plus focus rings.
-   Every other state (saved, read, synced, failed, unread) is weight, a mark, or a word. */
+   The single amber accent (#8a5a24, shared with the reader's light theme) marks publication
+   credits, the editor's outside-the-bubble flag, and focus rings. Other states (saved, read,
+   synced, failed, unread) are weight, a mark, or a word. */
 html,
 body,
 #root {
@@ -256,6 +256,12 @@ body {
 
 .reader-strong { color: var(--reader-ink); }
 .reader-strong:hover { color: var(--reader-accent); }
+
+/* Publication names should read as clear credits across every story surface. */
+.publication-title {
+  color: #8a5a24;
+  font-weight: 700;
+}
 
 .reader-link { color: var(--reader-accent); }
 .reader-link:hover { color: var(--reader-ink); }

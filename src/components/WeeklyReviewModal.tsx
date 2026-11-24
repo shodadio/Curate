@@ -382,7 +382,7 @@ export function WeeklyReviewModal({
                   className="px-3 py-1.5 rounded-full bg-[#ece4d1] border border-[#c9bc9f] text-xs flex items-center gap-2 text-[#3f3a33]"
                 >
                   <span className="w-1.5 h-1.5 rounded-full bg-[#1c1a17]" />
-                  <span className="font-medium text-[#1c1a17]">{s.source}</span>
+                  <span className="publication-title">{s.source}</span>
                   <span className="text-[#6f675c] font-mono text-xs">· {s.minutes}m</span>
                 </div>
               ))}
@@ -411,7 +411,7 @@ export function WeeklyReviewModal({
                       {item.title}
                     </h4>
                     <div className="flex items-center gap-2 text-[#6f675c] text-xs mt-0.5">
-                      <span className="text-[#3f3a33]">{item.source}</span>
+                      <span className="publication-title">{item.source}</span>
                       <span>·</span>
                       <span>{displayFolder(item.folder)}</span>
                     </div>

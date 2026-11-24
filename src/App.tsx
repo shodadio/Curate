@@ -3273,7 +3273,7 @@ export default function App() {
             {item.isOutOfBubble ? 'Outside your bubble' : displayFolder(item.folder)}
           </span>
           <span aria-hidden="true" className="text-[#b9ad97]">·</span>
-          <span className="flex items-center gap-1.5 tracking-[0.16em] text-[#6f675c]">
+          <span className="publication-title flex items-center gap-1.5 tracking-[0.16em]">
             {sourceIcon && (
               <img
                 src={sourceIcon}
@@ -4217,7 +4217,7 @@ export default function App() {
                       aria-label={`Open the ${readerSourceTitle} feed`}
                       className="reader-strong inline-flex min-w-0 max-w-full items-center rounded-lg text-left text-[0.82rem] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8a5a24]/50"
                     >
-                      <span className="truncate">{selectedArticle.source}</span>
+                      <span className="publication-title truncate">{selectedArticle.source}</span>
                     </button>
                     {readerSourceDescription && (
                       <button
@@ -4825,7 +4825,7 @@ export default function App() {
                         {leadStory.isOutOfBubble ? 'Outside your bubble' : displayFolder(leadStory.folder)}
                       </span>
                       <span aria-hidden="true" className="text-[#b9ad97]">·</span>
-                      <span className="tracking-[0.16em] text-[#6f675c]">{leadStory.source}</span>
+                      <span className="publication-title tracking-[0.16em]">{leadStory.source}</span>
                     </div>
 
                     <h2 className="mt-3 font-serif text-[clamp(2rem,7.4vw,2.75rem)] font-semibold leading-[1.02] text-[#1c1a17]">
@@ -4934,7 +4934,8 @@ export default function App() {
                           </p>
 
                           <p className="mt-2 text-[11px] uppercase tracking-[0.14em] text-[#6f675c]">
-                            {[byline.lead, item.source].filter(Boolean).join('\u00A0· ')}
+                            {byline.lead}{byline.lead && item.source ? '\u00A0· ' : ''}
+                            {item.source && <span className="publication-title">{item.source}</span>}
                             {byline.readTime && <span className="hidden sm:inline"> · {byline.readTime}</span>}
                             {status ? `\u00A0· ${status}` : ''}
                           </p>
@@ -5025,7 +5026,7 @@ export default function App() {
                             </h4>
 
                             <p className="mt-1 line-clamp-1 text-[0.875rem] leading-[1.55] text-[#6f675c]">
-                              <span className="font-semibold text-[#3f3a33]">{item.source}</span>
+                              <span className="publication-title">{item.source}</span>
                               {' · '}
                               {standfirst(item)}
                             </p>
@@ -5113,11 +5114,10 @@ export default function App() {
                             </button>
                             <p className="mt-1 truncate text-xs leading-relaxed text-[#6f675c]">{standfirst(item)}</p>
                             <p className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#6f675c]">
-                              <span>
-                                {[item.source, decodeEntities(item.publishedAt || ''), decodeEntities(item.readTime || '')]
-                                  .filter(Boolean)
-                                  .join(' · ')}
-                              </span>
+                              <span className="publication-title">{item.source}</span>
+                              {[decodeEntities(item.publishedAt || ''), decodeEntities(item.readTime || '')].filter(Boolean).length > 0 && (
+                                <span>· {[decodeEntities(item.publishedAt || ''), decodeEntities(item.readTime || '')].filter(Boolean).join(' · ')}</span>
+                              )}
                               {item.isOutOfBubble && (
                                 <span className="whitespace-nowrap font-bold text-[#8a5a24]">Outside your bubble</span>
                               )}
@@ -5245,7 +5245,7 @@ export default function App() {
                                         className="flex min-h-9 w-full items-baseline gap-2 rounded-lg px-1 text-left text-xs text-[#3f3a33] transition hover:text-[#1c1a17]"
                                       >
                                         <span className="min-w-0 flex-1 truncate">{item.title}</span>
-                                        <span className="shrink-0 text-[#6f675c]">{item.source}</span>
+                                        <span className="publication-title shrink-0">{item.source}</span>
                                       </button>
                                     </li>
                                   ))}
@@ -7261,7 +7261,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 {currentCalibrationItem ? (
                   <div className="p-4 rounded-2xl bg-[#e9e1cf] border border-[#ddd2bc] space-y-2">
                     <div className="text-xs text-[#6f675c]">
-                      {currentCalibrationItem.source} · {currentCalibrationItem.folder}
+                      <span className="publication-title">{currentCalibrationItem.source}</span> · {currentCalibrationItem.folder}
                     </div>
                     <h4 className="text-sm font-semibold text-[#1c1a17] leading-snug">
                       {headline(currentCalibrationItem)}
