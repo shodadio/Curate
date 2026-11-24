@@ -21,6 +21,37 @@ export const GEMINI_TTS_VOICES: GeminiSpeechVoice[] = [
 
 export const GEMINI_TTS_DEFAULT_VOICE = GEMINI_TTS_VOICES[0].name;
 
+// Google reports a refused sentence as a JSON blob inside the message, and a host that has no
+// speech route at all answers with a page of HTML. Both become one sentence a reader can act
+// on, because "could not speak that passage" on its own says nothing about what to fix.
+const googleMessage = (value: unknown): string => {
+  if (typeof value !== 'string') return '';
+  const text = value.trim();
+  if (!text.startsWith('{')) return text;
+  try {
+    const parsed = JSON.parse(text);
+    return String(parsed?.error?.message || parsed?.message || '').trim();
+  } catch {
+    return text;
+  }
+};
+
+export function speechFailureMessage(status: number, body: unknown): string {
+  const error = (body as { error?: unknown } | null)?.error;
+  if (typeof error === 'object' && error !== null) {
+    const nested = googleMessage((error as { message?: unknown }).message);
+    if (nested) return nested;
+  }
+  const described = googleMessage(error);
+  if (described) return described;
+  if (status === 404) return 'This server has no speech endpoint — the build serving it is older than the voice.';
+  if (status === 401 || status === 403) return `Google refused the key (${status}). Check it has the speech model enabled.`;
+  if (status === 429) return 'Google is limiting this key right now (429). Wait a moment and carry on.';
+  if (status >= 500) return `The server could not reach Google (${status}).`;
+  if (status >= 200 && status < 300) return 'The server answered with no audio — the voice may be unavailable just now.';
+  return `The server answered ${status} without any audio.`;
+}
+
 export interface GeminiSpeechRequest {
   text: string;
   voice: string;
@@ -35,9 +66,9 @@ export async function synthesizeGeminiSpeech({ text, voice, apiKey, signal }: Ge
     body: JSON.stringify({ text, voice, apiKey: apiKey || '' }),
     signal,
   });
-  const data = await response.json().catch(() => ({}) as any);
+  const data = await response.json().catch(() => null);
   if (!response.ok || !data?.audio) {
-    throw new Error(String(data?.error || 'Gemini could not speak that passage.'));
+    throw new Error(speechFailureMessage(response.status, data));
   }
   return speechAudioBlob(String(data.audio), String(data.mimeType || 'audio/wav'));
 }

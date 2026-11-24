@@ -6,6 +6,7 @@ import { base64ToBytes, bytesToBase64, pcm16ToWavBytes, silentWavDataUri, speech
 import { PIPER_DEFAULT_VOICE_ID, PIPER_VOICES, findPiperVoice, piperDownloadMb } from '../lib/piperVoices.ts';
 import { piperStatusLabel, resolveGeminiSpeechKey } from '../lib/readAloud.ts';
 import { GEMINI_TTS_API_VERSION, geminiTtsRequest } from '../lib/geminiTtsRequest.ts';
+import { speechFailureMessage } from '../src/lib/geminiTts.ts';
 
 const ascii = (bytes: Uint8Array, offset: number, length: number) =>
   String.fromCharCode(...bytes.subarray(offset, offset + length));
@@ -30,6 +31,21 @@ test('a Gemini reply that is already WAV is played as it arrived', () => {
   const blob = speechAudioBlob(bytesToBase64(wav), 'audio/wav');
   assert.equal(blob.type, 'audio/wav');
   assert.equal(blob.size, wav.byteLength);
+});
+
+test('a WAV that arrives labelled as PCM is still played as it arrived', () => {
+  // Gemini 3.8 sends WAV where 3.1 sent headerless PCM, and the mime type has lagged behind
+  const wav = pcm16ToWavBytes(new Uint8Array(8), 24000, 1);
+  const blob = speechAudioBlob(bytesToBase64(wav), 'audio/L16;codec=pcm;rate=24000');
+  assert.equal(blob.type, 'audio/wav');
+  assert.equal(blob.size, wav.byteLength, 'a second header would make the clip unplayable');
+});
+
+test('a compressed clip is passed through rather than wrapped', () => {
+  const mp3 = new Uint8Array([0x49, 0x44, 0x33, 0x04]);
+  const blob = speechAudioBlob(bytesToBase64(mp3), 'audio/mpeg');
+  assert.equal(blob.type, 'audio/mpeg');
+  assert.equal(blob.size, mp3.byteLength);
 });
 
 test('headerless Gemini PCM is converted rather than played as noise', () => {
@@ -99,6 +115,22 @@ test('a clip with no silence to spare is played untouched', () => {
   assert.equal(trimSilenceWav(silence), silence);
   const noise = new Uint8Array(64).fill(7);
   assert.equal(trimSilenceWav(noise), noise);
+});
+
+test('a refused sentence says why it was refused', () => {
+  // Google's refusal arrives as a JSON blob inside the error field
+  const blob = JSON.stringify({ error: { code: 400, message: 'API key not valid. Please pass a valid API key.' } });
+  assert.equal(
+    speechFailureMessage(502, { error: blob }),
+    'API key not valid. Please pass a valid API key.',
+  );
+  assert.equal(speechFailureMessage(502, { error: 'Quota exceeded for this key.' }), 'Quota exceeded for this key.');
+
+  // A host with no speech route answers with a page, not a JSON error
+  assert.match(speechFailureMessage(404, null), /no speech endpoint/);
+  assert.match(speechFailureMessage(502, null), /could not reach Google/);
+  assert.match(speechFailureMessage(429, null), /limiting this key/);
+  assert.match(speechFailureMessage(200, { ok: true }), /answered with no audio/);
 });
 
 test('every offered Piper voice may be downloaded and used commercially', () => {

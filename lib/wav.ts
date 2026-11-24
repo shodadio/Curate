@@ -46,11 +46,24 @@ export function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+// Gemini changed what it sends: 3.1 models answered with headerless PCM, 3.8 answers with a
+// complete WAV, and the mime type has not always kept up with the bytes. So the bytes decide —
+// a RIFF/WAVE header is played as it arrived, and only audio without one is wrapped, which is
+// the difference between a voice and a clip of noise.
+const isWavBytes = (bytes: Uint8Array) =>
+  bytes.byteLength >= 12 &&
+  String.fromCharCode(...bytes.subarray(0, 4)) === 'RIFF' &&
+  String.fromCharCode(...bytes.subarray(8, 12)) === 'WAVE';
+
 // Whatever the engine sent back, the player gets something it can play.
 export function speechAudioBlob(base64: string, mimeType: string): Blob {
   const bytes = base64ToBytes(base64);
-  if (/wav|wave/i.test(mimeType || '')) {
+  if (isWavBytes(bytes)) {
     return new Blob([bytes as unknown as BlobPart], { type: 'audio/wav' });
+  }
+  // A compressed format is its own container: wrapping it in a WAV header would ruin it
+  if (/mpeg|mp3|ogg|opus|m4a|aac/i.test(mimeType || '')) {
+    return new Blob([bytes as unknown as BlobPart], { type: mimeType });
   }
   const sampleRate = Number(/rate=(\d+)/i.exec(mimeType || '')?.[1]) || 24000;
   const wav = pcm16ToWavBytes(bytes, sampleRate, 1);
