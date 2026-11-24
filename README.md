@@ -35,10 +35,12 @@
   - [`POST /api/source-descriptions`](#post-apisource-descriptions)
   - [`POST /api/article-text`](#post-apiarticle-text)
   - [`POST /api/article-texts`](#post-apiarticle-texts)
+  - [`POST /api/article-authors`](#post-apiarticle-authors)
   - [`POST /api/check-feed`](#post-apicheck-feed)
   - [`POST /api/discover-sources`](#post-apidiscover-sources)
   - [`POST /api/parse-opml`](#post-apiparse-opml)
   - [`POST /api/test-provider`](#post-apitest-provider)
+  - [`POST /api/list-models`](#post-apilist-models)
   - [`POST /api/tts`](#post-apitts)
   - [`GET /api/generated-feed`](#get-apigenerated-feed)
   - [`GET /api/favicon`](#get-apifavicon)
@@ -303,6 +305,15 @@ Re-extracts several saved pieces in one pass, for the “Add citations” action
 
 ---
 
+### `POST /api/article-authors`
+Fills in a writer's name for pieces whose feed carried none, which is what the byline in the reader and the digest shows. Pages are read four at a time and the whole call is capped at 55 seconds, so up to 16 stories can be credited in one pass.
+
+**Request Body:** `{ "items": [{ "id": "art_12", "url": "https://example.com/story", "source": "The Guardian" }] }` (up to 16 per call)
+
+**Response:** `{ "articles": [{ "id": "art_12", "author": "Marina Hyde" }] }`. A page that cannot be read comes back with an empty `author`, which keeps the publication's own credit and leaves the piece eligible for a later attempt; an item missing its `id` or `url` is skipped. The response is never cached.
+
+---
+
 ### `POST /api/check-feed`
 Proves a feed URL works before it is added to the watch list, using the same outbound filter and parser as curation.
 
@@ -366,6 +377,24 @@ The **Test API** button in Settings: one minimal request using the provider, key
 ```
 
 **Response:** `{ "ok": true, "provider": "openai-compatible", "model": "gpt-4o-mini", "latencyMs": 412, "reply": "pong" }`. Failures return `{ "ok": false, "error": "…" }` with `200`, because the route reports a bad key rather than throwing.
+
+---
+
+### `POST /api/list-models`
+Fills the model picker in **Connect an AI service** with what the service actually offers, so a model name is chosen rather than typed and guessed. It only speaks to OpenAI-compatible services. Through OpenRouter the list is narrowed to models that can do the job at hand — chat or embeddings — and ordered cheapest first.
+
+**Request Body:**
+```json
+{
+  "provider": "openai-compatible",
+  "apiKey": "sk-…",
+  "baseUrl": "https://api.openai.com/v1",
+  "kind": "chat"
+}
+```
+`kind` is `chat` or `embedding`, and defaults to chat.
+
+**Response:** `{ "ok": true, "models": ["gpt-4o-mini"], "modelOptions": [{ "id": "gpt-4o-mini", "name": "GPT-4o mini" }], "source": "provider" }`. `source` reads `openrouter` when the list came through OpenRouter, and an option may carry its price per million tokens when the service reports one. A provider other than OpenAI-compatible, or a missing key or URL, answers `400`; a service with no suitable models answers `422`; a failed request answers `502`, all as `{ "ok": false, "error": "…" }`.
 
 ---
 
