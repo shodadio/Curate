@@ -130,8 +130,7 @@ export const composeVoteText = (
   options,
 );
 
-// Vectors are built from term counts, so one pass over the text serves both the vector and the
-// document's length, which the substance factor needs.
+// Vectors are built from term counts, so one pass over the text serves every candidate and vote.
 const vectorsFromCounts = (counts: Array<Map<string, number>>): Array<Map<string, number>> => {
   const documentFrequency = new Map<string, number>();
   counts.forEach(terms => {
@@ -162,16 +161,6 @@ const vectorsFromCounts = (counts: Array<Map<string, number>>): Array<Map<string
 export const buildSemanticVectors = (documents: string[]): Array<Map<string, number>> =>
   vectorsFromCounts(documents.map(semanticTermCounts));
 
-// Length in tokens, read from the counts the vector was built from: unigram entries count once
-// each, and bigrams ("a_b") are not words.
-const documentLength = (counts: Map<string, number>): number => {
-  let length = 0;
-  counts.forEach((value, term) => {
-    if (!term.includes('_')) length += value;
-  });
-  return length;
-};
-
 export const sparseCosine = (left: Map<string, number>, right: Map<string, number>): number => {
   if (left.size === 0 || right.size === 0) return 0;
   const [small, large] = left.size <= right.size ? [left, right] : [right, left];
@@ -198,28 +187,26 @@ const clampSemanticScore = (value: number): number =>
 
 // A headline is a promise; the body is the article. Cosine similarity divides length out, so a
 // bare headline can outscore the very same story once its body is attached — the body dilutes
-// the vector and the headline does not. Weight each match by how much article stands behind it:
-// a stub earns the floor, and a headline plus a paragraph earns the whole score.
+// the vector and the headline does not. Discount each match by how much article stands behind it:
+// a stub keeps the floor of its score, a headline plus a paragraph keeps all of it.
 //
-// Measured pair sizes are 13-16 tokens for the bare headline and 45-50 for the full story. At this
-// pivot any floor up to 0.69 orders all three pairs correctly, and at this floor any pivot from 30
-// to 75 tokens does; the values sit mid-band rather than being fitted to one point. 0.6 says a
-// headline is worth most of a story, and 50 is a headline and a paragraph.
+// Measured against the pairs, a bare headline has 0 words behind it and each full twin 44-49, so
+// the factor runs from the floor to full. Any floor up to 0.75 orders all three pairs correctly at
+// this pivot, and 0.8 does not; 0.6 says a headline is worth most of a story, and 50 words is a
+// paragraph.
 export const SEMANTIC_SUBSTANCE_FLOOR = 0.6;
-export const SUBSTANCE_PARAGRAPH = 50;
-export const substanceFactor = (tokens: number): number => {
-  const share = Math.min(1, Math.max(0, tokens) / SUBSTANCE_PARAGRAPH);
-  return SEMANTIC_SUBSTANCE_FLOOR + (1 - SEMANTIC_SUBSTANCE_FLOOR) * share;
-};
+export const SUBSTANCE_PARAGRAPH_WORDS = 50;
 
 // How much article stands behind the headline, from 0 for a bare headline to 1 for a paragraph or
-// more. Counted in words rather than through the tokeniser, which this path must not pay for, and
-// against the same paragraph scale: the semantic factor asks how much of a match the evidence
-// supports, this asks how much of it the reader can actually read.
+// more. One measure in one unit, used both to discount a match the evidence cannot support and to
+// weigh what the reader can actually read.
 export const substanceShare = (item: { summary?: string; fullText?: string }): number => {
   const words = `${item?.summary || ''} ${item?.fullText || ''}`.match(/\S+/g)?.length || 0;
-  return Math.min(1, words / SUBSTANCE_PARAGRAPH);
+  return Math.min(1, words / SUBSTANCE_PARAGRAPH_WORDS);
 };
+
+export const substanceFactor = (share: number): number =>
+  SEMANTIC_SUBSTANCE_FLOOR + (1 - SEMANTIC_SUBSTANCE_FLOOR) * Math.max(0, Math.min(1, share));
 
 export const localSemanticScores = (
   feedback: SemanticVoteExample[],
@@ -236,8 +223,8 @@ export const localSemanticScores = (
     composeVoteText(entry, { titleEmphasis: SEMANTIC_TITLE_WEIGHT })
   );
   const counts = [...candidateTexts, ...feedbackTexts].map(semanticTermCounts);
-  const candidateLengths = counts.slice(0, candidates.length).map(documentLength);
   const vectors = vectorsFromCounts(counts);
+  const candidateShares = candidates.map(substanceShare);
   const feedbackVectors = vectors.slice(candidates.length);
   const usableFeedback = feedback
     .map((example, index) => ({ example, vector: feedbackVectors[index] }))
@@ -267,7 +254,7 @@ export const localSemanticScores = (
     // No conditional halving: an unrelated dislike must not rescale every liked topic. The
     // substance factor is what stops a bare headline beating its own article.
     const score = clampSemanticScore(
-      (positiveSimilarity - negativeSimilarity) * substanceFactor(candidateLengths[index]),
+      (positiveSimilarity - negativeSimilarity) * substanceFactor(candidateShares[index]),
     );
     if (Number.isFinite(score)) scores.set(candidate.id, score);
   });

@@ -30,7 +30,7 @@ import {
   DIGEST_MAX_AGE_MS,
   DENSE_FEEDBACK_HALF_LIFE_MS,
   SEMANTIC_SUBSTANCE_FLOOR,
-  SUBSTANCE_PARAGRAPH,
+  SUBSTANCE_PARAGRAPH_WORDS,
   substanceFactor,
   substanceShare,
   WHY_CLOSE_MATCH_SCORE,
@@ -236,8 +236,10 @@ test('localSemanticScores preserves separate liked topics instead of averaging t
     { id: 'garden', title: 'Garden compost soil', summary: 'tomatoes gardening' },
     { id: 'unrelated', title: 'Classical music', summary: 'symphonies and orchestras' },
   ], NOW);
-  assert.ok((scores.get('rust') || 0) > 0.6, 'the Rust interest remains independently strong');
-  assert.ok((scores.get('garden') || 0) > 0.6, 'the gardening interest remains independently strong');
+  // These fixtures are headline plus a one-line summary, so they earn the stub floor rather than the
+  // whole match; the ceiling here is that floor, and what is under test is separation, not size.
+  assert.ok((scores.get('rust') || 0) > 0.55, 'the Rust interest remains independently strong');
+  assert.ok((scores.get('garden') || 0) > 0.55, 'the gardening interest remains independently strong');
   assert.ok((scores.get('rust') || 0) > (scores.get('unrelated') || 0));
   assert.ok((scores.get('garden') || 0) > (scores.get('unrelated') || 0));
 });
@@ -292,23 +294,24 @@ test('an unrelated dislike does not rescale the liked topics', () => {
   );
 });
 
-test('substanceFactor gives a stub less than a full article, never zero', () => {
-  assert.equal(substanceFactor(0), SEMANTIC_SUBSTANCE_FLOOR);
-  assert.equal(substanceFactor(SUBSTANCE_PARAGRAPH), 1, 'a headline and a paragraph earn full weight');
-  assert.equal(substanceFactor(500), 1, 'longer than that changes nothing');
-  approx(substanceFactor(SUBSTANCE_PARAGRAPH / 2), (SEMANTIC_SUBSTANCE_FLOOR + 1) / 2);
-  assert.ok(
-    substanceFactor(15) < substanceFactor(45),
-    'a bare headline counts for less than a headline with a body',
-  );
-});
-
 test('substanceShare tells a bare headline from a piece the reader can read', () => {
-  const paragraph = Array.from({ length: SUBSTANCE_PARAGRAPH }, (_, index) => `w${index}`).join(' ');
+  const paragraph = Array.from({ length: SUBSTANCE_PARAGRAPH_WORDS }, (_, index) => `w${index}`).join(' ');
   assert.equal(substanceShare({}), 0, 'a bare headline has nothing behind it');
   assert.equal(substanceShare({ fullText: paragraph }), 1, 'a paragraph counts in full');
   assert.equal(substanceShare({ summary: paragraph, fullText: paragraph }), 1, 'longer changes nothing');
   approx(substanceShare({ summary: 'one two three four five' }), 0.1);
+});
+
+test('substanceFactor keeps a stub below its own article, but never at zero', () => {
+  assert.equal(substanceFactor(0), SEMANTIC_SUBSTANCE_FLOOR);
+  assert.equal(substanceFactor(1), 1, 'a full share earns the whole score');
+  assert.equal(substanceFactor(2), 1, 'more than a full share changes nothing');
+  approx(substanceFactor(0.5), (SEMANTIC_SUBSTANCE_FLOOR + 1) / 2);
+  const paragraph = Array.from({ length: SUBSTANCE_PARAGRAPH_WORDS }, (_, index) => `w${index}`).join(' ');
+  assert.ok(
+    substanceFactor(substanceShare({})) < substanceFactor(substanceShare({ fullText: paragraph })),
+    'a bare headline counts for less than a headline with a body',
+  );
 });
 
 test('a matching dislike pulls its own topic below neutral', () => {
