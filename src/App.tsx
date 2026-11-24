@@ -1211,6 +1211,24 @@ export default function App() {
   const [newSourceFolder, setNewSourceFolder] = useState<string>('General');
   const [newSourceFolderCustom, setNewSourceFolderCustom] = useState(false);
   const [newSourceValidating, setNewSourceValidating] = useState(false);
+  const addSourceValidationAbortRef = React.useRef<AbortController | null>(null);
+
+  const clearAddSourceForm = () => {
+    addSourceValidationAbortRef.current?.abort();
+    addSourceValidationAbortRef.current = null;
+    setNewSourceTitle('');
+    setNewSourceUrl('');
+    setNewSourceTitleError(null);
+    setNewSourceUrlError(null);
+    setNewSourceFolder('General');
+    setNewSourceFolderCustom(false);
+    setNewSourceValidating(false);
+  };
+
+  const closeAddSourceModal = () => {
+    clearAddSourceForm();
+    setShowAddSourceModal(false);
+  };
 
   // OPML Import state
   const [importText, setImportText] = useState<string>('');
@@ -1239,6 +1257,8 @@ export default function App() {
   const [categoryEditorSourceId, setCategoryEditorSourceId] = useState<string | null>(null);
   const [categoryDraft, setCategoryDraft] = useState('');
   const [isDiscovering, setIsDiscovering] = useState<boolean>(false);
+  const discoverAbortRef = React.useRef<AbortController | null>(null);
+  const discoverRequestRef = React.useRef(0);
   const [discoverError, setDiscoverError] = useState<string | null>(null);
   const [discoverResults, setDiscoverResults] = useState<DiscoveredSource[]>([]);
   const [discoverGroundingLinks, setDiscoverGroundingLinks] = useState<Array<{ title: string; uri: string }>>([]);
@@ -1249,6 +1269,12 @@ export default function App() {
   // same answer as a search that found nothing.
   const [discoverAllInLibrary, setDiscoverAllInLibrary] = useState<boolean>(false);
   const [hasSearchedSources, setHasSearchedSources] = useState<boolean>(false);
+
+  useEffect(() => () => {
+    discoverRequestRef.current += 1;
+    discoverAbortRef.current?.abort();
+    addSourceValidationAbortRef.current?.abort();
+  }, []);
 
   // Reading view timer & depth tracking
 
@@ -1692,7 +1718,7 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.stopPropagation();
-        if (showAddSourceModal) setShowAddSourceModal(false);
+        if (showAddSourceModal) closeAddSourceModal();
         else if (showImportModal) setShowImportModal(false);
         else if (showSetupWizard) dismissSetupWizard();
         return;
@@ -2286,6 +2312,7 @@ export default function App() {
 
   const handleAddSource = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (newSourceValidating) return;
     const trimmedTitle = newSourceTitle.trim();
     const trimmedUrl = newSourceUrl.trim();
     // Novalidate on the form means iOS Safari, which shows no native message for a bad
@@ -2306,15 +2333,19 @@ export default function App() {
     setNewSourceUrlError(null);
     // A source is only "active" once Curator has actually read it: a URL that returns 404,
     // a login page or an HTML article used to be added and then quietly fail in every digest.
+    const validationController = new AbortController();
+    addSourceValidationAbortRef.current = validationController;
     setNewSourceValidating(true);
     let feedItemCount = 0;
     try {
       const check = await fetch('/api/check-feed', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feedUrl: trimmedUrl })
+        body: JSON.stringify({ feedUrl: trimmedUrl }),
+        signal: validationController.signal,
       });
       const checkData = await check.json().catch(() => ({}));
+      if (validationController.signal.aborted) return;
       if (!check.ok || !checkData?.ok) {
         setNewSourceUrlError(
           checkData?.error
@@ -2325,11 +2356,17 @@ export default function App() {
       }
       feedItemCount = Number(checkData.itemCount) || 0;
     } catch {
-      setNewSourceUrlError('Could not reach the server to check that feed. Try again in a moment.');
+      if (!validationController.signal.aborted) {
+        setNewSourceUrlError('Could not reach the server to check that feed. Try again in a moment.');
+      }
       return;
     } finally {
-      setNewSourceValidating(false);
+      if (addSourceValidationAbortRef.current === validationController) {
+        addSourceValidationAbortRef.current = null;
+        setNewSourceValidating(false);
+      }
     }
+    if (validationController.signal.aborted) return;
 
     const requestedFolder = newSourceFolder.trim();
     const chosenFolder = sources
@@ -2348,6 +2385,8 @@ export default function App() {
     setNewSourceFolderCustom(false);
     setNewSourceTitle('');
     setNewSourceUrl('');
+    setNewSourceTitleError(null);
+    setNewSourceUrlError(null);
     setShowAddSourceModal(false);
     showToast(`Feed added · ${feedItemCount} recent ${feedItemCount === 1 ? 'story' : 'stories'} found`);
   };
@@ -2510,22 +2549,48 @@ export default function App() {
     setShowImportModal(true);
   };
 
+  const resetDiscoverSearch = (clearQuery: boolean) => {
+    discoverRequestRef.current += 1;
+    discoverAbortRef.current?.abort();
+    discoverAbortRef.current = null;
+    setIsDiscovering(false);
+    if (clearQuery) setDiscoverQuery('');
+    setDiscoverError(null);
+    setDiscoverResults([]);
+    setDiscoverGroundingLinks([]);
+    setDiscoverAiAssisted(null);
+    setDiscoverAllInLibrary(false);
+    setHasSearchedSources(false);
+  };
+
+  const stopDiscoverSources = () => resetDiscoverSearch(false);
+  const clearDiscoverSearch = () => resetDiscoverSearch(true);
+
   const handleDiscoverSources = async (e: React.FormEvent) => {
     e.preventDefault();
     const q = discoverQuery.trim();
-    if (!q) return;
+    if (!q || isDiscovering) return;
 
+    const controller = new AbortController();
+    const requestId = ++discoverRequestRef.current;
+    discoverAbortRef.current = controller;
     setIsDiscovering(true);
     setDiscoverError(null);
+    setDiscoverResults([]);
+    setDiscoverGroundingLinks([]);
+    setDiscoverAiAssisted(null);
+    setDiscoverAllInLibrary(false);
     setHasSearchedSources(true);
     try {
       const res = await fetch('/api/discover-sources', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         // The library goes along with the search so the same feeds are never offered again.
-        body: JSON.stringify({ query: q, apiKey: customApiKey, existing: sources.map(s => s.feedUrl) })
+        body: JSON.stringify({ query: q, apiKey: customApiKey, existing: sources.map(s => s.feedUrl) }),
+        signal: controller.signal,
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (requestId !== discoverRequestRef.current) return;
       if (!res.ok) {
         setDiscoverError(data.error || 'Search failed.');
         setDiscoverResults([]);
@@ -2538,13 +2603,19 @@ export default function App() {
       setDiscoverGroundingLinks(Array.isArray(data.groundingLinks) ? data.groundingLinks : []);
       setDiscoverAiAssisted(typeof data.aiAssisted === 'boolean' ? data.aiAssisted : null);
       setDiscoverAllInLibrary(data.allMatchesAlreadyFollowed === true);
-    } catch (err) {
-      setDiscoverError('Could not reach the search service.');
-      setDiscoverResults([]);
-      setDiscoverAiAssisted(null);
-      setDiscoverAllInLibrary(false);
+    } catch {
+      if (requestId !== discoverRequestRef.current) return;
+      if (!controller.signal.aborted) {
+        setDiscoverError('Could not reach the search service.');
+        setDiscoverResults([]);
+        setDiscoverAiAssisted(null);
+        setDiscoverAllInLibrary(false);
+      }
     } finally {
-      setIsDiscovering(false);
+      if (requestId === discoverRequestRef.current) {
+        discoverAbortRef.current = null;
+        setIsDiscovering(false);
+      }
     }
   };
 
@@ -5471,14 +5542,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 {hasSearchedSources && (
                   <button
                     type="button"
-                    onClick={() => {
-                      setHasSearchedSources(false);
-                      setDiscoverResults([]);
-                      setDiscoverGroundingLinks([]);
-                      setDiscoverAiAssisted(null);
-                      setDiscoverAllInLibrary(false);
-                      setDiscoverError(null);
-                    }}
+                    onClick={clearDiscoverSearch}
                     className="inline-flex min-h-11 shrink-0 items-center px-2 -mr-2 text-xs text-[#6f675c] hover:text-[#3f3a33]"
                   >
                     Clear
@@ -5494,18 +5558,31 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     value={discoverQuery}
                     onChange={e => setDiscoverQuery(e.target.value)}
                     placeholder="Search writers, publications, or topics"
-                    className="w-full rounded-xl bg-[#f6f1e7] border border-[#ddd2bc] pl-10 pr-3 py-2.5 text-xs text-[#1c1a17] placeholder:text-[#a39a8c] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8a5a24]/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#f6f1e7] focus:border-[#8a5a24]"
+                    aria-label="Search writers, publications, or topics"
+                    className="w-full rounded-xl bg-[#f6f1e7] border border-[#ddd2bc] pl-10 pr-10 py-2.5 text-xs text-[#1c1a17] placeholder:text-[#a39a8c] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8a5a24]/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#f6f1e7] focus:border-[#8a5a24]"
                   />
+                  {discoverQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setDiscoverQuery('')}
+                      aria-label="Clear source search terms"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex min-h-8 min-w-8 items-center justify-center rounded-lg text-[#6f675c] hover:text-[#1c1a17]"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
                 <button
-                  type="submit"
-                  disabled={isDiscovering || !discoverQuery.trim()}
+                  type={isDiscovering ? 'button' : 'submit'}
+                  onClick={isDiscovering ? stopDiscoverSources : undefined}
+                  disabled={!isDiscovering && !discoverQuery.trim()}
+                  aria-label={isDiscovering ? 'Stop source discovery search' : undefined}
                   className="px-4 py-2.5 text-xs font-semibold rounded-xl bg-[#1c1a17] text-[#f6f1e7] hover:bg-[#3a352d] transition disabled:opacity-50 whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5"
                 >
                   {isDiscovering ? (
                     <>
-                      <LoaderCircle className="w-3.5 h-3.5 animate-spin" />
-                      <span>Investigating...</span>
+                      <Square className="w-3.5 h-3.5 fill-current" />
+                      <span>Stop search</span>
                     </>
                   ) : (
                     <>
@@ -6980,7 +7057,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
           >
             <div className="flex items-center justify-between">
               <h3 id="add-source-title" className="text-lg font-semibold text-[#1c1a17]">Add New Source</h3>
-              <button type="button" onClick={() => setShowAddSourceModal(false)} title="Close" aria-label="Close the Add Source form" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[#6f675c] hover:text-[#1c1a17] transition">
+              <button type="button" onClick={closeAddSourceModal} title="Close" aria-label="Close the Add Source form" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[#6f675c] hover:text-[#1c1a17] transition">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -7053,16 +7130,17 @@ Search for writers, publications, or topics. Curator checks whether each result 
               <div className="flex justify-end gap-2 pt-2">
                 <button 
                   type="button" 
-                  onClick={() => setShowAddSourceModal(false)}
+                  onClick={closeAddSourceModal}
                   className="px-4 py-2 text-xs font-medium text-[#6f675c] hover:text-[#3f3a33]"
                 >
                   Cancel
                 </button>
                 <button 
                   type="submit"
-                  className="px-4 py-2 text-xs font-medium rounded-xl bg-[#1c1a17] text-[#f6f1e7] font-semibold hover:bg-[#3a352d] transition"
+                  disabled={newSourceValidating}
+                  className="px-4 py-2 text-xs font-medium rounded-xl bg-[#1c1a17] text-[#f6f1e7] font-semibold hover:bg-[#3a352d] transition disabled:opacity-50"
                 >
-                  Add Source
+                  {newSourceValidating ? 'Checking feed…' : 'Add Source'}
                 </button>
               </div>
             </form>

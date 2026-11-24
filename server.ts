@@ -166,6 +166,7 @@ async function requestProviderJson(
   headers: Record<string, string>,
   body?: unknown,
   timeoutMs = 30000,
+  signal?: AbortSignal,
 ): Promise<any> {
   const url = await assertPublicHttpUrl(targetUrl);
   if (url.protocol !== 'https:') throw new Error('AI provider endpoints must use HTTPS.');
@@ -208,12 +209,25 @@ async function requestProviderJson(
 
     req.setTimeout(timeoutMs, () => req.destroy(new Error('AI provider request timed out.')));
     req.on('error', reject);
+    const abortRequest = () => req.destroy(new Error('AI provider request aborted.'));
+    const removeAbortListener = () => signal?.removeEventListener('abort', abortRequest);
+    req.once('close', removeAbortListener);
+    if (signal?.aborted) {
+      abortRequest();
+      return;
+    }
+    signal?.addEventListener('abort', abortRequest, { once: true });
     req.end(body === undefined ? undefined : JSON.stringify(body));
   });
 }
 
-const postProviderJson = (targetUrl: string, headers: Record<string, string>, body: unknown, timeoutMs?: number) =>
-  requestProviderJson('POST', targetUrl, headers, body, timeoutMs);
+const postProviderJson = (
+  targetUrl: string,
+  headers: Record<string, string>,
+  body: unknown,
+  timeoutMs?: number,
+  signal?: AbortSignal,
+) => requestProviderJson('POST', targetUrl, headers, body, timeoutMs, signal);
 
 const getProviderJson = (targetUrl: string, headers: Record<string, string>) =>
   requestProviderJson('GET', targetUrl, headers);
@@ -2865,6 +2879,11 @@ CURATION RULES:
   // route may answer: a grounded Gemini call fits in seconds, but Apify's actor can spend a
   // minute starting up, and the RSS probes run after whichever search answered.
   app.post('/api/discover-sources', rateLimit('discover-sources', 6), requestBudget('Source discovery', 100_000), async (req, res) => {
+    const cancellation = new AbortController();
+    res.on('close', () => {
+      if (!res.writableEnded) cancellation.abort();
+    });
+
     try {
       const { query, apiKey: clientApiKey, existing } = req.body;
       if (!query || typeof query !== 'string' || !query.trim()) {
@@ -2933,6 +2952,7 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
             contents: prompt,
             config: {
               tools: [{ googleSearch: {} }],
+              abortSignal: cancellation.signal,
             },
           });
           recordGeminiUsage(response);
@@ -2984,9 +3004,11 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
             }
           }
         } catch {
+          if (cancellation.signal.aborted) return;
           console.warn('[Curator] Search grounding AI call unavailable, using curated directory.');
         }
       }
+      if (cancellation.signal.aborted) return;
 
       // Which search answered, so the screen can say so: a grounded Gemini call, Apify's Google
       // Search actor, or the built-in directory.
@@ -3001,7 +3023,13 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
       const apifyToken = (process.env.APIFY_TOKEN || '').trim();
       if (parsedCandidates.length === 0 && apifyToken && takeApifySearchAllowance()) {
         try {
-          const dataset = await postProviderJson(apifySearchUrl(apifyToken), {}, apifySearchInput(query), APIFY_SEARCH_TIMEOUT_MS);
+          const dataset = await postProviderJson(
+            apifySearchUrl(apifyToken),
+            {},
+            apifySearchInput(query),
+            APIFY_SEARCH_TIMEOUT_MS,
+            cancellation.signal,
+          );
           const found = apifyCandidatesFromDataset(dataset);
           if (found.length > 0) {
             parsedCandidates = found.map(candidate => ({
@@ -3011,9 +3039,11 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
             discoveryVia = 'apify';
           }
         } catch (err: any) {
+          if (cancellation.signal.aborted) return;
           console.warn('[Curator] Apify search unavailable, using the curated directory:', err?.message || err);
         }
       }
+      if (cancellation.signal.aborted) return;
 
       // A grounded search can name a publication the reader already follows, which would only
       // repeat what is already in the library.
@@ -3055,9 +3085,11 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
         }
       }
 
+      if (cancellation.signal.aborted) return;
       const investigated = await Promise.all(
         uniqueCandidates.map(cand => investigateSourceForRss(cand))
       );
+      if (cancellation.signal.aborted) return;
 
       res.json({
         query: query.trim(),
@@ -3071,6 +3103,7 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
         results: investigated,
       });
     } catch (err: any) {
+      if (cancellation.signal.aborted) return;
       console.warn('Discover sources notice:', err?.message || err);
       res.status(500).json({ error: err?.message || 'Failed to search for sources.' });
     }
