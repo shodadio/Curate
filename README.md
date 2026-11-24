@@ -1,4 +1,4 @@
-# Curator — Morning Reading Editor & Intelligent RSS Digest
+# Curator — Reading Editor & Intelligent RSS Digest
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.x-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=black)](https://react.dev/)
@@ -8,7 +8,7 @@
 [![PWA Ready](https://img.shields.io/badge/PWA-Ready-5A0FC8?logo=pwa&logoColor=white)](https://web.dev/progressive-web-apps/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-amber.svg)](LICENSE)
 
-> **Curator** is a calm, finite reading editor that turns unmanageable RSS streams, Substacks, and web publications into an elegant, focused daily digest. Designed around editorial intentionality rather than algorithmic engagement loops, it selects high-signal articles each morning, balances your intellectual diet with serendipitous perspectives, and provides instant fallback safeguards for signal tuning.
+> **Curator** is a calm, finite reading editor that turns unmanageable RSS streams, Substacks, and web publications into an elegant, focused daily digest. Designed around editorial intentionality rather than algorithmic engagement loops, it selects high-signal articles on each refresh, balances your intellectual diet with serendipitous perspectives, and provides instant fallback safeguards for signal tuning.
 
 ---
 
@@ -64,8 +64,8 @@
 
 Modern digital reading is burdened by infinite feeds, engagement algorithms, and ad-incentivized outrage. Standard RSS readers often amplify this problem by accumulating unread counters that induce guilt and information fatigue.
 
-**Curator** reintroduces the classic ritual of the **finite morning edition**:
-- **Finite editions**: Choose between 3, 5, 8, 12, or 15 high-signal pieces each morning. When you reach the bottom, you are done for the day.
+**Curator** reintroduces the classic ritual of the **finite daily edition**:
+- **Finite editions**: Choose between 3, 5, 8, 12, or 15 high-signal pieces each day. When you reach the bottom, you are done for the day.
 - **Editorial signal over clickbait**: Evaluates articles based on analytical depth, evergreen value, and original reporting rather than sensationalism.
 - **Deliberate stretch by design**: The digest includes "Out of the Bubble" selections from history, philosophy, design, and economics — tuned by the **Serendipity** slider in the Today controls — to prevent intellectual echo chambers.
 - **Forgiving user controls**: Any negative preference signal (such as clicking "Fewer like this") provides an immediate inline undo confirmation and interactive toast fallback, ensuring accidental taps never purge content permanently.
@@ -75,7 +75,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 ## Key Features
 
 ### 1. Daily Curated Digest
-- **Configurable Morning Issue**: Select your target reading load (3, 5, 8, 12, or 15 articles) with estimated reading times and categorized tags.
+- **Configurable Daily Issue**: Select your target reading load (3, 5, 8, 12, or 15 articles) with estimated reading times and categorized tags.
 - **Dynamic Summaries**: Automatically generates concise, informative executive summaries and reading notes.
 - **Editorial Ranking**: Scores articles on analytical density, source reputation, topic diversity, and personal reading history.
 
@@ -142,7 +142,7 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 
 ### 11. Your Library: Search, Archive, Backup and Storage
 - **Saved search**: the Saved queue can be searched by title, writer, publication, folder or summary. Every word has to appear somewhere in the piece, so a two-word search narrows rather than widens.
-- **Earlier editions**: the last six editions are kept in the browser, one per day, newest first, so a morning you did not open is still readable instead of falling outside the 24-hour window. Opening a piece from the archive fetches its text again if the body is no longer stored.
+- **Earlier editions**: the last six editions are kept in the browser, one per day, newest first, so a day you did not open is still readable instead of falling outside the 24-hour window. Opening a piece from the archive fetches its text again if the body is no longer stored.
 - **Backup and restore**: Settings → *Your library* exports everything Curator stores — feeds, saved pieces, votes, reading history and preferences — as one JSON file, and restores it on another device. Restoring asks for confirmation and then replaces what the browser holds with the file's library, so it never leaves half of an old profile behind. A file written by a newer version of Curator is refused rather than partly read.
 - **Storage health**: the same panel shows what the browser is holding, by category, and *Free up space* drops the stored full text of older saved pieces while keeping their headline, summary and link. The newest five saves keep their bodies for offline reading.
 - **Feeds that keep failing are paused, not deleted**: a source that fails five reads in a row drops out of the digest's fetches until you resume it from the Sources list, so one dead address costs a single run instead of every run. Its folders, tags and place in the library stay intact.
@@ -540,7 +540,7 @@ The paths below are alternatives: run one, not both. Every build embeds its iden
 
 3. Optionally, give the release a one-line note for the people who will see the update notice:
    ```bash
-   SOURCE_COMMIT=$(git rev-parse HEAD) RELEASE_NOTE="Faster morning digest" bun run build
+   SOURCE_COMMIT=$(git rev-parse HEAD) RELEASE_NOTE="Faster daily digest" bun run build
    ```
 
    The note travels with the build and appears under the notice's "A newer build is ready" line. It is optional — without it the notice is unchanged — and a note longer than one short line is trimmed rather than allowed to grow the bar.
@@ -557,7 +557,7 @@ Merges to `main` publish the image for you: the *Publish* workflow stamps the me
 
 The image builds the bundle and runs the identity check before it finishes. Its identity comes from `--build-arg SOURCE_COMMIT=…`, `.git`, or a deterministic source-snapshot ID when history is unavailable. The snapshot ID is never presented as a commit. The image also sets production mode and port 8080 on its own, so there is nothing else to run before or after it. Rebuild the image for every release rather than redeploying the previous one.
 
-Add `--build-arg RELEASE_NOTE="Faster morning digest"` to the build command to ship a release note the same way.
+Add `--build-arg RELEASE_NOTE="Faster daily digest"` to the build command to ship a release note the same way.
 
 If you deploy behind a proxy, set `TRUST_PROXY=1` as described in [Environment Variables](#environment-variables) — otherwise the per-client rate limits collapse into one shared bucket.
 
