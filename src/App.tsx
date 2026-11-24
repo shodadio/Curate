@@ -4896,7 +4896,7 @@ export default function App() {
                   disabled={loadingDigest}
                   aria-label={loadingDigest ? 'Refreshing the edition' : 'Refresh the edition'}
                   title={loadingDigest ? 'Refreshing the edition' : 'Refresh the edition'}
-                  className="inline-flex min-h-9 min-w-9 items-center justify-center text-[#3f3a33] transition hover:text-[#1c1a17] disabled:opacity-50"
+                  className="-mx-2.5 inline-flex min-h-9 min-w-9 items-center justify-center text-[#3f3a33] transition hover:text-[#1c1a17] disabled:opacity-50"
                 >
                   <RefreshCw aria-hidden="true" className={`h-4 w-4 ${loadingDigest ? 'animate-spin' : ''}`} />
                 </button>
@@ -4918,7 +4918,7 @@ export default function App() {
                   onClick={() => setActiveTab('settings')}
                   aria-label="Settings"
                   title="Settings"
-                  className="inline-flex min-h-9 min-w-9 items-center justify-center text-[#3f3a33] transition hover:text-[#1c1a17]"
+                  className="-mx-2.5 inline-flex min-h-9 min-w-9 items-center justify-center text-[#3f3a33] transition hover:text-[#1c1a17]"
                 >
                   <Sliders aria-hidden="true" className="h-4 w-4" />
                 </button>
@@ -4952,8 +4952,8 @@ export default function App() {
             <span className="h-px w-full bg-[#1c1a17]/20" />
           </div>
 
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p className="text-[10px] font-medium uppercase leading-none tracking-[0.24em] text-[#6f675c]">
+          <div className="mt-2 flex items-center justify-between gap-x-3 gap-y-1">
+            <p className="min-w-0 text-[10px] font-medium uppercase leading-tight tracking-[0.24em] text-[#6f675c]">
               {activeTab === 'feeds'
                 ? 'Chronological reading stream'
                 : activeTab === 'saved'
@@ -4976,7 +4976,7 @@ export default function App() {
                 aria-pressed={activeTab === 'settings'}
                 aria-label="Settings"
                 title="Settings"
-                className={`-mr-2.5 inline-flex min-h-9 min-w-9 items-center justify-center transition hover:text-[#1c1a17] ${activeTab === 'settings' ? 'text-[#1c1a17]' : 'text-[#3f3a33]'}`}
+                className={`-mx-2.5 inline-flex min-h-9 min-w-9 items-center justify-center transition hover:text-[#1c1a17] ${activeTab === 'settings' ? 'text-[#1c1a17]' : 'text-[#3f3a33]'}`}
               >
                 <Sliders aria-hidden="true" className="h-4 w-4" />
               </button>
