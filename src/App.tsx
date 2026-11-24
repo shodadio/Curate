@@ -5,7 +5,7 @@ import {
   AlertCircle, Info, CircleCheck, TriangleAlert, X, Home, Library,
   ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square, Headphones,
   RotateCcw, BarChart3, ArrowRight, ChevronDown, Activity, LoaderCircle,
-  HardDrive, Tags, GraduationCap, Radar
+  HardDrive, Tags, GraduationCap, ScanLine
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { focusableWithin, trapTabKey } from './overlayFocus';
@@ -7055,7 +7055,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     {loadingCalibration ? (
                       <><LoaderCircle className="w-3.5 h-3.5 animate-spin" /> Scanning your feeds…</>
                     ) : (
-                      <><Radar className="w-3.5 h-3.5" /> Scan my feeds and calibrate</>
+                      <><ScanLine className="w-3.5 h-3.5" /> Scan my feeds and calibrate</>
                     )}
                   </button>
                   <div className="flex gap-2">

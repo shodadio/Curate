@@ -76,14 +76,14 @@ export function ProviderTestButton({
 
       {status.state === 'ok' && (
         <p className="text-xs text-[#1c1a17] font-medium flex items-start gap-1.5">
-          <CircleCheck className="w-3 h-3 mt-0.5 shrink-0" strokeWidth={3} />
+          <CircleCheck className="w-3 h-3 mt-0.5 shrink-0" />
           <span>Passed — {status.message}</span>
         </p>
       )}
 
       {status.state === 'failed' && (
         <p className="text-xs text-[#1c1a17] font-medium flex items-start gap-1.5">
-          <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" strokeWidth={3} />
+          <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />
           <span>Failed — {status.message}</span>
         </p>
       )}
