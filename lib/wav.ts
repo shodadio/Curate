@@ -57,13 +57,15 @@ export function speechAudioBlob(base64: string, mimeType: string): Blob {
   return new Blob([wav as unknown as BlobPart], { type: 'audio/wav' });
 }
 
-// A neural voice closes every sentence with a beat of near-silence of its own. Played back to
-// back with the next clip that reads as a long pause after the full stop, far longer than the
-// punctuation asks for, so each clip is cut back to just after its last audible sound. A short
-// tail is kept after that sound: a word ending on a fricative decays for a few tens of
-// milliseconds, and cutting on the last loud sample clips the word instead of the silence.
+// A neural voice opens every sentence with a breath and closes it with a beat of near-silence of
+// its own. Left in place the closing beat is what the reader hears as a long pause after the
+// full stop, and the opening breath as a hesitation before the first word, so each clip is cut
+// back to the sound itself. Guards sit either side of the voice: a word ending on a fricative
+// decays for a few tens of milliseconds, and one beginning on a plosive builds up before its
+// peak, so cutting exactly on the loudest sample clips the word instead of the silence.
 const TRIM_WINDOW_MS = 5;
 const TRIM_TAIL_MS = 60;
+const TRIM_HEAD_MS = 25;
 // About 0.6% of full scale: below this a sample is the room, not the voice.
 const TRIM_PEAK = 200;
 // Cuts smaller than this are not worth rewriting the clip.
@@ -72,7 +74,7 @@ const TRIM_MIN_MS = 30;
 const readAscii = (bytes: Uint8Array, offset: number, length: number) =>
   String.fromCharCode(...bytes.subarray(offset, offset + length));
 
-export function trimTrailingSilenceWav(wav: Uint8Array): Uint8Array {
+export function trimSilenceWav(wav: Uint8Array): Uint8Array {
   if (wav.byteLength < 44 || readAscii(wav, 0, 4) !== 'RIFF' || readAscii(wav, 8, 4) !== 'WAVE') return wav;
   const view = new DataView(wav.buffer, wav.byteOffset, wav.byteLength);
 
@@ -104,11 +106,9 @@ export function trimTrailingSilenceWav(wav: Uint8Array): Uint8Array {
   if (frames <= 0) return wav;
   const windowFrames = Math.max(1, Math.round((sampleRate * TRIM_WINDOW_MS) / 1000));
   const tailFrames = Math.round((sampleRate * TRIM_TAIL_MS) / 1000);
+  const headFrames = Math.round((sampleRate * TRIM_HEAD_MS) / 1000);
 
-  // The last window that still carries the voice, found from the end so the tail costs one pass
-  let lastAudible = -1;
-  for (let end = frames; end > 0; end -= windowFrames) {
-    const start = Math.max(0, end - windowFrames);
+  const windowPeak = (start: number, end: number) => {
     let peak = 0;
     for (let index = start; index < end && peak < TRIM_PEAK; index += 1) {
       const at = dataStart + index * frame;
@@ -117,23 +117,38 @@ export function trimTrailingSilenceWav(wav: Uint8Array): Uint8Array {
         if (sample > peak) peak = sample;
       }
     }
-    if (peak >= TRIM_PEAK) {
+    return peak;
+  };
+
+  // Where the voice starts and where it stops, each found from its own end so the guards cost
+  // one pass apiece
+  let firstAudible = -1;
+  for (let start = 0; start < frames; start += windowFrames) {
+    if (windowPeak(start, Math.min(frames, start + windowFrames)) >= TRIM_PEAK) {
+      firstAudible = start;
+      break;
+    }
+  }
+  let lastAudible = -1;
+  for (let end = frames; end > 0; end -= windowFrames) {
+    if (windowPeak(Math.max(0, end - windowFrames), end) >= TRIM_PEAK) {
       lastAudible = end;
       break;
     }
   }
   // A clip with nothing above the floor is silence through and through: leave it as it came
-  if (lastAudible < 0) return wav;
+  if (firstAudible < 0 || lastAudible < 0) return wav;
 
-  const keepFrames = Math.min(frames, lastAudible + tailFrames);
-  const cutFrames = frames - keepFrames;
-  if (cutFrames * 1000 < sampleRate * TRIM_MIN_MS) return wav;
+  const keepStart = Math.max(0, firstAudible - headFrames);
+  const keepEnd = Math.min(frames, lastAudible + tailFrames);
+  const cutFrames = frames - (keepEnd - keepStart);
+  if (keepEnd <= keepStart || cutFrames * 1000 < sampleRate * TRIM_MIN_MS) return wav;
 
-  const keptBytes = keepFrames * frame;
+  const keptBytes = (keepEnd - keepStart) * frame;
   const tail = wav.subarray(dataStart + dataLength);
   const out = new Uint8Array(dataStart + keptBytes + tail.byteLength);
   out.set(wav.subarray(0, dataStart), 0);
-  out.set(wav.subarray(dataStart, dataStart + keptBytes), dataStart);
+  out.set(wav.subarray(dataStart + keepStart * frame, dataStart + keepEnd * frame), dataStart);
   out.set(tail, dataStart + keptBytes);
   const outView = new DataView(out.buffer);
   outView.setUint32(4, out.byteLength - 8, true);

@@ -2,7 +2,7 @@
 // than in the reader keeps that component to queue bookkeeping, and keeps the iOS unlock in one
 // place: Safari only lets an element play later if it played once inside the tap that started
 // the reading.
-import { silentWavDataUri, trimTrailingSilenceWav } from '../../lib/wav';
+import { silentWavDataUri, trimSilenceWav } from '../../lib/wav';
 
 interface PlayHandlers {
   onEnded: () => void;
@@ -26,13 +26,14 @@ function element(): HTMLAudioElement {
   return audio;
 }
 
-// Both neural voices return a WAV, and each one closes the sentence with a beat of silence of
-// its own. Left in place that beat is what the reader hears as a long pause after the full
-// stop, so it goes before the clip is queued. A clip that cannot be read is played as it came.
+// Both neural voices return a WAV, and each one opens the sentence with a breath and closes it
+// with a beat of silence of its own. Left in place those read as a hesitation before the first
+// word and a long pause after the full stop, so both go before the clip is queued. A clip that
+// cannot be read is played as it came.
 export async function trimSpeechSilence(blob: Blob): Promise<Blob> {
   try {
     const bytes = new Uint8Array(await blob.arrayBuffer());
-    const trimmed = trimTrailingSilenceWav(bytes);
+    const trimmed = trimSilenceWav(bytes);
     if (trimmed === bytes) return blob;
     return new Blob([trimmed as unknown as BlobPart], { type: blob.type || 'audio/wav' });
   } catch {
