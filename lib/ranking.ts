@@ -204,12 +204,21 @@ const clampSemanticScore = (value: number): number =>
 // Measured pair sizes are 13-16 tokens for the bare headline and 45-50 for the full story. At this
 // pivot any floor up to 0.69 orders all three pairs correctly, and at this floor any pivot from 30
 // to 75 tokens does; the values sit mid-band rather than being fitted to one point. 0.6 says a
-// headline is worth most of a story, and 50 tokens is a headline and a paragraph.
+// headline is worth most of a story, and 50 is a headline and a paragraph.
 export const SEMANTIC_SUBSTANCE_FLOOR = 0.6;
-export const SEMANTIC_SUBSTANCE_TOKENS = 50;
+export const SUBSTANCE_PARAGRAPH = 50;
 export const substanceFactor = (tokens: number): number => {
-  const share = Math.min(1, Math.max(0, tokens) / SEMANTIC_SUBSTANCE_TOKENS);
+  const share = Math.min(1, Math.max(0, tokens) / SUBSTANCE_PARAGRAPH);
   return SEMANTIC_SUBSTANCE_FLOOR + (1 - SEMANTIC_SUBSTANCE_FLOOR) * share;
+};
+
+// How much article stands behind the headline, from 0 for a bare headline to 1 for a paragraph or
+// more. Counted in words rather than through the tokeniser, which this path must not pay for, and
+// against the same paragraph scale: the semantic factor asks how much of a match the evidence
+// supports, this asks how much of it the reader can actually read.
+export const substanceShare = (item: { summary?: string; fullText?: string }): number => {
+  const words = `${item?.summary || ''} ${item?.fullText || ''}`.match(/\S+/g)?.length || 0;
+  return Math.min(1, words / SUBSTANCE_PARAGRAPH);
 };
 
 export const localSemanticScores = (
@@ -453,6 +462,9 @@ export const SCORE_WEIGHTS = {
   recency: 45,
   semantic: 120,
   jitter: 12,
+  // Bigger than the tie-breaker's swing (12), so luck cannot float a stub above its own story, and
+  // smaller than a stated interest (25), so it never outranks what the reader asked for.
+  substance: 18,
   liked: 30,
   interest: 25,
   lessTopic: -40,
@@ -493,6 +505,7 @@ export function scoreCandidates(
 
       let score = recencyWeight(item, nowMs) * SCORE_WEIGHTS.recency
         + semanticScore * SCORE_WEIGHTS.semantic
+        + substanceShare(item) * SCORE_WEIGHTS.substance
         + stableJitter(options.seed, item.id) * SCORE_WEIGHTS.jitter
         - penalty;
       if (liked) score += SCORE_WEIGHTS.liked;
