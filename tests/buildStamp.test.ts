@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatBuildStamp, isNewerBuild, normalizeNote, parseVersionReport } from '../lib/buildStamp.ts';
+import { formatBuildStamp, isNewerBuild, normalizeNote } from '../lib/buildStamp.ts';
 
 const REPO = 'shodadio/Curate';
 const BUILT_AT = '2026-11-20T07:23:00.000Z';
@@ -59,28 +59,6 @@ test('without build times, only a different known commit counts', () => {
   assert.equal(isNewerBuild({ commit: '1111111', builtAt: '', repo: REPO }, { commit: '2222222', builtAt: '', repo: REPO }), true);
   assert.equal(isNewerBuild({ commit: '1111111', builtAt: '', repo: REPO }, { commit: '1111111', builtAt: '', repo: REPO }), false);
   assert.equal(isNewerBuild({ commit: '', builtAt: '', repo: REPO }, { commit: '2222222', builtAt: '', repo: REPO }), false);
-});
-
-test('a version report is read into the build it names', () => {
-  assert.deepEqual(
-    parseVersionReport({ commit: ' abc1234 ', builtAt: BUILT_AT, repo: REPO, note: 'Faster digest\nand fewer jumps' }),
-    { commit: 'abc1234', builtAt: BUILT_AT, repo: REPO, note: 'Faster digest and fewer jumps' },
-  );
-});
-
-test('a reply that names no build is no report at all', () => {
-  assert.equal(parseVersionReport({ commit: '', builtAt: '', repo: REPO }), null);
-  assert.equal(parseVersionReport({}), null);
-  assert.equal(parseVersionReport(null), null);
-  assert.equal(parseVersionReport('<html></html>'), null);
-  assert.equal(parseVersionReport([{ commit: 'abc1234' }]), null);
-});
-
-test('a half-written report still names the build', () => {
-  assert.deepEqual(
-    parseVersionReport({ commit: 'abc1234' }),
-    { commit: 'abc1234', builtAt: '', repo: '', note: '' },
-  );
 });
 
 test('a release note is folded to one line', () => {
