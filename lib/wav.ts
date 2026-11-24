@@ -57,6 +57,90 @@ export function speechAudioBlob(base64: string, mimeType: string): Blob {
   return new Blob([wav as unknown as BlobPart], { type: 'audio/wav' });
 }
 
+// A neural voice closes every sentence with a beat of near-silence of its own. Played back to
+// back with the next clip that reads as a long pause after the full stop, far longer than the
+// punctuation asks for, so each clip is cut back to just after its last audible sound. A short
+// tail is kept after that sound: a word ending on a fricative decays for a few tens of
+// milliseconds, and cutting on the last loud sample clips the word instead of the silence.
+const TRIM_WINDOW_MS = 5;
+const TRIM_TAIL_MS = 60;
+// About 0.6% of full scale: below this a sample is the room, not the voice.
+const TRIM_PEAK = 200;
+// Cuts smaller than this are not worth rewriting the clip.
+const TRIM_MIN_MS = 30;
+
+const readAscii = (bytes: Uint8Array, offset: number, length: number) =>
+  String.fromCharCode(...bytes.subarray(offset, offset + length));
+
+export function trimTrailingSilenceWav(wav: Uint8Array): Uint8Array {
+  if (wav.byteLength < 44 || readAscii(wav, 0, 4) !== 'RIFF' || readAscii(wav, 8, 4) !== 'WAVE') return wav;
+  const view = new DataView(wav.buffer, wav.byteOffset, wav.byteLength);
+
+  // Anything that is not 16-bit PCM is left alone rather than guessed at
+  let channels = 1;
+  let sampleRate = 24000;
+  let bits = 16;
+  let dataStart = -1;
+  let dataLength = 0;
+  let offset = 12;
+  while (offset + 8 <= wav.byteLength) {
+    const id = readAscii(wav, offset, 4);
+    const size = view.getUint32(offset + 4, true);
+    if (id === 'fmt ' && offset + 24 <= wav.byteLength) {
+      channels = view.getUint16(offset + 10, true) || 1;
+      sampleRate = view.getUint32(offset + 12, true) || 24000;
+      bits = view.getUint16(offset + 22, true) || 16;
+    } else if (id === 'data') {
+      dataStart = offset + 8;
+      dataLength = Math.min(size, wav.byteLength - dataStart);
+      break;
+    }
+    offset += 8 + size + (size % 2);
+  }
+  if (dataStart < 0 || dataLength <= 0 || bits !== 16) return wav;
+
+  const frame = channels * 2;
+  const frames = Math.floor(dataLength / frame);
+  if (frames <= 0) return wav;
+  const windowFrames = Math.max(1, Math.round((sampleRate * TRIM_WINDOW_MS) / 1000));
+  const tailFrames = Math.round((sampleRate * TRIM_TAIL_MS) / 1000);
+
+  // The last window that still carries the voice, found from the end so the tail costs one pass
+  let lastAudible = -1;
+  for (let end = frames; end > 0; end -= windowFrames) {
+    const start = Math.max(0, end - windowFrames);
+    let peak = 0;
+    for (let index = start; index < end && peak < TRIM_PEAK; index += 1) {
+      const at = dataStart + index * frame;
+      for (let channel = 0; channel < channels; channel += 1) {
+        const sample = Math.abs(view.getInt16(at + channel * 2, true));
+        if (sample > peak) peak = sample;
+      }
+    }
+    if (peak >= TRIM_PEAK) {
+      lastAudible = end;
+      break;
+    }
+  }
+  // A clip with nothing above the floor is silence through and through: leave it as it came
+  if (lastAudible < 0) return wav;
+
+  const keepFrames = Math.min(frames, lastAudible + tailFrames);
+  const cutFrames = frames - keepFrames;
+  if (cutFrames * 1000 < sampleRate * TRIM_MIN_MS) return wav;
+
+  const keptBytes = keepFrames * frame;
+  const tail = wav.subarray(dataStart + dataLength);
+  const out = new Uint8Array(dataStart + keptBytes + tail.byteLength);
+  out.set(wav.subarray(0, dataStart), 0);
+  out.set(wav.subarray(dataStart, dataStart + keptBytes), dataStart);
+  out.set(tail, dataStart + keptBytes);
+  const outView = new DataView(out.buffer);
+  outView.setUint32(4, out.byteLength - 8, true);
+  outView.setUint32(dataStart - 4, keptBytes, true);
+  return out;
+}
+
 // Safari only lets an audio element play later if it has played once inside the tap that
 // started the reading. The queue opens with this instead of a blocked first sentence.
 export function silentWavDataUri(ms = 30, sampleRate = 24000): string {

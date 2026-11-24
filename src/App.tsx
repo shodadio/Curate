@@ -103,6 +103,7 @@ import {
   resumeSpeechAudio,
   stopSpeechAudio,
   takePrefetchedSpeechAudio,
+  trimSpeechSilence,
 } from './lib/speechAudio';
 import { ReadAloudSettings } from './components/ReadAloudSettings';
 import { articleLooksIncomplete, articleNeedsBodyRefresh, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isImageBlock, isMediaCreditParagraph, isPlayerChrome, isStrayCommentLink, isTableBlock, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
@@ -576,8 +577,10 @@ interface SpeechChunk {
 
 // Browsers cut a long utterance off (Chrome after roughly fifteen seconds, iOS stalls),
 // so the reader speaks a sentence at a time: 220 characters is comfortably inside every
-// engine's comfort zone, and the paragraph beat keeps the prose from running together.
-const SPEECH_SENTENCE_PAUSE_MS = 40;
+// engine's comfort zone, and the paragraph beat keeps the prose from running together. The
+// sentence beat only fills the hand-off between two audio clips — every engine already holds
+// its own beat after the full stop — so it stays short enough to sound like punctuation.
+const SPEECH_SENTENCE_PAUSE_MS = 20;
 // Two sentences are generated ahead of the one playing: one can end before the next has arrived,
 // and the second is what keeps that gap from being heard.
 const SPEECH_PREFETCH_AHEAD = 2;
@@ -3161,14 +3164,18 @@ export default function App() {
     }, endsParagraph ? SPEECH_PARAGRAPH_PAUSE_MS : SPEECH_SENTENCE_PAUSE_MS);
   };
 
-  // One neural sentence: Piper from the downloaded model, or Gemini through this app's server
-  const renderSpeechChunk = (text: string): Promise<Blob> => {
-    if (speechEngine === 'piper') return synthesizePiper(piperVoiceId, text);
-    return synthesizeGeminiSpeech({
-      text,
-      voice: geminiVoice,
-      apiKey: geminiSpeechKey.key,
-    });
+  // One neural sentence: Piper from the downloaded model, or Gemini through this app's server.
+  // Either way the clip loses the silence its voice ends a sentence with, which is what had the
+  // reading pausing at every full stop for longer than the punctuation asks for.
+  const renderSpeechChunk = async (text: string): Promise<Blob> => {
+    const blob = speechEngine === 'piper'
+      ? await synthesizePiper(piperVoiceId, text)
+      : await synthesizeGeminiSpeech({
+        text,
+        voice: geminiVoice,
+        apiKey: geminiSpeechKey.key,
+      });
+    return trimSpeechSilence(blob);
   };
 
   const speechChunkKey = (text: string) =>

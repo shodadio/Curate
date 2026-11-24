@@ -2,7 +2,7 @@
 // what can legally be downloaded. Both are pure, so both are checked here.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { base64ToBytes, bytesToBase64, pcm16ToWavBytes, silentWavDataUri, speechAudioBlob } from '../lib/wav.ts';
+import { base64ToBytes, bytesToBase64, pcm16ToWavBytes, silentWavDataUri, speechAudioBlob, trimTrailingSilenceWav } from '../lib/wav.ts';
 import { PIPER_DEFAULT_VOICE_ID, PIPER_VOICES, findPiperVoice, piperDownloadMb } from '../lib/piperVoices.ts';
 import { piperStatusLabel, resolveGeminiSpeechKey } from '../lib/readAloud.ts';
 import { GEMINI_TTS_API_VERSION, geminiTtsRequest } from '../lib/geminiTtsRequest.ts';
@@ -45,6 +45,40 @@ test('the silent clip that unlocks iOS audio is a valid WAV', () => {
   const bytes = base64ToBytes(uri.split(',')[1]);
   assert.equal(ascii(bytes, 0, 4), 'RIFF');
   assert.ok(bytes.byteLength > 44);
+});
+
+// A clip shaped like a rendered sentence: `speechMs` of a tone, then `silenceMs` of nothing
+const spokenClip = (speechMs: number, silenceMs: number, sampleRate = 24000) => {
+  const pcm = new Uint8Array(((speechMs + silenceMs) * sampleRate * 2) / 1000);
+  const view = new DataView(pcm.buffer);
+  for (let sample = 0; sample < (speechMs * sampleRate) / 1000; sample += 1) {
+    view.setInt16(sample * 2, sample % 2 ? 12000 : -12000, true);
+  }
+  return pcm16ToWavBytes(pcm, sampleRate, 1);
+};
+
+const wavSeconds = (wav: Uint8Array) =>
+  new DataView(wav.buffer, wav.byteOffset, wav.byteLength).getUint32(40, true) / 2 / 24000;
+
+test('the silence a voice ends a sentence with is cut, keeping the word before it', () => {
+  const trimmed = trimTrailingSilenceWav(spokenClip(400, 800));
+  // 400 ms of speech plus a short tail, not the 800 ms the voice left behind
+  assert.ok(wavSeconds(trimmed) > 0.44, `kept ${wavSeconds(trimmed)}s, too short to hold the word`);
+  assert.ok(wavSeconds(trimmed) < 0.5, `kept ${wavSeconds(trimmed)}s, the silence survived`);
+  assert.equal(ascii(trimmed, 0, 4), 'RIFF');
+  const view = new DataView(trimmed.buffer, trimmed.byteOffset, trimmed.byteLength);
+  assert.equal(view.getUint32(4, true), trimmed.byteLength - 8, 'RIFF size follows the shorter clip');
+  assert.equal(view.getUint32(40, true), trimmed.byteLength - 44, 'data size follows the shorter clip');
+});
+
+test('a clip with no silence to spare is played untouched', () => {
+  const clip = spokenClip(400, 0);
+  assert.equal(trimTrailingSilenceWav(clip), clip);
+  // Something that is not a WAV, and a clip that is silence all the way through, are left alone
+  const silence = spokenClip(0, 600);
+  assert.equal(trimTrailingSilenceWav(silence), silence);
+  const noise = new Uint8Array(64).fill(7);
+  assert.equal(trimTrailingSilenceWav(noise), noise);
 });
 
 test('every offered Piper voice may be downloaded and used commercially', () => {
