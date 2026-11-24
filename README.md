@@ -39,6 +39,7 @@
   - [`POST /api/discover-sources`](#post-apidiscover-sources)
   - [`POST /api/parse-opml`](#post-apiparse-opml)
   - [`POST /api/test-provider`](#post-apitest-provider)
+  - [`POST /api/tts`](#post-apitts)
   - [`GET /api/generated-feed`](#get-apigenerated-feed)
   - [`GET /api/favicon`](#get-apifavicon)
   - [`GET /api/version`](#get-apiversion)
@@ -365,6 +366,23 @@ The **Test API** button in Settings: one minimal request using the provider, key
 ```
 
 **Response:** `{ "ok": true, "provider": "openai-compatible", "model": "gpt-4o-mini", "latencyMs": 412, "reply": "pong" }`. Failures return `{ "ok": false, "error": "…" }` with `200`, because the route reports a bad key rather than throwing.
+
+---
+
+### `POST /api/tts`
+Reads one sentence aloud for the Gemini voice in **Settings → Read aloud**. The reader sends a sentence at a time, so a refused request costs a sentence rather than an article, and the client can hand the rest of the reading to the device voice. A key typed for reading aloud, or the digest's Gemini key, is used when there is one; an empty `apiKey` asks the server to fall back to `GEMINI_API_KEY`. The model is `gemini-3.8-flash-lite-tts`, or whatever `GEMINI_TTS_MODEL` names.
+
+**Request Body:**
+```json
+{
+  "text": "The national tally of measles cases now stands at 14.",
+  "voice": "Kore",
+  "apiKey": ""
+}
+```
+`text` is trimmed and capped at 1200 characters, and `voice` must be one of the 30 prebuilt speech voices.
+
+**Response:** `{ "ok": true, "mimeType": "audio/wav", "audio": "<base64>" }`, where `audio` is a complete WAV file on current models. Empty text, an unknown voice, or a request with no key anywhere answers `400`; Google refusing or returning no audio answers `502`, both as `{ "ok": false, "error": "…" }`. Capped at 240 requests a minute per connection.
 
 ---
 
