@@ -47,12 +47,13 @@ const precisionAt5 = digest.filter(item => relevantById.get(item.id)).length / M
 const firstRelevant = scored.findIndex(item => relevantById.get(item.id));
 const mrr = firstRelevant >= 0 ? 1 / (firstRelevant + 1) : 0;
 
-// Full over thin: does the piece with a body outscore the bare headline of the same story? This
-// compares the engine's own score, not the final rank: recency and the tie-breaker jitter are
-// editorial noise, and a pair decided by them would say nothing about how length is handled.
-const semanticById = new Map(scored.map(item => [item.id, Number(item._semantic) || 0]));
+// Full over thin: does the piece with a body appear above the bare headline of the same story in
+// the edition the reader actually sees? This compares the final order, not the engine's score:
+// recency and the tie-breaker jitter are part of what the reader gets, so a stub that floats above
+// its own story is a defect even when the engine scored it lower.
+const rankOf = new Map(scored.map((item, position) => [item.id, position + 1]));
 const pairWins = EVAL_PAIRS.filter(([thin, full]) =>
-  (semanticById.get(full) ?? 0) > (semanticById.get(thin) ?? 0)
+  (rankOf.get(full) ?? Infinity) < (rankOf.get(thin) ?? Infinity)
 ).length;
 const pairRate = pairWins / EVAL_PAIRS.length;
 
