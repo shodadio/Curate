@@ -20,6 +20,7 @@ import {
   buildDeterministicDigest,
   buildExposurePenalty,
   buildWhyLine,
+  finishedLikeVotes,
   localSemanticScores,
   maxPerSourceFor,
   scoreCandidates,
@@ -1824,6 +1825,25 @@ async function startServer() {
         recover(lessIds, 'dislike');
       }
 
+      // The count the app shows names the reader's own votes, so it is taken before the
+      // implicit likes below join the examples the engine learns from.
+      const explicitVoteCount = feedbackExamples.length;
+      // A finished article is the strongest vote there is, so finished reads become implicit
+      // likes: the engine learns their shape even when the reader never thumbed anything. They
+      // share the example budget, never double up an explicit vote, and count from when they
+      // were read.
+      if (feedbackExamples.length < 40) {
+        const readingPoolById = new Map<string, any>(candidatePool.map(item => [item.id, item]));
+        const knownVoteIds = new Set(feedbackExamples.map(entry => entry.id));
+        feedbackExamples.push(...finishedLikeVotes(
+          req.body.readingStats as Record<string, { finished?: boolean; lastRead?: number }>,
+          readingPoolById,
+          knownVoteIds,
+          40 - feedbackExamples.length,
+          digestNowMs,
+        ));
+      }
+
       // Downvoted articles are dropped outright. Interest-level "less" chips only down-weight
       // further below, because one broad chip must not be able to empty the digest.
       candidatePool = candidatePool.filter(item => !lessIds.includes(item.id));
@@ -1968,7 +1988,7 @@ async function startServer() {
       const maxPerSource = maxPerSourceFor(itemCount, distinctSources);
 
       const semanticSummary = {
-        feedbackExamples: feedbackExamples.length,
+        feedbackExamples: explicitVoteCount,
         providerVectors: providerSemanticMatches,
         deprioritized: deprioritizedIds.size,
         localEngine: true,

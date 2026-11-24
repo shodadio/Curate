@@ -13,6 +13,7 @@ import {
   cosineSimilarity,
   denseFeedbackScores,
   feedbackDecay,
+  finishedLikeVotes,
   localSemanticScores,
   matchesInterest,
   maxPerSourceFor,
@@ -308,6 +309,48 @@ test('substanceFactor keeps a stub below its own article, but never at zero', ()
     substanceFactor(substanceShare({})) < substanceFactor(substanceShare({ fullText: paragraph })),
     'a bare headline counts for less than a headline with a body',
   );
+});
+
+test('finished reads become implicit likes, newest first', () => {
+  const poolById = new Map([
+    ['old', { id: 'old', title: 'Old rust story', summary: 'borrow checker', fullText: 'ownership rules' }],
+    ['new', { id: 'new', title: 'New rust story', summary: 'async runtimes', fullText: 'tokio executor', source: 'Rust Weekly', folder: 'Systems' }],
+  ]);
+  const votes = finishedLikeVotes(
+    {
+      old: { finished: true, lastRead: NOW - 1000 },
+      new: { finished: true, lastRead: NOW },
+      open: { finished: false, lastRead: NOW },
+      gone: { finished: true, lastRead: NOW },
+    },
+    poolById,
+    new Set<string>(),
+    10,
+    NOW,
+  );
+  assert.deepEqual(votes.map(entry => entry.id), ['new', 'old']);
+  assert.equal(votes[0]?.vote, 'like');
+  assert.equal(votes[0]?.timestamp, NOW, 'a finished read counts from when it was read');
+  assert.ok((votes[0]?.text || '').includes('tokio executor'));
+  assert.equal(votes[0]?.source, 'Rust Weekly');
+});
+
+test('implicit likes never double an explicit vote and respect the budget', () => {
+  const poolById = new Map([
+    ['a', { id: 'a', title: 'Story A', summary: 'words here' }],
+    ['b', { id: 'b', title: 'Story B', summary: 'other words' }],
+  ]);
+  const stats = {
+    a: { finished: true, lastRead: NOW },
+    b: { finished: true, lastRead: NOW },
+  };
+  assert.deepEqual(
+    finishedLikeVotes(stats, poolById, new Set(['a']), 10, NOW).map(entry => entry.id),
+    ['b'],
+    'an explicit vote is not doubled',
+  );
+  assert.equal(finishedLikeVotes(stats, poolById, new Set<string>(), 1, NOW).length, 1, 'the example budget is shared');
+  assert.deepEqual(finishedLikeVotes(null, poolById, new Set<string>(), 10, NOW), [], 'missing stats are fine');
 });
 
 test('a matching dislike pulls its own topic below neutral', () => {
