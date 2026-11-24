@@ -204,9 +204,7 @@ test('a recent like dominates a years-old like when directions differ', () => {
   const staleGarden = staleScores.get('garden') || 0;
   const freshGarden = freshScores.get('garden') || 0;
 
-  // These fixtures are headline-plus-summary stubs, so they earn the substance floor rather than
-  // full weight; what matters is that the fresh interest still matches strongly.
-  assert.ok(recentRust > 0.3, `a fresh vote should still score, got ${recentRust}`);
+  assert.ok(recentRust > 0.4, `a fresh vote should still score, got ${recentRust}`);
   approx(recentRust, freshScores.get('rust') || 0, 'the recent interest keeps its score');
   assert.ok(staleGarden < freshGarden * 0.2, 'a five-year-old vote decays to the floor');
   assert.ok(staleGarden > 0, 'the floor keeps a dormant interest alive');
@@ -236,10 +234,8 @@ test('localSemanticScores preserves separate liked topics instead of averaging t
     { id: 'garden', title: 'Garden compost soil', summary: 'tomatoes gardening' },
     { id: 'unrelated', title: 'Classical music', summary: 'symphonies and orchestras' },
   ], NOW);
-  // These fixtures are headline plus a one-line summary, so they earn the stub floor rather than the
-  // whole match; the ceiling here is that floor, and what is under test is separation, not size.
-  assert.ok((scores.get('rust') || 0) > 0.55, 'the Rust interest remains independently strong');
-  assert.ok((scores.get('garden') || 0) > 0.55, 'the gardening interest remains independently strong');
+  assert.ok((scores.get('rust') || 0) > 0.7, 'the Rust interest remains independently strong');
+  assert.ok((scores.get('garden') || 0) > 0.7, 'the gardening interest remains independently strong');
   assert.ok((scores.get('rust') || 0) > (scores.get('unrelated') || 0));
   assert.ok((scores.get('garden') || 0) > (scores.get('unrelated') || 0));
 });
@@ -339,7 +335,7 @@ test('decay is measured from the clock and stops at the floor', () => {
   const fresh = localSemanticScores(feedback, candidates, NOW).get('rust') || 0;
   const stale = localSemanticScores(feedback, candidates, NOW + 3 * 365 * DAY).get('rust') || 0;
 
-  assert.ok(fresh > 0.6, `a fresh vote still matches strongly, got ${fresh}`);
+  assert.ok(fresh > 0.9, `a fresh vote counts in nearly full, got ${fresh}`);
   approx(stale, fresh * SEMANTIC_DECAY_FLOOR, 'a stale vote keeps the floor, not its full weight');
   approx(feedbackDecay(0, DAY), 1);
   approx(feedbackDecay(DAY, DAY), 0.5);
@@ -364,19 +360,21 @@ test('denseFeedbackScores preserves multiple interests and decays older votes', 
     feedback,
     [[1, 0], [0, 1]],
     [[1, 0], [0, 1]],
-    [1, 1],
     NOW,
   );
   approx(scores[0], 1, 'most recent matching interest');
   approx(scores[1], 0.5, 'one-half-life-old interest is down-weighted');
 });
 
-test('provider scores discount a stub by the same amount as the built-in engine', () => {
-  const feedback = [vote({ vote: 'like', text: 'rust memory safety', timestamp: NOW })];
-  // Same embedding for both candidates: only the article behind the headline differs.
-  const scores = denseFeedbackScores(feedback, [[1, 0]], [[1, 0], [1, 0]], [0, 1], NOW);
-  assert.equal(scores[0], substanceFactor(0), 'a bare headline keeps the stub floor');
-  approx(scores[1], 1, 'a full article keeps the whole match');
+test('a stub is discounted whichever engine scored it', () => {
+  const paragraph = Array.from({ length: SUBSTANCE_PARAGRAPH_WORDS }, (_, index) => `word${index}`).join(' ');
+  const headline = { id: 'thin', title: 'Ownership lessons', source: 'S', folder: 'F', publishedAtMs: NOW };
+  const article = { ...headline, id: 'full', fullText: paragraph };
+  const semanticScores = new Map([['thin', 1], ['full', 1]]);
+  const { scored } = scoreCandidates([headline, article], { seed: 's', semanticScores, nowMs: NOW });
+  const byId = new Map(scored.map(item => [item.id, item]));
+  assert.equal(byId.get('thin')!._semantic, substanceFactor(0), 'a bare headline keeps the stub floor');
+  approx(byId.get('full')!._semantic, 1, 'a full article keeps the whole match');
 });
 
 test('provider embeddings are blended 65/35 with the built-in engine', () => {
@@ -483,8 +481,8 @@ test('scoreCandidates applies each documented weight exactly', () => {
 
   approx(
     base(scoreCandidates([item], { seed: 's', nowMs: NOW, semanticScores: new Map([['a', 0.5]]) })),
-    baseline + 0.5 * SCORE_WEIGHTS.semantic,
-    'semantic weight',
+    baseline + 0.5 * SCORE_WEIGHTS.semantic * substanceFactor(0),
+    'semantic weight, after the stub discount',
   );
   approx(
     base(scoreCandidates([item], { seed: 's', nowMs: NOW, moreIds: ['a'] })),

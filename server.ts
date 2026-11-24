@@ -21,7 +21,6 @@ import {
   buildExposurePenalty,
   buildWhyLine,
   localSemanticScores,
-  substanceShare,
   maxPerSourceFor,
   scoreCandidates,
   selectDiverse,
@@ -1897,13 +1896,7 @@ async function startServer() {
           const vectors = await embedSemanticTexts([...feedbackTexts, ...candidateTexts], embeddingConfig);
           const feedbackVectors = vectors.slice(0, feedbackExamples.length);
           const candidateVectors = vectors.slice(feedbackExamples.length);
-          const providerScores = denseFeedbackScores(
-            feedbackExamples,
-            feedbackVectors,
-            candidateVectors,
-            semanticItems.map(substanceShare),
-            digestNowMs,
-          );
+          const providerScores = denseFeedbackScores(feedbackExamples, feedbackVectors, candidateVectors, digestNowMs);
 
           candidateVectors.forEach((vector, index) => {
             if (!vector) return;
