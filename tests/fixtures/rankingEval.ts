@@ -56,18 +56,29 @@ const story = (
   title: string,
   summary: string,
   relevant: boolean,
+  body = '',
 ): EvalCandidate => {
   index += 1;
   return {
     id,
     title,
     summary,
+    fullText: body || undefined,
     source,
     folder,
     relevant,
     publishedAtMs: EVAL_NOW - (index % 12) * HOUR,
   };
 };
+
+// [thin, full] pairs. The reader wants the piece with something behind it; the pair metric asks
+// whether the engine agrees. Today it does not always: a bare headline can outscore the same
+// story with a body, because the body dilutes the vector and the headline does not.
+export const EVAL_PAIRS: Array<[string, string]> = [
+  ['p43', 'p44'],
+  ['p45', 'p46'],
+  ['p47', 'p48'],
+];
 
 export const EVAL_POOL: EvalCandidate[] = [
   // Four stories per liked topic: the readers' actual interests.
@@ -122,4 +133,18 @@ export const EVAL_POOL: EvalCandidate[] = [
   story('p40', 'Ad Desk', 'Business', 'AI-generated marketing copy soars', 'Brands automate ad text and product blurbs', false),
   story('p41', 'Garage Notes', 'Hobby', 'Rust on the hull: restoring a vintage car', 'Corrosion, primer and paintwork', false),
   story('p42', 'Kitchen Tests', 'Food', 'The best bread machines', 'Appliance tests, timers and non-stick pans', false),
+
+  // Thin-versus-full pairs: the same story as a bare headline and as a piece with something to
+  // read. The reader wants the full one; a ranker that counts headline overlap and ignores how
+  // much article is behind it prefers the stub. This is the pair that gives the benchmark
+  // headroom, because no current weight distinguishes the two.
+  story('p43', 'Policy Wire', 'Policy', 'Deadline squeeze hits AI providers', '', false),
+  story('p44', 'Policy Desk', 'Policy', 'Deadline squeeze hits AI providers across Europe', '', true,
+    'Member states must file risk assessments before deployment, name a responsible officer and keep model documentation for audits. Providers say the liability timetable is tight, while regulators argue the compliance deadlines were published a year ago and the paperwork is proportionate to the risk.'),
+  story('p45', 'Compiler Room', 'Systems', 'Ownership lessons from a compiler rewrite', '', false),
+  story('p46', 'Rust Weekly', 'Systems', 'Ownership lessons from a compiler rewrite, in detail', '', true,
+    'The rewrite moved ownership rules into the type system and removed a class of aliasing bugs. The team describes splitting borrows, returning iterators without unsafe blocks, and the two places where lifetimes still leak into public APIs, with the memory safety trade-offs each one forces.'),
+  story('p47', 'Starter Club', 'Baking', 'Feeding schedules that actually work', '', false),
+  story('p48', 'Bake Notes', 'Baking', 'Feeding schedules that actually work, measured', '', true,
+    'Weigh the sourdough starter, flour and water separately, then vary hydration in five percent steps and note the rise time at a fixed oven temperature. A wetter starter ferments faster but collapses sooner, which changes the feeding schedule more than the recipe does, and the loaf crumb shows it.'),
 ];
