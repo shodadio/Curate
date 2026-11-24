@@ -29,6 +29,8 @@ import {
   withinDigestWindow,
   DIGEST_MAX_AGE_MS,
   DENSE_FEEDBACK_HALF_LIFE_MS,
+  WHY_CLOSE_MATCH_SCORE,
+  WHY_SHARES_SHAPE_SCORE,
   SEMANTIC_DECAY_FLOOR,
   SEMANTIC_TITLE_WEIGHT,
   type SemanticVoteExample,
@@ -392,9 +394,24 @@ test('buildWhyLine leads with the reason that actually applied', () => {
   const item = { source: 'Stratechery', folder: 'Strategy', publishedAtMs: NOW };
   assert.match(buildWhyLine(item, 0, { liked: true, semanticScore: 0 }, NOW), /reading interest in Strategy/);
   assert.match(buildWhyLine(item, 0, { liked: false, interest: 'Economics', semanticScore: 0 }, NOW), /asked for more of Economics/);
-  assert.match(buildWhyLine(item, 0, { liked: false, semanticScore: 0.3 }, NOW), /upvoting/);
-  assert.match(buildWhyLine(item, 0, { liked: false, semanticScore: 0.2 }, NOW), /shape of articles/);
+  assert.match(buildWhyLine(item, 0, { liked: false, semanticScore: WHY_CLOSE_MATCH_SCORE + 0.1 }, NOW), /upvoting/);
+  assert.match(buildWhyLine(item, 0, { liked: false, semanticScore: WHY_SHARES_SHAPE_SCORE + 0.1 }, NOW), /shape of articles/);
   assert.match(buildWhyLine(item, 0, { liked: false, semanticScore: 0 }, NOW), /today from Stratechery · Strategy/);
+});
+
+test('the close-match band is reserved for the strongest cards', () => {
+  const item = { source: 'Stratechery', folder: 'Strategy' };
+
+  // A digest's top cards score around 0.3-0.45. Only the strongest may claim a close match;
+  // labelling all of them that way said nothing, which is what the old 0.28 threshold did.
+  assert.match(buildWhyLine(item, 0, { liked: false, semanticScore: 0.3 }, NOW), /shape of articles/);
+  assert.match(buildWhyLine(item, 0, { liked: false, semanticScore: 0.45 }, NOW), /upvoting/);
+  assert.doesNotMatch(
+    buildWhyLine(item, 0, { liked: false, semanticScore: WHY_SHARES_SHAPE_SCORE }, NOW),
+    /close match|shape of articles/,
+    'a score at the lower band claims neither',
+  );
+  assert.ok(WHY_CLOSE_MATCH_SCORE > 0.3, 'the band sits above the typical top-card score');
 });
 
 test('buildWhyLine rotates its phrasing so cards do not repeat a sentence', () => {
