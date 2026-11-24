@@ -5,7 +5,17 @@ const GITHUB_REPO_URL = 'https://github.com/shodadio/Curate';
 function formattedBuildTime(value: string): string {
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp)
-    ? new Date(timestamp).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC')
+    ? new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Europe/London',
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23',
+        timeZoneName: 'short',
+      }).format(timestamp)
     : '';
 }
 
