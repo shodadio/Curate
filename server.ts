@@ -39,6 +39,7 @@ import { legacyStoryIdFor, storyIdFor } from './lib/storyId';
 import { findVideoEmbed, videoEmbedFromUrl, type VideoEmbed } from './lib/videoEmbed';
 import { apifyCandidatesFromDataset, apifySearchInput, apifySearchUrl } from './lib/apifySearch';
 import { normalizeModelCatalog } from './lib/modelCatalog';
+import { GEMINI_TTS_API_VERSION, geminiTtsRequest } from './lib/geminiTtsRequest';
 
 dotenv.config();
 
@@ -1173,22 +1174,23 @@ async function startServer() {
       return res.status(400).json({ ok: false, error: 'That is not one of Gemini’s reading voices.' });
     }
 
-    const gemini = clientKey
-      ? new GoogleGenAI({ apiKey: clientKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
-      : ai;
-    if (!gemini) {
+    const ttsApiKey = clientKey || apiKey;
+    if (!ttsApiKey) {
       return res.status(400).json({ ok: false, error: 'Add a Gemini key in Settings, or set GEMINI_API_KEY on the server.' });
     }
 
     try {
-      const response = await gemini.models.generateContent({
-        model: GEMINI_TTS_MODEL,
-        contents: text,
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
-        } as any,
+      // Gemini 3.8 TTS requires v1beta and the current single-speaker voiceConfig.voice field.
+      const gemini = new GoogleGenAI({
+        apiKey: ttsApiKey,
+        httpOptions: {
+          apiVersion: GEMINI_TTS_API_VERSION,
+          headers: { 'User-Agent': 'aistudio-build' },
+        },
       });
+      const response = await gemini.models.generateContent(
+        geminiTtsRequest(text, voice, GEMINI_TTS_MODEL) as any,
+      );
       recordGeminiUsage(response);
 
       const parts = response?.candidates?.[0]?.content?.parts || [];

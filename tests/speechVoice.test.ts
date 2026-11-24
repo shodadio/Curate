@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { base64ToBytes, bytesToBase64, pcm16ToWavBytes, silentWavDataUri, speechAudioBlob } from '../lib/wav.ts';
 import { PIPER_DEFAULT_VOICE_ID, PIPER_VOICES, findPiperVoice, piperDownloadMb } from '../lib/piperVoices.ts';
 import { piperStatusLabel, resolveGeminiSpeechKey } from '../lib/readAloud.ts';
+import { GEMINI_TTS_API_VERSION, geminiTtsRequest } from '../lib/geminiTtsRequest.ts';
 
 const ascii = (bytes: Uint8Array, offset: number, length: number) =>
   String.fromCharCode(...bytes.subarray(offset, offset + length));
@@ -91,4 +92,16 @@ test('reading aloud prefers its own Gemini key, then the digest’s, then the se
   // Nothing typed anywhere: the server's own key speaks, or there is none to speak with
   assert.deepEqual(resolveGeminiSpeechKey({ ...base, serverKeyAvailable: true }), { key: '', source: 'server' });
   assert.deepEqual(resolveGeminiSpeechKey(base), { key: '', source: 'none' });
+});
+
+test('Gemini 3.8 TTS uses v1beta and its single-speaker voice request shape', () => {
+  assert.equal(GEMINI_TTS_API_VERSION, 'v1beta');
+  assert.deepEqual(geminiTtsRequest('Read this sentence.', 'Kore', 'gemini-3.8-flash-lite-tts'), {
+    model: 'gemini-3.8-flash-lite-tts',
+    contents: [{ role: 'user', parts: [{ text: 'Read this sentence.' }] }],
+    config: {
+      responseModalities: ['AUDIO'],
+      speechConfig: { voiceConfig: { voice: 'Kore' } },
+    },
+  });
 });
