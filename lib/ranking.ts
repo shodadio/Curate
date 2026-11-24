@@ -259,6 +259,49 @@ export const localSemanticScores = (
   return scores;
 };
 
+export interface FinishedReadingEntry {
+  finished?: boolean;
+  lastRead?: number;
+}
+
+// A finished article is the strongest vote there is: reading to the end says more than a thumb
+// ever could, so finished reads become implicit likes and the engine learns their shape even when
+// the reader never voted. `knownIds` keeps an explicit vote from doubling up, the likes share the
+// same example budget as everything else, and each one counts from when it was read, so an old
+// favourite fades like any other vote.
+export const finishedLikeVotes = (
+  readingStats: Record<string, FinishedReadingEntry> | null | undefined,
+  poolById: Map<string, { id?: string; title?: unknown; summary?: unknown; fullText?: unknown; source?: unknown; folder?: unknown }>,
+  knownIds: Set<string>,
+  cap: number,
+  nowMs: number = Date.now(),
+): SemanticVoteExample[] => {
+  if (!readingStats || cap <= 0) return [];
+  const votes: SemanticVoteExample[] = [];
+  const finished = Object.entries(readingStats)
+    .filter(([, stats]) => stats !== null && typeof stats === 'object' && stats.finished === true)
+    .sort(([, a], [, b]) => Number(b.lastRead || 0) - Number(a.lastRead || 0));
+  for (const [id, stats] of finished) {
+    if (votes.length >= cap || knownIds.has(id)) continue;
+    const item = poolById.get(id);
+    const title = typeof item?.title === 'string' ? item.title : '';
+    if (!title) continue;
+    const summary = typeof item?.summary === 'string' ? item.summary : '';
+    const fullText = typeof item?.fullText === 'string' ? item.fullText : '';
+    const lastRead = Number(stats.lastRead);
+    votes.push({
+      id,
+      vote: 'like',
+      title: title.slice(0, 300),
+      text: `${summary}\n${fullText}`.trim().slice(0, 3000),
+      timestamp: lastRead > 0 ? lastRead : nowMs,
+      source: typeof item?.source === 'string' ? item.source.slice(0, 120) : undefined,
+      folder: typeof item?.folder === 'string' ? item.folder.slice(0, 120) : undefined,
+    });
+  }
+  return votes;
+};
+
 // Recency from the feed's own publication date, falling back to a neutral value.
 export const recencyWeight = (item: { publishedAtMs?: number }, nowMs: number = Date.now()): number => {
   const published = Number(item?.publishedAtMs);
