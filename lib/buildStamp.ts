@@ -48,6 +48,23 @@ export function buildVersion(info: BuildStampInfo): string {
   return commit || generatedVersion(info.builtAt);
 }
 
+// The client's copy of a GET /api/version body. A reply that names no build at all is no report:
+// there is nothing to compare it with, and treating it as one would make an unstamped server
+// look current.
+export function parseVersionReport(value: unknown): BuildStampInfo | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const commit = typeof record.commit === 'string' ? record.commit.trim() : '';
+  const builtAt = typeof record.builtAt === 'string' ? record.builtAt.trim() : '';
+  if (!commit && !builtAt) return null;
+  return {
+    commit,
+    builtAt,
+    repo: typeof record.repo === 'string' ? record.repo : '',
+    note: normalizeNote(record.note),
+  };
+}
+
 // Whether the server is running a later build than the bundle on this device. The note is not
 // part of the comparison, so changed wording alone never offers an update. Build time is the
 // reliable direction: a rollback reports a different commit but an older time, and no prompt
