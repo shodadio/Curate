@@ -1,7 +1,7 @@
 import React from 'react';
 import { 
-  X, Clock, BookOpen, Compass, Sparkles, TrendingUp, 
-  Share2, Check, ArrowRight, ExternalLink, Calendar,
+  X, Clock, BookOpen, Compass, NotebookPen, TrendingUp,
+  Share2, CheckCheck, ArrowRight, ExternalLink, Calendar,
   BarChart3, ThumbsUp, Layers
 } from 'lucide-react';
 import { CuratorMark } from './CuratorLogo';
@@ -151,7 +151,7 @@ export function WeeklyReviewModal({
 ⏱️ ${totalMinutes} minutes spent reading
 📚 ${totalArticles} articles completed
 🏷️ Top topics: ${sortedTopics.slice(0, 3).map(t => `${t.topic} (${t.pct}%)`).join(' · ')}
-✨ Curated with The Curator`;
+📰 Curated with The Curator`;
 
     // On iOS the clipboard write succeeds silently and the summary lands nowhere the reader can
     // reach, so ask for the real share sheet whenever the device offers one.
@@ -413,7 +413,7 @@ export function WeeklyReviewModal({
                     <span className="font-mono text-[#3f3a33] text-xs bg-[#f6f1e7] px-2 py-0.5 rounded border border-[#c9bc9f]">
                       {item.readTime || `${item.minutesSpent ?? 0} min read`}
                     </span>
-                    <Check className="w-4 h-4 text-[#1c1a17]" strokeWidth={3} />
+                    <CheckCheck className="w-4 h-4 text-[#1c1a17]" strokeWidth={3} />
                   </div>
                 </div>
               ))}
@@ -423,7 +423,7 @@ export function WeeklyReviewModal({
           {/* Editorial Synthesis Reflection */}
           <div className="p-5 rounded-2xl bg-[#ece4d1] border border-[#c9bc9f] text-xs space-y-2">
             <div className="flex items-center gap-2 text-[#1c1a17] font-semibold">
-              <Sparkles className="w-4 h-4" />
+              <NotebookPen className="w-4 h-4" />
               <span>Curator Editorial Synthesis</span>
             </div>
             <p className="text-[#3f3a33] leading-relaxed">

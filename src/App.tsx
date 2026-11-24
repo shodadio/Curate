@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Bookmark, Rss, RefreshCw, Check, CheckCheck, Plus, Trash2, 
-  Download, Upload, Sliders, ExternalLink, ArrowLeft, Sparkles, 
-  AlertCircle, X, Home, Compass,
+  Download, Upload, Sliders, ExternalLink, ArrowLeft, Sparkles,
+  AlertCircle, Info, CircleCheck, TriangleAlert, X, Home, Library,
   ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square, Headphones,
-  RotateCcw, BarChart3, ArrowRight, ChevronDown, Activity,
-  HardDrive, Tags
+  RotateCcw, BarChart3, ArrowRight, ChevronDown, Activity, LoaderCircle,
+  HardDrive, Tags, GraduationCap, Radar
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { focusableWithin, trapTabKey } from './overlayFocus';
@@ -3840,7 +3840,7 @@ export default function App() {
           aria-live="polite"
           className="fixed safe-toast left-1/2 -translate-x-1/2 z-[60] w-fit max-w-[calc(100vw-2rem)] bg-[#1c1a17] border border-[#1c1a17] text-[#f6f1e7] text-xs px-3 py-2 rounded-xl shadow-2xl flex items-center gap-2 animate-fade-in"
         >
-          <Sparkles className="w-3 h-3 shrink-0" />
+          <Info className="w-3 h-3 shrink-0" />
           <span className="min-w-0 truncate leading-tight">{activeToast.message}</span>
           {activeToast.actionLabel && activeToast.onAction && (
             <button
@@ -4595,7 +4595,7 @@ export default function App() {
 
             {loadingDigest && todayDigest.length === 0 ? (
               <div className="py-20 text-center text-[#6f675c] space-y-3">
-                <RefreshCw className="w-6 h-6 animate-spin mx-auto text-[#6f675c]" />
+                <LoaderCircle className="w-6 h-6 animate-spin mx-auto text-[#6f675c]" />
                 <p className="text-sm">Synthesizing your morning reading list...</p>
                 {digestSlow && (
                   <div className="mx-auto max-w-xs space-y-2 pt-2">
@@ -5413,7 +5413,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 >
                   {isDiscovering ? (
                     <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <LoaderCircle className="w-3.5 h-3.5 animate-spin" />
                       <span>Investigating...</span>
                     </>
                   ) : (
@@ -5671,7 +5671,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                             title={pendingDeleteId === src.id ? 'Tap again to confirm removal' : 'Remove source'}
                             aria-label={pendingDeleteId === src.id ? 'Tap again to confirm removal' : 'Remove source'}
                           >
-                            {pendingDeleteId === src.id ? <AlertCircle className="w-4 h-4" /> : <Trash2 className="w-4 h-4" />}
+                            {pendingDeleteId === src.id ? <TriangleAlert className="w-4 h-4" /> : <Trash2 className="w-4 h-4" />}
                           </button>
                         </div>
                         </div>
@@ -6399,7 +6399,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 onClick={openSetupWizard}
                 className="w-full px-3 py-2 rounded-xl bg-[#e9e1cf] border border-[#ddd2bc] text-xs font-medium text-[#1c1a17] hover:border-[#1c1a17] hover:text-[#1c1a17] transition flex items-center justify-center gap-1.5"
               >
-                <Sparkles className="w-3.5 h-3.5" />
+                <GraduationCap className="w-3.5 h-3.5" />
                 <span>{semanticFeedback.length > 0 ? 'Teach Curator with more articles' : 'Teach Curator with articles'}</span>
               </button>
 
@@ -6524,7 +6524,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
             </SettingsSection>
 
             <SettingsSection
-              icon={<AlertCircle className="w-4 h-4" />}
+              icon={<TriangleAlert className="w-4 h-4" />}
               title="Danger"
               meta="Destructive actions"
             >
@@ -6732,7 +6732,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
             {/* Article Stream */}
             {loadingFeedStream ? (
               <div className="py-20 text-center text-[#6f675c] space-y-3">
-                <RefreshCw className="w-6 h-6 animate-spin mx-auto text-[#6f675c]" />
+                <LoaderCircle className="w-6 h-6 animate-spin mx-auto text-[#6f675c]" />
                 <span className="sr-only">Loading feed stream</span>
               </div>
             ) : feedStreamArticles.length === 0 ? (
@@ -6823,7 +6823,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
             aria-current={activeTab === 'sources' ? 'page' : undefined}
           className={`flex flex-col items-center justify-center gap-1 min-h-11 min-w-11 relative transition ${activeTab === 'sources' ? 'text-[#1c1a17] font-bold' : 'text-[#6f675c] hover:text-[#1c1a17]'}`}
           >
-            <Compass className="w-5 h-5" />
+            <Library className="w-5 h-5" />
             <span className="text-xs tracking-tight">Sources</span>
           </button>
 
@@ -7053,9 +7053,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
                     className="w-full px-4 py-2.5 rounded-xl bg-[#1c1a17] text-[#f6f1e7] text-xs font-semibold flex items-center justify-center gap-2 hover:bg-[#3a352d] transition disabled:opacity-60"
                   >
                     {loadingCalibration ? (
-                      <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Scanning your feeds…</>
+                      <><LoaderCircle className="w-3.5 h-3.5 animate-spin" /> Scanning your feeds…</>
                     ) : (
-                      <><Sparkles className="w-3.5 h-3.5" /> Scan my feeds and calibrate</>
+                      <><Radar className="w-3.5 h-3.5" /> Scan my feeds and calibrate</>
                     )}
                   </button>
                   <div className="flex gap-2">
@@ -7131,7 +7131,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   </div>
                 ) : (
                   <div className="p-4 rounded-2xl bg-[#e9e1cf] border border-[#ddd2bc] text-center text-xs text-[#3f3a33]">
-                    <Check className="w-5 h-5 text-[#1c1a17] mx-auto mb-2" />
+                    <CircleCheck className="w-5 h-5 text-[#1c1a17] mx-auto mb-2" />
                     {calibrationVotes} verdict{calibrationVotes === 1 ? '' : 's'} recorded. That is enough to
                     rank today's digest.
                   </div>
