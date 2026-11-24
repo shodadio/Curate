@@ -224,7 +224,6 @@ export const localSemanticScores = (
   );
   const counts = [...candidateTexts, ...feedbackTexts].map(semanticTermCounts);
   const vectors = vectorsFromCounts(counts);
-  const candidateShares = candidates.map(substanceShare);
   const feedbackVectors = vectors.slice(candidates.length);
   const usableFeedback = feedback
     .map((example, index) => ({ example, vector: feedbackVectors[index] }))
@@ -251,11 +250,9 @@ export const localSemanticScores = (
     if (!candidate || !candidate.id) return;
     const positiveSimilarity = bestSimilarity(vector, positiveExamples, SPARSE_FEEDBACK_HALF_LIFE_MS);
     const negativeSimilarity = bestSimilarity(vector, negativeExamples, SPARSE_FEEDBACK_HALF_LIFE_MS);
-    // No conditional halving: an unrelated dislike must not rescale every liked topic. The
-    // substance factor is what stops a bare headline beating its own article.
-    const score = clampSemanticScore(
-      (positiveSimilarity - negativeSimilarity) * substanceFactor(candidateShares[index]),
-    );
+    // No conditional halving: an unrelated dislike must not rescale every liked topic. How much
+    // article stands behind the match is applied once, when the weights are added up.
+    const score = clampSemanticScore(positiveSimilarity - negativeSimilarity);
     if (Number.isFinite(score)) scores.set(candidate.id, score);
   });
 
@@ -483,7 +480,10 @@ export function scoreCandidates(
 
   const scored = pool
     .map((item: any) => {
-      const semanticScore = semanticScores.get(item.id) || 0;
+      // Both engines report pure similarity; how much article stands behind the match is applied
+      // here, once, so a stub counts the same whichever engine scored it.
+      const semanticScore =
+        (semanticScores.get(item.id) || 0) * substanceFactor(substanceShare(item));
       const liked = moreIds.includes(item.id);
       const interestLabel = moreTopics.find((label: string) => matchesInterest(item, label)) || '';
       const lessLabel = lessTopics.find((label: string) => matchesInterest(item, label)) || '';
