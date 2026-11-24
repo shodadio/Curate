@@ -3,7 +3,7 @@ import {
   Bookmark, Rss, RefreshCw, Check, CheckCheck, Plus, Trash2, 
   Download, Upload, Sliders, ExternalLink, ArrowLeft, Sparkles,
   AlertCircle, Info, CircleCheck, TriangleAlert, X, Home, Library,
-  ThumbsUp, ThumbsDown, FileUp, Search, Globe, Volume2, Play, Pause, Square, Headphones,
+  ThumbsUp, ThumbsDown, Search, Globe, Volume2, Play, Pause, Square, Headphones,
   RotateCcw, BarChart3, ArrowRight, ChevronDown, Activity, LoaderCircle,
   HardDrive, Tags, GraduationCap, ScanLine
 } from 'lucide-react';
@@ -7263,7 +7263,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   : 'border-[#d3c7ae] bg-[#e9e1cf] hover:border-[#1c1a17] hover:bg-[#f6f1e7]'
               }`}
             >
-              <FileUp className="w-6 h-6 text-[#1c1a17] mx-auto mb-2" />
+              <Upload className="w-6 h-6 text-[#1c1a17] mx-auto mb-2" />
               <div className="text-xs font-medium text-[#3f3a33]">
                 {importFileName ? `Selected: ${importFileName}` : 'Choose an OPML / XML file or drop it here'}
               </div>
