@@ -105,6 +105,7 @@ import {
   takePrefetchedSpeechAudio,
   trimSpeechSilence,
 } from './lib/speechAudio';
+import { registerListeningCommands, setListeningPiece, type ListeningCommands } from './lib/mediaSession';
 import { ReadAloudSettings } from './components/ReadAloudSettings';
 import { articleLooksIncomplete, articleNeedsBodyRefresh, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isImageBlock, isMediaCreditParagraph, isPlayerChrome, isStrayCommentLink, isTableBlock, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
 
@@ -3078,6 +3079,13 @@ export default function App() {
     safeSetJson(SPEECH_POSITION_STORAGE_KEY, next);
   };
 
+  // What the lock screen shows while a piece is being spoken: its title and the source it came
+  // from. A stopped queue clears both, so the phone stops offering controls for nothing.
+  const publishListening = (state: MediaSessionPlaybackState) => {
+    const article = speechArticleItemRef.current;
+    setListeningPiece(article ? { title: article.title, source: article.source } : null, state);
+  };
+
   const stopSpeech = () => {
     speechSessionRef.current += 1;
     // Stopping is the end of the run: nothing may carry on into the next piece after it
@@ -3103,6 +3111,7 @@ export default function App() {
     setSpeechPaused(false);
     setSpeechArticleId(null);
     setSpeechProgress({ index: 0, total: 0, paragraph: -1 });
+    publishListening('none');
   };
 
   // Only a queue that ran to its end counts as listening; stopSpeech() is the other exit
@@ -3317,6 +3326,7 @@ export default function App() {
     setSpeechArticleId(article.id);
     setSpeechPanelOpen(true);
     setSpeechProgress({ index: first, total: queue.length, paragraph: queue[first].paragraphIndex });
+    publishListening('playing');
     requestWakeLock();
     // Still inside the tap: iOS only starts speaking from a user gesture
     speakSpeechChunk();
@@ -3341,6 +3351,7 @@ export default function App() {
     }
     speechStateRef.current = 'paused';
     setSpeechPaused(true);
+    publishListening('paused');
     releaseWakeLock();
     // A neural sentence pauses through its audio element; the device voice through its engine
     if (!pauseSpeechAudio() && typeof window !== 'undefined' && 'speechSynthesis' in window) {
@@ -3354,6 +3365,7 @@ export default function App() {
 
     speechStateRef.current = 'playing';
     setSpeechPaused(false);
+    publishListening('playing');
     requestWakeLock();
     showToast('Resumed reading aloud');
 
@@ -3895,6 +3907,77 @@ export default function App() {
     }
     showToast('Finished listening — nothing unread left.');
   };
+
+  // A headphone skip moves the reading to the next or previous unread piece. Nothing is marked
+  // finished: the listener moved on, they did not hear it through.
+  const playAdjacentListeningPiece = (direction: 1 | -1) => {
+    const currentId = speechArticleIdRef.current;
+    if (!currentId) return;
+    const order = nextUnreadPieces(digest.map(item => item.id), currentId, id => Boolean(readingStats[id]?.finished));
+    if (order.length === 0) {
+      showToast('Nothing else unread in this edition');
+      return;
+    }
+    const candidate = digest.find(item => item.id === (direction > 0 ? order[0] : order[order.length - 1]));
+    if (!candidate) return;
+    // A piece the feed only began earns its page before it can be spoken, and a stop during the
+    // wait cancels the skip rather than starting a reading nobody asked for.
+    const token = speechRunTokenRef.current;
+    void ensureSpeakableText(candidate).then(ready => {
+      if (speechRunTokenRef.current !== token) return;
+      if (!ready) {
+        showToast('That piece has no text to read.');
+        return;
+      }
+      openArticle(ready);
+      startSpeech(ready);
+      showToast(`Listening: ${ready.title}`);
+    });
+  };
+
+  // One sentence either way, from the lock screen's skip buttons. Past the last sentence the
+  // piece ends the way it would on its own, so the queue can carry on into the next one.
+  const skipSpeechSentence = (direction: 1 | -1) => {
+    const queue = speechQueueRef.current;
+    if (speechStateRef.current === 'idle' || queue.length === 0) return;
+    const target = speechIndexRef.current + direction;
+    if (target < 0) return;
+    if (target >= queue.length) {
+      finishSpeech();
+      return;
+    }
+    speechSessionRef.current += 1;
+    speechStateRef.current = 'idle';
+    if (speechGapTimerRef.current) {
+      clearTimeout(speechGapTimerRef.current);
+      speechGapTimerRef.current = null;
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+    stopSpeechAudio();
+    speechIndexRef.current = target;
+    storeSpeechPosition(speechArticleIdRef.current, target, queue.length, queue[target].paragraphIndex);
+    requestWakeLock();
+    speakSpeechChunk();
+  };
+
+  // The lock screen and the headphones press these. The ref keeps them pointed at this render's
+  // closures rather than the ones that existed when the buttons were first registered.
+  const listeningCommandsRef = React.useRef<ListeningCommands | null>(null);
+  useEffect(() => {
+    listeningCommandsRef.current = {
+      play: () => resumeSpeech(),
+      pause: () => pauseSpeech(),
+      stop: () => stopSpeech(),
+      nextPiece: () => playAdjacentListeningPiece(1),
+      previousPiece: () => playAdjacentListeningPiece(-1),
+      nextSentence: () => skipSpeechSentence(1),
+      previousSentence: () => skipSpeechSentence(-1),
+    };
+  });
+  useEffect(() => {
+    registerListeningCommands(() => listeningCommandsRef.current);
+    return () => registerListeningCommands(null);
+  }, []);
 
   // The reader opens from Today, Feeds or Saved and never changes the tab underneath, so the
   // way back should name the page the reader actually came from.
