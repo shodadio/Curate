@@ -3408,7 +3408,7 @@ export default function App() {
 
   // Settings › Read aloud › Hear this voice
   const handlePreviewSpeech = () => {
-    const preview = 'Curator. Your morning reading, read aloud.';
+    const preview = 'Curator. Your reading, read aloud.';
 
     if (speechEngine === 'device' && (typeof window === 'undefined' || !('speechSynthesis' in window))) {
       showToast('Speech audio is not supported in this browser.');
@@ -5100,7 +5100,7 @@ export default function App() {
             {loadingDigest && todayDigest.length === 0 ? (
               <div className="py-20 text-center text-[#6f675c] space-y-3">
                 <LoaderCircle className="w-6 h-6 animate-spin mx-auto text-[#6f675c]" />
-                <p className="text-sm">Synthesizing your morning reading list...</p>
+                <p className="text-sm">Synthesizing your reading list...</p>
                 {digestSlow && (
                   <div className="mx-auto max-w-xs space-y-2 pt-2">
                     <p className="text-xs leading-relaxed text-[#6f675c]">
