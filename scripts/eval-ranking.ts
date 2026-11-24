@@ -1,10 +1,11 @@
-// The engine's benchmark: one fixed profile, one fixed pool, five numbers. Run with `npm run eval`.
+// The engine's benchmark: one fixed profile, one fixed pool, six numbers. Run with `npm run eval`.
 //
 // Precision@5 asks whether the digest the reader actually sees is on-topic; MRR asks how quickly
 // the ranked list reaches the first on-topic story; full-over-thin asks whether an article beats
-// the bare headline of the same story; determinism asks whether the same inputs give the same
-// edition; runtime asks what a large fetch costs. Every engine change should be judged against
-// these, not against a feeling about one digest.
+// the bare headline of the same story; stub-heavy precision asks whether a feed where only the
+// wrong stories have been fetched collapses onto them; determinism asks whether the same inputs
+// give the same edition; runtime asks what a large fetch costs. Every engine change should be
+// judged against these, not against a feeling about one digest.
 import {
   buildDeterministicDigest,
   localSemanticScores,
@@ -25,6 +26,7 @@ const RUNTIME_BUDGET_MS = 750;
 const MIN_PRECISION_AT_5 = 1;
 const MIN_MRR = 1;
 const MIN_PAIR_RATE = 1;
+const MIN_STUB_HEAVY_PRECISION = 1;
 
 const rank = (pool: EvalCandidate[], nowMs: number) => {
   const semanticScores = localSemanticScores(EVAL_PROFILE, pool, nowMs);
@@ -57,6 +59,16 @@ const pairWins = EVAL_PAIRS.filter(([thin, full]) =>
 ).length;
 const pairRate = pairWins / EVAL_PAIRS.length;
 
+// Stub-heavy feed: most stories arrive as headlines until a fetcher visits, and those visits do not
+// land on what the reader wants. Give every off-topic story a body and check the edition still
+// leads with the reader's subjects rather than collapsing onto whatever can be read.
+const stubHeavyPool: EvalCandidate[] = EVAL_POOL.map(item =>
+  item.relevant ? item : { ...item, fullText: Array(6).fill(item.summary).join(' ') },
+);
+const stubHeavyDigest = rank(stubHeavyPool, EVAL_NOW).digest;
+const stubHeavyPrecision =
+  stubHeavyDigest.filter(item => relevantById.get(item.id)).length / Math.max(1, stubHeavyDigest.length);
+
 // Determinism: the same profile, pool and clock must produce exactly the same edition.
 const again = rank(EVAL_POOL, EVAL_NOW);
 const order = (items: Array<{ id: string }>) => items.map(item => item.id).join(',');
@@ -87,10 +99,12 @@ console.log('');
 line('precision@5', `${(precisionAt5 * 100).toFixed(0)}% of ${digest.length}`, precisionAt5 >= MIN_PRECISION_AT_5);
 line('MRR', mrr.toFixed(3), mrr >= MIN_MRR);
 line('full over thin', `${pairWins}/${EVAL_PAIRS.length} pairs`, pairRate >= MIN_PAIR_RATE);
+line('stub-heavy', `${(stubHeavyPrecision * 100).toFixed(0)}% of ${stubHeavyDigest.length}`, stubHeavyPrecision >= MIN_STUB_HEAVY_PRECISION);
 line('deterministic', deterministic ? 'same edition twice' : 'edition changed between runs', deterministic);
 line(`runtime ${RUNTIME_CANDIDATES}`, `${runtimeMs} ms (budget ${RUNTIME_BUDGET_MS})`, runtimeMs <= RUNTIME_BUDGET_MS);
 
 if (!deterministic || precisionAt5 < MIN_PRECISION_AT_5 || mrr < MIN_MRR ||
-  pairRate < MIN_PAIR_RATE || runtimeMs > RUNTIME_BUDGET_MS) {
+  pairRate < MIN_PAIR_RATE || stubHeavyPrecision < MIN_STUB_HEAVY_PRECISION ||
+  runtimeMs > RUNTIME_BUDGET_MS) {
   process.exit(1);
 }

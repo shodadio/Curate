@@ -79,6 +79,9 @@ export const EVAL_PAIRS: Array<[string, string]> = [
   ['p43', 'p44'],
   ['p45', 'p46'],
   ['p47', 'p48'],
+  ['p49', 'p50'],
+  ['p51', 'p52'],
+  ['p53', 'p54'],
 ];
 
 export const EVAL_POOL: EvalCandidate[] = [
@@ -148,4 +151,16 @@ export const EVAL_POOL: EvalCandidate[] = [
   story('p47', 'Starter Club', 'Baking', 'Feeding schedules that actually work', '', false),
   story('p48', 'Bake Notes', 'Baking', 'Feeding schedules that actually work, measured', '', true,
     'Weigh the sourdough starter, flour and water separately, then vary hydration in five percent steps and note the rise time at a fixed oven temperature. A wetter starter ferments faster but collapses sooner, which changes the feeding schedule more than the recipe does, and the loaf crumb shows it.'),
+
+  // Three more pairs on the reader's own subjects, so the number rests on six stories rather than
+  // three and one unlucky pair cannot carry it.
+  story('p49', 'Policy Wire', 'Policy', 'Open-weight licensing closes in', '', false),
+  story('p50', 'Policy Desk', 'Policy', 'Open-weight licensing closes in, with caveats', '', true,
+    'Providers publishing weights must ship a model card, name a contact for regulator queries and keep evaluation results for three years. Smaller labs say the paperwork outweighs the risk for narrow models, while officials argue the timetable was known and the duties scale with capability.'),
+  story('p51', 'Async Notes', 'Systems', 'Async runtimes on a budget', '', false),
+  story('p52', 'Rust Weekly', 'Systems', 'Async runtimes on a budget, measured', '', true,
+    'Two runtimes were measured on the same service: throughput per core, tail latency under load, and how quickly each shed work when the executor saturated. The difference sat in the scheduler rather than the syntax, and both needed the same care around blocking calls inside async handlers.'),
+  story('p53', 'Starter Club', 'Baking', 'Starter ratios that survive a heatwave', '', false),
+  story('p54', 'Bake Notes', 'Baking', 'Starter ratios that survive a heatwave, tested', '', true,
+    'Three feeding ratios went through a hot week: one to one, one to two, and a stiff levain. The stiff starter held its rise longest and soured slowly, while the wet one peaked fast and then collapsed, so the feeding schedule mattered more than the dough hydration did.'),
 ];
