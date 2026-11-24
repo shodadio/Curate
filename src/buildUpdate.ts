@@ -1,9 +1,7 @@
-// Shared by the automatic update notice and the manual check in Settings: ask the server which
-// build it is running, and switch this device to it.
-import { parseVersionReport, type BuildStampInfo } from '../lib/buildStamp';
+// Ask the server which build it is running so installed apps can offer a newer bundle.
+import { parseBuildStamp, type BuildStampInfo } from '../lib/buildStamp';
 
-// The build the server is serving right now, or null when there is nothing to compare: offline,
-// a server older than the version route, or a report that names no build.
+// The build the server is serving right now, or null when offline or when it has no build metadata.
 export async function fetchServerBuild(): Promise<BuildStampInfo | null> {
   try {
     const response = await fetch('/api/version', {
@@ -11,9 +9,8 @@ export async function fetchServerBuild(): Promise<BuildStampInfo | null> {
       headers: { Accept: 'application/json' },
     });
     if (!response.ok) return null;
-    // A server from before this route can answer with the app shell instead of JSON.
     if (!(response.headers.get('content-type') || '').includes('application/json')) return null;
-    return parseVersionReport(await response.json());
+    return parseBuildStamp(await response.json());
   } catch {
     return null;
   }

@@ -1,4 +1,3 @@
-// Injected by Vite at build time from vite.config.ts: the repository this bundle came from,
-// the commit it was built at, and when. Settings shows the stamp so a device can name its
-// own version.
-declare const __BUILD_INFO__: { commit: string; builtAt: string; repo: string; note?: string };
+// Injected by Vite at build time: the full source commit when available, a separate snapshot id
+// when the build has no Git history, and the time the bundle was created.
+declare const __BUILD_INFO__: { commit: string; buildId: string; builtAt: string; repo: string; note?: string };

@@ -50,8 +50,6 @@ jobs:
             exit 1
           fi
 
-      # The build writes its identity next to the bundle for GET /api/version. A build without
-      # a commit cannot be confirmed from the running app, so fail the release instead of
-      # shipping one.
-      - name: Build names its commit
+      # The build writes its identity beside the bundle for Settings and /api/version.
+      - name: Build records its identity
         run: bun run check:stamp

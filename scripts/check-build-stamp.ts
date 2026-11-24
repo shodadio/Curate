@@ -1,7 +1,4 @@
-// Release gate: a build that cannot name its commit must not ship.
-// The build writes its identity next to the bundle for GET /api/version; this reads that file
-// and fails the run when the identity is missing or has no commit. Catching it here means a
-// deploy is never published that cannot be matched to a commit from the running app.
+// Release gate: a build must record either its Git commit or a distinct source snapshot id.
 import { BUILD_INFO_FILE, readBuildInfo } from '../lib/buildInfo.ts';
 
 const distDir = process.argv[2] || 'dist';
@@ -9,18 +6,19 @@ const info = readBuildInfo(distDir);
 
 if (!info) {
   console.error(
-    `No readable ${BUILD_INFO_FILE} in ${distDir}/ — the build could not name its commit, so the running app could not report which version is live.`
+    `No readable ${BUILD_INFO_FILE} in ${distDir}/ — the build could not record its identity.`
   );
   process.exit(1);
 }
 
-if (!info.commit) {
+const identity = info.commit ? `commit ${info.commit}` : info.buildId ? `source snapshot ${info.buildId}` : '';
+if (!identity) {
   console.error(
-    `The build in ${distDir}/ has no commit (builtAt: ${info.builtAt || 'unset'}). Pass SOURCE_COMMIT=<sha>, or build from a checkout with .git, so the deploy can be matched to a commit.`
+    `The build in ${distDir}/ has no commit or source snapshot id (builtAt: ${info.builtAt || 'unset'}). Pass SOURCE_COMMIT=<full-sha>, SOURCE_BUILD_ID=<id>, or build from a checkout with .git.`
   );
   process.exit(1);
 }
 
 console.log(
-  `Build names ${info.commit}${info.builtAt ? `, built ${info.builtAt}` : ''} — ${distDir}/${BUILD_INFO_FILE}`
+  `Build records ${identity}${info.builtAt ? `, built ${info.builtAt}` : ''} — ${distDir}/${BUILD_INFO_FILE}`
 );

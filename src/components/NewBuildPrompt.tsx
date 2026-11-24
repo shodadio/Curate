@@ -5,9 +5,8 @@ import { isNewerBuild, type BuildStampInfo } from '../../lib/buildStamp';
 import { fetchServerBuild, reloadWithLatestBuild } from '../buildUpdate';
 
 // Installed apps keep the shell their service worker precached, so a deploy can go unnoticed
-// for days. The server names the build it is running at /api/version; when that is later than
-// this bundle, offer one tap to switch. No polling loop: a check on first load and whenever
-// the app comes back to the foreground is enough.
+// for days. Offer one tap to switch when the server reports a newer build. No polling loop: check
+// on first load and whenever the app returns to foreground.
 const FIRST_CHECK_MS = 1500;
 const CHECK_INTERVAL_MS = 60_000;
 

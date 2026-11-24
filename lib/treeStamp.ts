@@ -1,7 +1,7 @@
-// A stamp for a tree that has no history to name: a hash of the sources that ship, in the shape
-// of a short commit. The container build uses it when the context has neither .git nor a commit
-// to pass, as on Cloud Build, which copies the tree without history and passes no build args.
-// The same tree always prints the same id, so a deploy can still be matched to what it shipped.
+// A source-snapshot id for a tree with no Git history: a hash of the sources that ship. It is
+// stored as buildId, never as commit. The container build uses it when the context has neither
+// .git nor a commit to pass, as on Cloud Build, which copies the tree without history or build args.
+// The same tree always prints the same id, so a deploy can still be matched to the source snapshot.
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';

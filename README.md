@@ -384,7 +384,7 @@ Returns a source's site icon, fetched server-side and cached in memory for seven
 ---
 
 ### `GET /api/version`
-Names the build this server is running: `{ "version": "abc1234", "commit": "abc1234", "builtAt": "…", "repo": "shodadio/Curate", "stamp": "shodadio/Curate · Build abc1234 · …" }`, with `Cache-Control: no-store`. The version and stamp match what Settings shows, so a deployment can be confirmed with one request instead of opening the app on a device. A build that could not name its commit reports a generated id rather than an empty version, but the release pipeline refuses such a build outright (see [Available Scripts](#available-scripts)), so an unstamped bundle cannot reach a host.
+Returns the build metadata embedded in the running bundle — `{ "commit": "<full Git SHA or empty>", "buildId": "<commit prefix or source snapshot id>", "builtAt": "…", "repo": "shodadio/Curate" }` — with `Cache-Control: no-store`. This local endpoint does not contact GitHub or claim the build is current. Settings shows the build identity and time; compare a real commit SHA with GitHub `main` manually. A source-snapshot ID is not a commit SHA and cannot be compared directly.
 
 ---
 
@@ -471,43 +471,43 @@ Open your browser to [http://localhost:3000](http://localhost:3000), or whicheve
 
 ### Production Deployment
 
-The two paths below are alternatives: run one, not both. Either builds the same bundle from the same tree and stamps it with the commit it was built from, so Settings and `GET /api/version` name the same version whichever you use.
+The paths below are alternatives: run one, not both. Every build embeds its identity and build time. Settings shows the stamp and full SHA when a real Git commit is available, with a link to compare that commit against GitHub `main`. A build without Git history receives a distinct source-snapshot ID; that ID is not a commit and cannot be compared directly. `/api/version` returns only the embedded metadata and makes no GitHub request.
 
 **Local bundle**
 
-1. Build the production client bundle into `dist/`, naming the commit it was built from:
+1. Build the production client bundle into `dist/`, naming the full commit SHA:
    ```bash
-   SOURCE_COMMIT=$(git rev-parse --short HEAD) bun run build
+   SOURCE_COMMIT=$(git rev-parse HEAD) bun run build
    bun run check:stamp
    ```
 
-   A build that cannot name its commit still runs, but Settings and `GET /api/version` fall back to a build time, so a phone cannot tell you which commit it is showing. `check:stamp` turns that into a failed release instead. A checkout that still has `.git` supplies the commit on its own; the explicit variable matters when the build runs without history — a CI job, or a host that copies the tree without `.git`.
+   A checkout with `.git` supplies its commit automatically. A copied source tree without Git history gets a deterministic source-snapshot ID instead. `check:stamp` accepts either identity and fails only when neither is present.
 
 2. Start the server with `NODE_ENV=production` so it serves `dist/` instead of mounting the Vite dev middleware:
    ```bash
    NODE_ENV=production bun run start
    ```
 
-   `bun run start` executes `tsx server.ts`, the same entry point as development. Without `NODE_ENV=production` you get the development middleware and the built bundle is ignored, so set it in your process environment. `GET /api/version` on that server answers with the commit the build was stamped with.
+   `bun run start` executes `tsx server.ts`, the same entry point as development. Without `NODE_ENV=production` you get the development middleware and the built bundle is ignored, so set it in your process environment. `GET /api/version` returns the identity and time baked into the served bundle; compare a real commit with GitHub `main` from Settings.
 
 3. Optionally, give the release a one-line note for the people who will see the update notice:
    ```bash
-   SOURCE_COMMIT=$(git rev-parse --short HEAD) RELEASE_NOTE="Faster morning digest" bun run build
+   SOURCE_COMMIT=$(git rev-parse HEAD) RELEASE_NOTE="Faster morning digest" bun run build
    ```
 
    The note travels with the build and appears under the notice's "A newer build is ready" line. It is optional — without it the notice is unchanged — and a note longer than one short line is trimmed rather than allowed to grow the bar.
 
 **Container image**
 
-Build the image with the same commit as a build argument, then run it:
+Build the image with the full commit SHA as a build argument, then run it:
 ```bash
-docker build --build-arg SOURCE_COMMIT=$(git rev-parse --short HEAD) -t curator .
+docker build --build-arg SOURCE_COMMIT=$(git rev-parse HEAD) -t curator .
 docker run --rm -p 8080:8080 curator
 ```
 
-Merges to `main` publish the image for you: the *Publish* workflow builds from the merged commit with that commit passed as the stamp and pushes it to GitHub Container Registry, tagged with the short SHA and `latest` (`ghcr.io/shodadio/curator`). Point the host at the tag and redeploy; `GET /api/version` on the new container names the commit it was built from. The image also carries a release note: the commit subject with its conventional prefix removed (`fix:` and the like), or the repository variable `RELEASE_NOTE` when that is set under the repository's Variables settings.
+Merges to `main` publish the image for you: the *Publish* workflow stamps the merged commit's full SHA and pushes the image to GitHub Container Registry, tagged with the short SHA and `latest` (`ghcr.io/shodadio/curator`). Point the host at the tag and redeploy. The image also carries a release note: the commit subject with its conventional prefix removed (`fix:` and the like), or the repository variable `RELEASE_NOTE` when that is set under the repository's Variables settings.
 
-The image builds the bundle and runs the same release check before it finishes, so an image that cannot name its commit fails to build exactly where the local path does. The commit comes from `--build-arg SOURCE_COMMIT=…` when you pass it, from `.git` when the context still has history, and otherwise from a hash of the sources in the context — the case for a host such as Cloud Build, which copies the tree without history and cannot pass a build argument. That hash is reproducible, so the same tree always stamps the same version and a deploy can still be matched to the sources it shipped. The image also sets production mode and port 8080 on its own, so there is nothing else to run before or after it. Rebuild the image for every release rather than redeploying the previous one: a redeploy keeps the original build time, so installed apps checking for a newer build find nothing to switch to.
+The image builds the bundle and runs the identity check before it finishes. Its identity comes from `--build-arg SOURCE_COMMIT=…`, `.git`, or a deterministic source-snapshot ID when history is unavailable. The snapshot ID is never presented as a commit. The image also sets production mode and port 8080 on its own, so there is nothing else to run before or after it. Rebuild the image for every release rather than redeploying the previous one.
 
 Add `--build-arg RELEASE_NOTE="Faster morning digest"` to the build command to ship a release note the same way.
 
@@ -521,7 +521,7 @@ If you deploy behind a proxy, set `TRUST_PROXY=1` as described in [Environment V
 | :--- | :--- |
 | `bun run dev` | Starts the Express server with Vite middleware in development mode (`tsx server.ts`). |
 | `bun run build` | Builds the production client assets into `dist/` (`vite build`). |
-| `bun run check:stamp` | Fails when the build in `dist/` cannot name its commit; run by the release pipeline after `build`. |
+| `bun run check:stamp` | Fails when the build in `dist/` has neither a commit SHA nor a source-snapshot ID; run by the release pipeline after `build`. |
 | `bun run start` | Runs `tsx server.ts`; add `NODE_ENV=production` to serve the built `dist/`. |
 | `bun run lint` | Runs the TypeScript compiler check (`tsc --noEmit`) to validate type safety. |
 | `bun run preview` | Serves the built bundle with `vite preview` (client only, no API routes). |

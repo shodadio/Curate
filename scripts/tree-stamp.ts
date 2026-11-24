@@ -1,6 +1,6 @@
-// Prints the stamp the container build falls back to when it has neither a commit nor a build
-// argument: a short hash of the sources in the tree, in the shape of a short commit. Reads the
-// tree it is run from, or the directory given as its first argument.
+// Prints the source-snapshot id the container build uses when it has neither a Git commit nor
+// an explicit build id. This is a source identity, not a Git commit SHA. Reads the tree it is run
+// from, or the directory given as its first argument.
 import { treeStamp } from '../lib/treeStamp.ts';
 
 const root = process.argv[2] || process.cwd();

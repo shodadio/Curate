@@ -1,21 +1,20 @@
-// What build a running server is serving. Vite stamps the client bundle; this module lets the
-// server answer the same question from the file the build writes next to the bundle.
+// Local build metadata is stored next to the client bundle so Settings and the version endpoint
+// can identify the exact build without relying on a runtime GitHub request.
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { buildVersion, formatBuildStamp, normalizeNote, type BuildStampInfo } from './buildStamp.ts';
+import { normalizeNote, parseBuildStamp, type BuildStampInfo } from './buildStamp.ts';
 
 export const BUILD_INFO_FILE = 'build-info.json';
 export const DEFAULT_REPO = 'shodadio/Curate';
 
-// Shared with vite.config.ts. Docker images can drop .git, so the commit also comes from
-// whichever host variable is set — the first one below wins, and SOURCE_COMMIT remains the
-// documented override.
+// The first non-empty value names the commit supplied by a build host. SOURCE_COMMIT remains the
+// documented override; full commit hashes are retained in build-info.json.
 export const commitEnvNames = [
   'SOURCE_COMMIT',         // Docker --build-arg, the documented override
   'GITHUB_SHA',            // GitHub Actions
   'CI_COMMIT_SHA',         // GitLab CI
-  'COMMIT_SHA',            // Cloud Build (what AI Studio deploys run on)
+  'COMMIT_SHA',            // Cloud Build
   'SHORT_SHA',             // Cloud Build
   'COMMIT_REF',            // Netlify
   'VERCEL_GIT_COMMIT_SHA', // Vercel
@@ -47,25 +46,18 @@ export function commitFromEnv(env: NodeJS.ProcessEnv = process.env): string {
   return '';
 }
 
-function text(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-// A half-written or hand-edited file must neither crash the server nor let it claim a version
-// it cannot back up. Missing fields are allowed; a file with no version at all is not.
 export function parseBuildInfo(raw: string): BuildStampInfo | null {
-  let value: unknown;
   try {
-    value = JSON.parse(raw);
+    const parsed = parseBuildStamp(JSON.parse(raw));
+    if (!parsed) return null;
+    return {
+      ...parsed,
+      repo: parsed.repo || DEFAULT_REPO,
+      note: normalizeNote(parsed.note),
+    };
   } catch {
     return null;
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const commit = text(record.commit);
-  const builtAt = text(record.builtAt);
-  if (!commit && !builtAt) return null;
-  return { commit, builtAt, repo: text(record.repo) || DEFAULT_REPO, note: normalizeNote(record.note) };
 }
 
 export function readBuildInfo(distDir: string): BuildStampInfo | null {
@@ -74,21 +66,4 @@ export function readBuildInfo(distDir: string): BuildStampInfo | null {
   } catch {
     return null;
   }
-}
-
-export interface VersionReport extends BuildStampInfo {
-  version: string;
-  stamp: string;
-}
-
-// One JSON object that answers "what is live?": the short version to match against a commit,
-// and the same line Settings shows.
-export function versionReport(info: BuildStampInfo): VersionReport {
-  const report = {
-    commit: text(info.commit),
-    builtAt: text(info.builtAt),
-    repo: text(info.repo) || DEFAULT_REPO,
-    note: normalizeNote(info.note),
-  };
-  return { ...report, version: buildVersion(report), stamp: formatBuildStamp(report) };
 }

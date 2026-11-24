@@ -8,18 +8,22 @@ import {defineConfig, type Plugin, type ResolvedConfig} from 'vite';
 import { BUILD_INFO_FILE, commitFromEnv, noteFromEnv } from './lib/buildInfo.ts';
 import type { BuildStampInfo } from './lib/buildStamp.ts';
 
-// Which build a device is running: the commit it came from, when it was made. The host-variable
-// list lives in lib/buildInfo.ts because the server reads the same values at runtime.
+// Keep the full Git SHA when the build host provides it, so it can be compared with main in GitHub.
+// A build without Git history is identified separately by a source-snapshot id.
 const envCommit = commitFromEnv();
-
-const shortCommit = (() => {
-  if (envCommit) return envCommit.slice(0, 7);
-  try {
-    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
-  } catch {
-    return '';
-  }
-})();
+const commit = /^[0-9a-f]{40}$/i.test(envCommit)
+  ? envCommit.toLowerCase()
+  : (() => {
+      try {
+        const value = execSync('git rev-parse HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+        return /^[0-9a-f]{40}$/i.test(value) ? value.toLowerCase() : '';
+      } catch {
+        return '';
+      }
+    })();
+const buildId = commit
+  ? commit.slice(0, 7)
+  : (process.env.SOURCE_BUILD_ID || envCommit).trim().slice(0, 7);
 
 // The repository this bundle came from, so the stamp in Settings names its source as well
 // as its version. A GitHub build supplies this; local builds fall back to the project repo.
@@ -44,17 +48,16 @@ function writeBuildInfo(info: BuildStampInfo): Plugin {
 }
 
 export default defineConfig(({ command }) => {
-  // A version-less stamp is a support problem: a phone cannot say which build it runs.
-  // Say so where the operator will see it, before the bundle is written.
-  if (command === 'build' && !shortCommit) {
+  // A build without either a Git SHA or a source snapshot id cannot be identified after deploy.
+  if (command === 'build' && !buildId) {
     console.warn(
-      '\n\x1b[1;31m[Curator build] No commit found for the build stamp.\x1b[0m\n' +
-        '  Settings will show a generated build id instead of a version.\n' +
-        '  Pass SOURCE_COMMIT=<sha>, or build from a checkout with .git, to stamp the real commit.\n'
+      '\n\x1b[1;31m[Curator build] No build identity found.\x1b[0m\n' +
+        '  Pass SOURCE_COMMIT=<full-sha>, build from a checkout with .git, or set SOURCE_BUILD_ID.\n'
     );
   }
   const buildInfo: BuildStampInfo = {
-    commit: shortCommit,
+    commit,
+    buildId,
     builtAt: new Date().toISOString(),
     repo: repository,
     note: noteFromEnv(),

@@ -1,86 +1,90 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatBuildStamp, isNewerBuild, normalizeNote, parseVersionReport } from '../lib/buildStamp.ts';
+import { formatBuildStamp, isNewerBuild, normalizeNote, parseBuildStamp } from '../lib/buildStamp.ts';
 
 const REPO = 'shodadio/Curate';
 const BUILT_AT = '2026-11-20T07:23:00.000Z';
+const MAIN_COMMIT = '0123456789abcdef0123456789abcdef01234567';
 
-test('names the repository, commit and build time', () => {
-  const stamp = formatBuildStamp({ commit: 'abc1234', builtAt: BUILT_AT, repo: REPO });
-  assert.ok(stamp.startsWith(`${REPO} · Build abc1234 · `), stamp);
-  assert.match(stamp, /2026/);
+const build = (patch: Partial<{ commit: string; buildId: string; builtAt: string; repo: string; note: string }> = {}) => ({
+  commit: '',
+  buildId: '',
+  builtAt: BUILT_AT,
+  repo: REPO,
+  ...patch,
 });
 
-test('a build without a commit still names a version', () => {
-  assert.equal(
-    formatBuildStamp({ commit: '', builtAt: BUILT_AT, repo: REPO }),
-    `${REPO} · Build 2026.11.20-0723`,
-  );
+test('the visible stamp identifies a real source commit', () => {
+  assert.equal(formatBuildStamp(build({ commit: MAIN_COMMIT, buildId: '0123456' })), 'Build · 0123456');
 });
 
-test('the generated version is in UTC, not the machine timezone', () => {
-  const stamp = formatBuildStamp({ commit: '', builtAt: '2026-11-20T23:59:00.000Z', repo: REPO });
-  assert.ok(stamp.endsWith('2026.11.20-2359'), stamp);
-});
-
-test('a missing repository still starts with the version', () => {
-  const stamp = formatBuildStamp({ commit: 'abc1234', builtAt: BUILT_AT, repo: '' });
-  assert.ok(stamp.startsWith('Build abc1234 · '), stamp);
-});
-
-test('a missing build time never removes the version', () => {
-  assert.equal(formatBuildStamp({ commit: '', builtAt: '', repo: REPO }), `${REPO} · Build unstamped`);
-  assert.equal(formatBuildStamp({ commit: 'abc1234', builtAt: 'not a date', repo: REPO }), `${REPO} · Build abc1234`);
+test('a source snapshot is not presented as a Git commit', () => {
+  assert.equal(formatBuildStamp(build({ buildId: '7654321' })), 'Source snapshot · 7654321');
+  assert.equal(formatBuildStamp(build()), 'Build identity unavailable');
 });
 
 test('a later server build is offered as an update', () => {
   assert.equal(isNewerBuild(
-    { commit: '1111111', builtAt: BUILT_AT, repo: REPO },
-    { commit: '2222222', builtAt: '2026-11-20T08:00:00.000Z', repo: REPO },
+    build({ commit: '1111111' }),
+    build({ commit: '2222222', builtAt: '2026-11-20T08:00:00.000Z' }),
   ), true);
 });
 
 test('the build this device already runs is not an update', () => {
   assert.equal(isNewerBuild(
-    { commit: '1111111', builtAt: BUILT_AT, repo: REPO },
-    { commit: '1111111', builtAt: BUILT_AT, repo: REPO },
+    build({ commit: '1111111' }),
+    build({ commit: '1111111' }),
   ), false);
 });
 
 test('an older server build is not an update, even with a different commit', () => {
   assert.equal(isNewerBuild(
-    { commit: '2222222', builtAt: '2026-11-20T08:00:00.000Z', repo: REPO },
-    { commit: '1111111', builtAt: BUILT_AT, repo: REPO },
+    build({ commit: '2222222', builtAt: '2026-11-20T08:00:00.000Z' }),
+    build({ commit: '1111111' }),
   ), false);
 });
 
-test('without build times, only a different known commit counts', () => {
-  assert.equal(isNewerBuild({ commit: '1111111', builtAt: '', repo: REPO }, { commit: '2222222', builtAt: '', repo: REPO }), true);
-  assert.equal(isNewerBuild({ commit: '1111111', builtAt: '', repo: REPO }, { commit: '1111111', builtAt: '', repo: REPO }), false);
-  assert.equal(isNewerBuild({ commit: '', builtAt: '', repo: REPO }, { commit: '2222222', builtAt: '', repo: REPO }), false);
+test('without build times, a different known build identity counts as newer', () => {
+  assert.equal(isNewerBuild(build({ commit: '1111111', builtAt: '' }), build({ commit: '2222222', builtAt: '' })), true);
+  assert.equal(isNewerBuild(build({ buildId: '1111111', builtAt: '' }), build({ buildId: '2222222', builtAt: '' })), true);
+  assert.equal(isNewerBuild(build({ commit: '', buildId: '', builtAt: '' }), build({ buildId: '2222222', builtAt: '' })), false);
 });
 
-test('a version report is read into the build it names', () => {
+test('server build metadata is parsed without a GitHub verification result', () => {
   assert.deepEqual(
-    parseVersionReport({ commit: ' abc1234 ', builtAt: BUILT_AT, repo: REPO, note: 'Faster digest\nand fewer jumps' }),
-    { commit: 'abc1234', builtAt: BUILT_AT, repo: REPO, note: 'Faster digest and fewer jumps' },
+    parseBuildStamp({
+      commit: ` ${MAIN_COMMIT.toUpperCase()} `,
+      buildId: '0123456',
+      builtAt: BUILT_AT,
+      repo: REPO,
+      note: 'Faster digest\nand fewer jumps',
+    }),
+    {
+      commit: MAIN_COMMIT.toUpperCase(),
+      buildId: '0123456',
+      builtAt: BUILT_AT,
+      repo: REPO,
+      note: 'Faster digest and fewer jumps',
+    },
   );
 });
 
-test('a reply that names no build is no report at all', () => {
-  assert.equal(parseVersionReport({ commit: '', builtAt: '', repo: REPO }), null);
-  assert.equal(parseVersionReport({}), null);
-  assert.equal(parseVersionReport(null), null);
-  assert.equal(parseVersionReport('<html></html>'), null);
-  assert.equal(parseVersionReport([{ commit: 'abc1234' }]), null);
+test('snapshot metadata remains distinct from a commit', () => {
+  assert.deepEqual(parseBuildStamp({ buildId: '7654321', builtAt: BUILT_AT, repo: REPO }), {
+    commit: '',
+    buildId: '7654321',
+    builtAt: BUILT_AT,
+    repo: REPO,
+    note: '',
+  });
 });
 
-test('a half-written report still names the build', () => {
-  assert.deepEqual(
-    parseVersionReport({ commit: 'abc1234' }),
-    { commit: 'abc1234', builtAt: '', repo: '', note: '' },
-  );
+test('a report without build identity is not usable', () => {
+  assert.equal(parseBuildStamp(null), null);
+  assert.equal(parseBuildStamp('<html></html>'), null);
+  assert.equal(parseBuildStamp([]), null);
+  assert.equal(parseBuildStamp({}), null);
 });
 
 test('a release note is folded to one line', () => {
@@ -98,14 +102,7 @@ test('a long release note is cut instead of growing the bar', () => {
 
 test('the note never decides whether a build is newer', () => {
   assert.equal(isNewerBuild(
-    { commit: '1111111', builtAt: BUILT_AT, repo: REPO, note: 'old wording' },
-    { commit: '1111111', builtAt: BUILT_AT, repo: REPO, note: 'new wording' },
+    build({ commit: '1111111', note: 'old wording' }),
+    build({ commit: '1111111', note: 'new wording' }),
   ), false);
-});
-
-test('blank values are treated as absent', () => {
-  assert.equal(
-    formatBuildStamp({ commit: '   ', builtAt: BUILT_AT, repo: '   ' }),
-    'Build 2026.11.20-0723',
-  );
 });

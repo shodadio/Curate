@@ -10,34 +10,27 @@ import {
   noteFromEnv,
   parseBuildInfo,
   readBuildInfo,
-  versionReport,
 } from '../lib/buildInfo.ts';
 
 const REPO = 'shodadio/Curate';
 const BUILT_AT = '2026-11-20T07:23:00.000Z';
+const FULL_COMMIT = '0123456789abcdef0123456789abcdef01234567';
 
-test('the live report names the same version Settings shows', () => {
-  const report = versionReport({ commit: 'abc1234', builtAt: BUILT_AT, repo: REPO });
-  assert.equal(report.version, 'abc1234');
-  assert.ok(report.stamp.startsWith(`${REPO} · Build abc1234 · `), report.stamp);
-});
-
-test('a build without a commit still reports a version', () => {
-  const report = versionReport({ commit: '', builtAt: BUILT_AT, repo: '' });
-  assert.equal(report.version, '2026.11.20-0723');
-  assert.equal(report.repo, REPO);
-  assert.equal(report.stamp, `${REPO} · Build 2026.11.20-0723`);
-});
-
-test('the build file is read from the built output', () => {
+test('the build file is read from the built output and preserves the full commit', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'curator-version-'));
   try {
     assert.equal(readBuildInfo(dir), null);
     fs.writeFileSync(
       path.join(dir, BUILD_INFO_FILE),
-      JSON.stringify({ commit: 'abc1234', builtAt: BUILT_AT, repo: REPO }),
+      JSON.stringify({ commit: FULL_COMMIT, buildId: '0123456', builtAt: BUILT_AT, repo: REPO }),
     );
-    assert.deepEqual(readBuildInfo(dir), { commit: 'abc1234', builtAt: BUILT_AT, repo: REPO, note: '' });
+    assert.deepEqual(readBuildInfo(dir), {
+      commit: FULL_COMMIT,
+      buildId: '0123456',
+      builtAt: BUILT_AT,
+      repo: REPO,
+      note: '',
+    });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -47,9 +40,20 @@ test('a damaged build file falls back instead of crashing', () => {
   assert.equal(parseBuildInfo('not json'), null);
   assert.equal(parseBuildInfo('{}'), null);
   assert.equal(parseBuildInfo('[]'), null);
-  assert.deepEqual(parseBuildInfo(JSON.stringify({ commit: ' abc1234 ' })), {
-    commit: 'abc1234',
+  assert.deepEqual(parseBuildInfo(JSON.stringify({ buildId: 'abc1234' })), {
+    commit: '',
+    buildId: 'abc1234',
     builtAt: '',
+    repo: REPO,
+    note: '',
+  });
+});
+
+test('a source snapshot is carried separately from a Git commit', () => {
+  assert.deepEqual(parseBuildInfo(JSON.stringify({ buildId: 'snap123', builtAt: BUILT_AT })), {
+    commit: '',
+    buildId: 'snap123',
+    builtAt: BUILT_AT,
     repo: REPO,
     note: '',
   });
@@ -60,19 +64,17 @@ test('a release note travels with the build it was made from', () => {
   try {
     fs.writeFileSync(
       path.join(dir, BUILD_INFO_FILE),
-      JSON.stringify({ commit: 'abc1234', builtAt: BUILT_AT, repo: REPO, note: 'Faster digest\nand fewer jumps' }),
+      JSON.stringify({ commit: FULL_COMMIT, buildId: '0123456', builtAt: BUILT_AT, repo: REPO, note: 'Faster digest\nand fewer jumps' }),
     );
-    const info = readBuildInfo(dir)!;
-    assert.equal(info.note, 'Faster digest and fewer jumps');
-    assert.equal(versionReport(info).note, 'Faster digest and fewer jumps');
+    assert.equal(readBuildInfo(dir)?.note, 'Faster digest and fewer jumps');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test('a release without a note reports none', () => {
-  assert.equal(versionReport({ commit: 'abc1234', builtAt: BUILT_AT, repo: REPO }).note, '');
-  assert.equal(parseBuildInfo(JSON.stringify({ commit: 'abc1234', note: 42 }))?.note, '');
+  assert.equal(parseBuildInfo(JSON.stringify({ commit: FULL_COMMIT }))?.note, '');
+  assert.equal(parseBuildInfo(JSON.stringify({ buildId: 'abc1234', note: 42 }))?.note, '');
 });
 
 test('the note is read from the release variables', () => {

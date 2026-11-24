@@ -21,7 +21,7 @@ import { SourceDescription } from './components/SourceDescription';
 import { SourceFeedLink } from './components/SourceFeedLink';
 import { ReaderVideo } from './components/ReaderVideo';
 import { NewBuildPrompt } from './components/NewBuildPrompt';
-import { CheckLatestUpdates } from './components/CheckLatestUpdates';
+import { BuildIdentity } from './components/BuildIdentity';
 import { readVideoEmbed, type VideoEmbed } from '../lib/videoEmbed';
 import { loadInterests, saveInterests, emptyInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
 import { clearAppData, safeGetItem, safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, readAppData, type StorageFailure } from './storage';
@@ -6579,9 +6579,8 @@ Search for writers, publications, or topics. Curator checks whether each result 
               </div>
             </SettingsSection>
 
-            {/* Which build this device is running, and a way to ask the server whether it has
-                moved on since this bundle was loaded. */}
-            <CheckLatestUpdates />
+            {/* The embedded build identity and a manual comparison path to GitHub main. */}
+            <BuildIdentity />
 
           </div>
         )}

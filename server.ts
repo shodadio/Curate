@@ -11,7 +11,7 @@ import fs from 'fs';
 import { DEFAULT_FEEDS } from './src/defaultFeeds';
 import { MAX_PAGE_BYTES, MAX_REDIRECTS, BlockedUrlError, assertPublicHttpUrl, guardedLookup } from './lib/ssrf';
 import { clientAddress, parseTrustedHops, type ProxyTrust } from './lib/clientAddress';
-import { DEFAULT_REPO, commitFromEnv, readBuildInfo, versionReport } from './lib/buildInfo';
+import { DEFAULT_REPO, commitFromEnv, readBuildInfo } from './lib/buildInfo';
 import {
   blendSemanticScores,
   composeSemanticText,
@@ -523,13 +523,14 @@ async function startServer() {
   // Vite, so a stale dist must not answer for it.
   const distDir = path.resolve(process.cwd(), 'dist');
   const production = process.env.NODE_ENV === 'production';
+  const envCommit = commitFromEnv();
+  const commit = /^[0-9a-f]{40}$/i.test(envCommit) ? envCommit.toLowerCase() : '';
   const buildInfo = (production ? readBuildInfo(distDir) : null) ?? {
-    commit: commitFromEnv(),
+    commit,
+    buildId: commit ? commit.slice(0, 7) : (process.env.SOURCE_BUILD_ID || envCommit).trim().slice(0, 7),
     builtAt: '',
     repo: (process.env.GITHUB_REPOSITORY || '').trim() || DEFAULT_REPO,
   };
-  const liveVersion = versionReport(buildInfo);
-
   app.use(express.json({ limit: '25mb' }));
   // Count the calls the app makes into its own server (the usage route excludes itself)
   app.use('/api', (req, _res, next) => {
@@ -629,10 +630,11 @@ async function startServer() {
     res.json({ ok: true, service: 'curator' });
   });
 
-  // Which build is live: the same version Settings shows, reachable without a device.
+  // This reports only the identity embedded in the running build. GitHub comparison is manual:
+  // the endpoint deliberately makes no network request and never claims the build is current.
   app.get('/api/version', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json(liveVersion);
+    res.json(buildInfo);
   });
 
   // API Routes
@@ -3122,7 +3124,7 @@ Return a JSON array (wrapped in \`\`\`json ... \`\`\`) where each object has:
   }
 
   app.listen(Number(PORT), '0.0.0.0', () => {
-    console.log(`[Curator] Serving ${liveVersion.stamp}`);
+    console.log('[Curator] Serving Curator; build identity is available at /api/version.');
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
