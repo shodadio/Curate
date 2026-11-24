@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshCw, X } from 'lucide-react';
 
-import { isNewerBuild, normalizeNote, type BuildStampInfo } from '../../lib/buildStamp';
+import { isNewerBuild, type BuildStampInfo } from '../../lib/buildStamp';
+import { fetchServerBuild, reloadWithLatestBuild } from '../buildUpdate';
 
 // Installed apps keep the shell their service worker precached, so a deploy can go unnoticed
 // for days. The server names the build it is running at /api/version; when that is later than
@@ -9,20 +10,6 @@ import { isNewerBuild, normalizeNote, type BuildStampInfo } from '../../lib/buil
 // the app comes back to the foreground is enough.
 const FIRST_CHECK_MS = 1500;
 const CHECK_INTERVAL_MS = 60_000;
-
-function reportFrom(value: unknown): BuildStampInfo | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const commit = typeof record.commit === 'string' ? record.commit.trim() : '';
-  const builtAt = typeof record.builtAt === 'string' ? record.builtAt.trim() : '';
-  if (!commit && !builtAt) return null;
-  return {
-    commit,
-    builtAt,
-    repo: typeof record.repo === 'string' ? record.repo : '',
-    note: normalizeNote(record.note),
-  };
-}
 
 export function NewBuildPrompt() {
   const [newer, setNewer] = useState<BuildStampInfo | null>(null);
@@ -34,21 +21,11 @@ export function NewBuildPrompt() {
     const now = Date.now();
     if (now - checkedAtRef.current < CHECK_INTERVAL_MS) return;
     checkedAtRef.current = now;
-    try {
-      const response = await fetch('/api/version', {
-        cache: 'no-store',
-        headers: { Accept: 'application/json' },
-      });
-      if (!response.ok) return;
-      // A server from before this route can answer with the app shell instead of JSON.
-      if (!(response.headers.get('content-type') || '').includes('application/json')) return;
-      const report = reportFrom(await response.json());
-      if (!report || !isNewerBuild(__BUILD_INFO__, report)) return;
-      if (dismissedRef.current === (report.commit || report.builtAt)) return;
-      setNewer(report);
-    } catch {
-      // Offline, or an older server without the route: nothing to compare.
-    }
+    // Offline, or an older server without the route, leaves nothing to compare.
+    const report = await fetchServerBuild();
+    if (!report || !isNewerBuild(__BUILD_INFO__, report)) return;
+    if (dismissedRef.current === (report.commit || report.builtAt)) return;
+    setNewer(report);
   }, []);
 
   useEffect(() => {
@@ -74,14 +51,7 @@ export function NewBuildPrompt() {
 
   const applyUpdate = async () => {
     setBusy(true);
-    // The old worker would serve its precached shell again, so release it before reloading.
-    try {
-      const registrations = (await navigator.serviceWorker?.getRegistrations?.()) ?? [];
-      await Promise.all(registrations.map((registration) => registration.unregister()));
-    } catch {
-      // Reload anyway; if the old bundle comes back the prompt returns.
-    }
-    window.location.reload();
+    await reloadWithLatestBuild();
   };
 
   if (!newer) return null;
