@@ -79,12 +79,19 @@ import {
   SPEECH_GEMINI_KEY_STORAGE_KEY,
   SPEECH_GEMINI_VOICE_STORAGE_KEY,
   SPEECH_PIPER_VOICE_STORAGE_KEY,
+  SPEECH_POSITION_STORAGE_KEY,
   SPEECH_RATE_DEFAULT,
   SPEECH_RATE_MAX,
   SPEECH_RATE_MIN,
+  forgetSpeechPosition,
+  readSpeechPositions,
+  rememberSpeechPosition,
+  nextUnreadPieces,
   resolveGeminiSpeechKey,
+  resumeSpeechIndex,
   type PiperDownloadState,
   type SpeechEngine,
+  type SpeechPositions,
 } from '../lib/readAloud';
 import { GEMINI_TTS_DEFAULT_VOICE, synthesizeGeminiSpeech } from './lib/geminiTts';
 import { downloadPiperVoice, piperSupported, removePiperVoice, storedPiperVoices, synthesizePiper } from './lib/piper';
@@ -571,6 +578,9 @@ interface SpeechChunk {
 // so the reader speaks a sentence at a time: 220 characters is comfortably inside every
 // engine's comfort zone, and the paragraph beat keeps the prose from running together.
 const SPEECH_SENTENCE_PAUSE_MS = 40;
+// Two sentences are generated ahead of the one playing: one can end before the next has arrived,
+// and the second is what keeps that gap from being heard.
+const SPEECH_PREFETCH_AHEAD = 2;
 // iOS can take a moment before the first utterance starts; give it longer than the eye expects
 // before telling the reader the device never spoke.
 const SPEECH_START_GRACE_MS = 3000;
@@ -1222,6 +1232,13 @@ export default function App() {
   const speechStartedRef = React.useRef(false);
   // Set when the chosen neural voice failed, so the rest of the session keeps the device voice
   const speechVoiceFallbackRef = React.useRef(false);
+  // Where each piece stopped being listened to. Read on first use and written through on every
+  // move, so coming back to a piece carries on from the same sentence.
+  const speechPositionsRef = React.useRef<SpeechPositions | null>(null);
+  // A reading may carry on into the next unread piece when it ends; this says whether it may,
+  // and the token cancels a next piece being prepared after a stop or a newer start.
+  const speechQueueRunRef = React.useRef(false);
+  const speechRunTokenRef = React.useRef(0);
 
   // Hidden cards: each "Less like this" keeps the story in place as an inline Undo target
   const [mutedCards, setMutedCards] = useState<Record<string, DigestItem>>({});
@@ -3049,8 +3066,33 @@ export default function App() {
     utterance.rate = speechRate;
   };
 
+  const savedSpeechPositions = (): SpeechPositions => {
+    if (!speechPositionsRef.current) {
+      speechPositionsRef.current = readSpeechPositions(safeGetItem(SPEECH_POSITION_STORAGE_KEY));
+    }
+    return speechPositionsRef.current;
+  };
+
+  const storeSpeechPosition = (id: string | null, index: number, total: number, paragraph: number) => {
+    if (!id) return;
+    const next = rememberSpeechPosition(savedSpeechPositions(), id, { index, total, paragraph });
+    if (next === speechPositionsRef.current) return;
+    speechPositionsRef.current = next;
+    safeSetJson(SPEECH_POSITION_STORAGE_KEY, next);
+  };
+
+  const clearSpeechPosition = (id: string | null) => {
+    if (!id || !savedSpeechPositions()[id]) return;
+    const next = forgetSpeechPosition(savedSpeechPositions(), id);
+    speechPositionsRef.current = next;
+    safeSetJson(SPEECH_POSITION_STORAGE_KEY, next);
+  };
+
   const stopSpeech = () => {
     speechSessionRef.current += 1;
+    // Stopping is the end of the run: nothing may carry on into the next piece after it
+    speechQueueRunRef.current = false;
+    speechRunTokenRef.current += 1;
     speechStateRef.current = 'idle';
     if (speechGapTimerRef.current) {
       clearTimeout(speechGapTimerRef.current);
@@ -3077,9 +3119,13 @@ export default function App() {
   const finishSpeech = () => {
     const finishedId = speechArticleIdRef.current;
     const finishedArticle = speechArticleItemRef.current;
+    // Read before the stop, which ends the run
+    const carriesOn = speechQueueRunRef.current;
     stopSpeech();
     setSpeechPanelOpen(false);
     if (!finishedId) return;
+    // A piece heard to its end has no place to come back to
+    clearSpeechPosition(finishedId);
     setReadingStats(prev => ({
       ...prev,
       [finishedId]: { maxDepth: 100, finished: true, lastRead: Date.now() }
@@ -3102,6 +3148,11 @@ export default function App() {
         }, ...prev];
       });
     }
+    if (carriesOn) {
+      // The reader's next unread piece follows, so a commute can listen through the edition
+      void queueNextListeningPiece(finishedId, speechRunTokenRef.current);
+      return;
+    }
     showToast('Finished listening · Read through recorded');
   };
 
@@ -3110,6 +3161,8 @@ export default function App() {
   const advanceSpeechQueue = (chunk: SpeechChunk, index: number, session: number) => {
     speechIndexRef.current = index + 1;
     const next = speechQueueRef.current[index + 1];
+    // The queue position is also the place to return to, whatever happens next
+    storeSpeechPosition(speechArticleIdRef.current, index + 1, speechQueueRef.current.length, next ? next.paragraphIndex : -1);
     const endsParagraph = Boolean(next) && chunk.paragraphIndex >= 0 && next.paragraphIndex !== chunk.paragraphIndex;
 
     speechGapTimerRef.current = setTimeout(() => {
@@ -3168,9 +3221,11 @@ export default function App() {
     if (!started) return;
     const { queue, chunk, index, session } = started;
 
-    // The next sentence is generated while this one plays, which is what keeps the gap short
-    const nextText = queue[index + 1]?.text;
-    if (nextText) prefetchSpeechAudio(speechChunkKey(nextText), () => renderSpeechChunk(nextText));
+    // The next sentences are generated while this one plays, which is what keeps the gap short
+    for (let ahead = 1; ahead <= SPEECH_PREFETCH_AHEAD; ahead += 1) {
+      const upcoming = queue[index + ahead]?.text;
+      if (upcoming) prefetchSpeechAudio(speechChunkKey(upcoming), () => renderSpeechChunk(upcoming));
+    }
 
     const pendingAudio = takePrefetchedSpeechAudio(speechChunkKey(chunk.text)) || renderSpeechChunk(chunk.text);
     pendingAudio
@@ -3234,7 +3289,7 @@ export default function App() {
     speakNeuralChunk();
   };
 
-  const startSpeech = (article: DigestItem, startIndex = 0) => {
+  const startSpeech = (article: DigestItem, startIndex?: number) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       showToast('Speech audio is not supported in this browser.');
       return;
@@ -3247,12 +3302,18 @@ export default function App() {
     }
 
     stopSpeech();
-    const first = Math.max(0, Math.min(startIndex, queue.length - 1));
+    // No sentence named means carry on where this piece stopped last time, which is what a
+    // reader reopening it expects. A tap on a paragraph still wins: it names the sentence.
+    const resumeAt = startIndex === undefined ? resumeSpeechIndex(savedSpeechPositions(), article.id, queue.length) : 0;
+    const first = Math.max(0, Math.min(startIndex ?? resumeAt, queue.length - 1));
+    speechQueueRunRef.current = true;
+    speechRunTokenRef.current += 1;
     speechQueueRef.current = queue;
     speechIndexRef.current = first;
     speechArticleIdRef.current = article.id;
     speechArticleItemRef.current = article;
     speechStartedRef.current = false;
+    storeSpeechPosition(article.id, first, queue.length, queue[first].paragraphIndex);
     // Starting a reading must never quietly pull down a 60 MB voice mid-sentence
     speechVoiceFallbackRef.current = speechEngine === 'piper' && piperDownloadState.status !== 'ready';
     if (speechVoiceFallbackRef.current) {
@@ -3430,6 +3491,23 @@ export default function App() {
     if (rect.top >= 88 && rect.bottom <= window.innerHeight - 140) return;
     element.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }, [speechPlaying, speechProgress.paragraph]);
+
+  // Reopening a piece lands on the sentence listening stopped at, so the place is not hunted for
+  // by scrolling. It waits out the reader's own focus pass, which puts the page back on top.
+  React.useEffect(() => {
+    const openId = selectedArticle?.id;
+    if (!openId) return;
+    const saved = savedSpeechPositions()[openId];
+    if (!saved || saved.paragraph < 0) return;
+    const timer = window.setTimeout(() => {
+      const element = document.getElementById(`reader-paragraph-${saved.paragraph}`);
+      if (!element) return;
+      const rect = element.getBoundingClientRect();
+      if (rect.top >= 88 && rect.bottom <= window.innerHeight - 140) return;
+      element.scrollIntoView({ block: 'center' });
+    }, 90);
+    return () => window.clearTimeout(timer);
+  }, [selectedArticle?.id]);
 
   const getCardActions = (itemId: string) => {
     const stats = readingStats[itemId] || {};
@@ -3774,6 +3852,54 @@ export default function App() {
 
     window.history.pushState({ curatorReader: true }, '');
     readerHistoryDepthRef.current += 1;
+  };
+
+  // A piece with no body in the digest — one the feed only began — earns a page read before it
+  // can be spoken. Nothing is upgraded here: the reading needs the text, and nothing more.
+  const ensureSpeakableText = async (item: DigestItem): Promise<DigestItem | null> => {
+    if (buildSpeechQueue(item).length > 0) return item;
+    try {
+      const response = await fetch('/api/article-text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: item.url }),
+      });
+      if (!response.ok) return null;
+      const data = await response.json().catch(() => ({}));
+      const text = typeof data?.text === 'string' ? data.text : '';
+      if (text.length < 200) return null;
+      return { ...item, fullText: text, articleUnavailable: false };
+    } catch {
+      return null;
+    }
+  };
+
+  // A piece that runs to its end hands over to the next unread piece in the edition, so a
+  // commute can listen through the digest. Stopping, closing the reader or starting another
+  // reading changes the token, and the handover is dropped.
+  const queueNextListeningPiece = async (finishedId: string, token: number) => {
+    const order = nextUnreadPieces(digest.map(item => item.id), finishedId, id => Boolean(readingStats[id]?.finished));
+    if (order.length === 0) {
+      // A piece outside the edition has nothing to follow it, and an edition read through has
+      // nothing unread left: either way the run stops instead of reaching for another page.
+      showToast(digest.some(item => item.id === finishedId)
+        ? 'Finished listening — nothing unread left.'
+        : 'Finished listening · Read through recorded');
+      return;
+    }
+    for (const id of order) {
+      if (speechRunTokenRef.current !== token) return;
+      const candidate = digest.find(item => item.id === id);
+      if (!candidate) continue;
+      const ready = await ensureSpeakableText(candidate);
+      if (speechRunTokenRef.current !== token) return;
+      if (!ready) continue;
+      openArticle(ready);
+      startSpeech(ready);
+      showToast(`Listening on: ${ready.title}`);
+      return;
+    }
+    showToast('Finished listening — nothing unread left.');
   };
 
   // The reader opens from Today, Feeds or Saved and never changes the tab underneath, so the

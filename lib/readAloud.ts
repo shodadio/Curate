@@ -18,6 +18,23 @@ export const SPEECH_RATE_DEFAULT = 0.95;
 export const SPEECH_RATE_MIN = 0.7;
 export const SPEECH_RATE_MAX = 1.5;
 
+// Where listening stopped in each piece, so reopening it carries on from the same sentence
+// instead of the top. Kept by article id, pruned by age rather than by queue membership.
+export const SPEECH_POSITION_STORAGE_KEY = 'curator_speech_position';
+export const SPEECH_POSITION_LIMIT = 24;
+
+export interface SpeechPosition {
+  // The sentence to start from, and how many sentences the queue had when it was saved. A queue
+  // of a different length means the text changed under it, and the top is then the honest start.
+  index: number;
+  total: number;
+  // The rendered paragraph it belonged to, for putting the reader back where it was
+  paragraph: number;
+  at: number;
+}
+
+export type SpeechPositions = Record<string, SpeechPosition>;
+
 export const SPEECH_ENGINE_STORAGE_KEY = 'curator_speech_engine';
 export const SPEECH_PIPER_VOICE_STORAGE_KEY = 'curator_speech_piper_voice';
 export const SPEECH_GEMINI_VOICE_STORAGE_KEY = 'curator_speech_gemini_voice';
@@ -41,6 +58,86 @@ export function resolveGeminiSpeechKey(input: {
   if (digest && input.digestProvider === 'gemini') return { key: digest, source: 'digest' };
 
   return { key: '', source: input.serverKeyAvailable ? 'server' : 'none' };
+}
+
+function validSpeechPosition(value: unknown): SpeechPosition | null {
+  if (!value || typeof value !== 'object') return null;
+  const entry = value as Partial<SpeechPosition>;
+  const index = Number(entry.index);
+  const total = Number(entry.total);
+  const paragraph = Number(entry.paragraph);
+  const at = Number(entry.at);
+  if (!Number.isInteger(index) || !Number.isInteger(total) || !Number.isInteger(paragraph)) return null;
+  if (!Number.isFinite(at)) return null;
+  if (index < 0 || total <= 0 || index >= total || paragraph < -1) return null;
+  return { index, total, paragraph, at };
+}
+
+// A stored map is only ever as trustworthy as the build that wrote it: anything malformed is
+// dropped rather than allowed to send the voice to a sentence that no longer exists.
+export function readSpeechPositions(raw: string | null): SpeechPositions {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+
+  const positions: SpeechPositions = {};
+  for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+    const entry = validSpeechPosition(value);
+    if (id && entry) positions[id] = entry;
+  }
+  return positions;
+}
+
+// Newest first when the map outgrows its limit, so the pieces being listened to now keep their
+// place and the ones from a month ago lose it.
+export function rememberSpeechPosition(
+  positions: SpeechPositions,
+  id: string,
+  place: { index: number; total: number; paragraph: number; at?: number },
+): SpeechPositions {
+  if (!id) return positions;
+  const entry = validSpeechPosition({ ...place, at: place.at ?? Date.now() });
+  if (!entry) return positions;
+
+  const next: SpeechPositions = { ...positions, [id]: entry };
+  const ids = Object.keys(next);
+  if (ids.length <= SPEECH_POSITION_LIMIT) return next;
+  ids.sort((a, b) => next[b].at - next[a].at);
+  for (const stale of ids.slice(SPEECH_POSITION_LIMIT)) delete next[stale];
+  return next;
+}
+
+export function forgetSpeechPosition(positions: SpeechPositions, id: string): SpeechPositions {
+  if (!positions[id]) return positions;
+  const next = { ...positions };
+  delete next[id];
+  return next;
+}
+
+// The sentence to start from, or the top when there is nothing usable to resume.
+export function resumeSpeechIndex(positions: SpeechPositions, id: string, total: number): number {
+  const saved = positions[id];
+  if (!saved || saved.total !== total) return 0;
+  return saved.index > 0 && saved.index < total ? saved.index : 0;
+}
+
+// The pieces a listening run may continue into when one ends: the rest of the edition after it,
+// then the ones before it, so a run started halfway through still covers the whole edition.
+// Finished pieces are skipped and the piece that just ended never comes back.
+export function nextUnreadPieces(
+  orderedIds: string[],
+  currentId: string,
+  isFinished: (id: string) => boolean,
+): string[] {
+  const from = orderedIds.indexOf(currentId);
+  if (from === -1) return [];
+  return [...orderedIds.slice(from + 1), ...orderedIds.slice(0, from)]
+    .filter(id => id !== currentId && !isFinished(id));
 }
 
 // What the reader is told about the downloaded voice, in every state it can be in.

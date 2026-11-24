@@ -13,8 +13,10 @@ let audio: HTMLAudioElement | null = null;
 let objectUrl: string | null = null;
 // A sentence is loaded and playing, as opposed to the pause between two sentences
 let loaded = false;
-// The sentence after the one playing. Generating it early is what keeps the gaps short.
-let prefetched: { key: string; audio: Promise<Blob> } | null = null;
+// Sentences after the one playing, oldest first. Generating them early is what keeps the gaps
+// short; two covers a short sentence, whose own audio can end before the next one arrives.
+const PREFETCH_AHEAD = 2;
+let prefetched: { key: string; audio: Promise<Blob> }[] = [];
 
 function element(): HTMLAudioElement {
   if (!audio) {
@@ -31,18 +33,20 @@ export function primeSpeechAudio(): void {
 }
 
 export function prefetchSpeechAudio(key: string, render: () => Promise<Blob>): void {
-  if (!key || prefetched?.key === key) return;
+  if (!key || prefetched.some(entry => entry.key === key)) return;
   const job = render();
   // A prefetch nobody waits for must not surface as an unhandled rejection
   job.catch(() => {});
-  prefetched = { key, audio: job };
+  prefetched.push({ key, audio: job });
+  // Reading on past a sentence leaves its prefetch behind; the oldest is the one to drop
+  while (prefetched.length > PREFETCH_AHEAD) prefetched.shift();
 }
 
 export function takePrefetchedSpeechAudio(key: string): Promise<Blob> | null {
-  if (!prefetched || prefetched.key !== key) return null;
-  const job = prefetched.audio;
-  prefetched = null;
-  return job;
+  const at = prefetched.findIndex(entry => entry.key === key);
+  if (at === -1) return null;
+  const [entry] = prefetched.splice(at, 1);
+  return entry.audio;
 }
 
 export function playSpeechAudio(blob: Blob, rate: number, handlers: PlayHandlers): void {
@@ -84,7 +88,7 @@ export function pauseSpeechAudio(): boolean {
 }
 
 export function stopSpeechAudio(): void {
-  prefetched = null;
+  prefetched = [];
   loaded = false;
   if (!audio) return;
   audio.onended = null;
