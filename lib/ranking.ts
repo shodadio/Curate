@@ -250,6 +250,12 @@ export const recencyPhrase = (item: { publishedAtMs?: number }, nowMs: number = 
   return '';
 };
 
+// Bands on the engine's -1..1 semantic score. A digest's top cards sit around 0.3-0.45, so the
+// old 0.28 threshold labelled every card a "close match" and said nothing; these reserve that
+// phrase for the strongest matches and keep the middle band for stories that share a shape.
+export const WHY_CLOSE_MATCH_SCORE = 0.4;
+export const WHY_SHARES_SHAPE_SCORE = 0.18;
+
 // A distinct, specific "why" per card: reason first, then a rotating phrasing so a digest
 // drawn from one dominant feed does not repeat the same sentence on every card.
 export const buildWhyLine = (
@@ -268,10 +274,10 @@ export const buildWhyLine = (
   if (context.interest) {
     return `Selected because you asked for more of ${context.interest}.`;
   }
-  if (context.semanticScore > 0.28) {
+  if (context.semanticScore > WHY_CLOSE_MATCH_SCORE) {
     return 'A close match to the pieces you have been upvoting.';
   }
-  if (context.semanticScore > 0.12) {
+  if (context.semanticScore > WHY_SHARES_SHAPE_SCORE) {
     return 'Shares the shape of articles you liked lately.';
   }
 
