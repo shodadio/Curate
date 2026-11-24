@@ -18,14 +18,13 @@ const MAX_PER_SOURCE = 5;
 const RUNTIME_CANDIDATES = 5000;
 const RUNTIME_BUDGET_MS = 750;
 
-// Measured baseline on this fixture: precision@5 1.000, MRR 1.000. The engine is at the ceiling
-// here, so the floors are the baseline itself: any drop is a regression and fails the run. Lower
-// a floor only with a deliberate fixture change, never to make a red run green.
+// Measured baseline on this fixture: precision@5 1.000, MRR 1.000, all three length pairs. The
+// engine is at the ceiling here, so the floors are the baseline itself: any drop is a regression
+// and fails the run. Lower a floor only with a deliberate fixture change, never to make a red run
+// green.
 const MIN_PRECISION_AT_5 = 1;
 const MIN_MRR = 1;
-// Baseline is two of the three pairs. This is the number with room above it: a ranker that weighs
-// how much article sits behind a headline should reach three of three.
-const MIN_PAIR_RATE = 2 / 3;
+const MIN_PAIR_RATE = 1;
 
 const rank = (pool: EvalCandidate[], nowMs: number) => {
   const semanticScores = localSemanticScores(EVAL_PROFILE, pool, nowMs);
@@ -48,10 +47,12 @@ const precisionAt5 = digest.filter(item => relevantById.get(item.id)).length / M
 const firstRelevant = scored.findIndex(item => relevantById.get(item.id));
 const mrr = firstRelevant >= 0 ? 1 / (firstRelevant + 1) : 0;
 
-// Full over thin: does the piece with a body outrank the bare headline of the same story?
-const rankOf = new Map(scored.map((item, position) => [item.id, position + 1]));
+// Full over thin: does the piece with a body outscore the bare headline of the same story? This
+// compares the engine's own score, not the final rank: recency and the tie-breaker jitter are
+// editorial noise, and a pair decided by them would say nothing about how length is handled.
+const semanticById = new Map(scored.map(item => [item.id, Number(item._semantic) || 0]));
 const pairWins = EVAL_PAIRS.filter(([thin, full]) =>
-  (rankOf.get(full) ?? Infinity) < (rankOf.get(thin) ?? Infinity)
+  (semanticById.get(full) ?? 0) > (semanticById.get(thin) ?? 0)
 ).length;
 const pairRate = pairWins / EVAL_PAIRS.length;
 

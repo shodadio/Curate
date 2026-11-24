@@ -29,6 +29,9 @@ import {
   withinDigestWindow,
   DIGEST_MAX_AGE_MS,
   DENSE_FEEDBACK_HALF_LIFE_MS,
+  SEMANTIC_SUBSTANCE_FLOOR,
+  SEMANTIC_SUBSTANCE_TOKENS,
+  substanceFactor,
   WHY_CLOSE_MATCH_SCORE,
   WHY_SHARES_SHAPE_SCORE,
   SEMANTIC_DECAY_FLOOR,
@@ -200,7 +203,9 @@ test('a recent like dominates a years-old like when directions differ', () => {
   const staleGarden = staleScores.get('garden') || 0;
   const freshGarden = freshScores.get('garden') || 0;
 
-  assert.ok(recentRust > 0.4, `a fresh vote should still score, got ${recentRust}`);
+  // These fixtures are headline-plus-summary stubs, so they earn the substance floor rather than
+  // full weight; what matters is that the fresh interest still matches strongly.
+  assert.ok(recentRust > 0.3, `a fresh vote should still score, got ${recentRust}`);
   approx(recentRust, freshScores.get('rust') || 0, 'the recent interest keeps its score');
   assert.ok(staleGarden < freshGarden * 0.2, 'a five-year-old vote decays to the floor');
   assert.ok(staleGarden > 0, 'the floor keeps a dormant interest alive');
@@ -230,8 +235,8 @@ test('localSemanticScores preserves separate liked topics instead of averaging t
     { id: 'garden', title: 'Garden compost soil', summary: 'tomatoes gardening' },
     { id: 'unrelated', title: 'Classical music', summary: 'symphonies and orchestras' },
   ], NOW);
-  assert.ok((scores.get('rust') || 0) > 0.7, 'the Rust interest remains independently strong');
-  assert.ok((scores.get('garden') || 0) > 0.7, 'the gardening interest remains independently strong');
+  assert.ok((scores.get('rust') || 0) > 0.6, 'the Rust interest remains independently strong');
+  assert.ok((scores.get('garden') || 0) > 0.6, 'the gardening interest remains independently strong');
   assert.ok((scores.get('rust') || 0) > (scores.get('unrelated') || 0));
   assert.ok((scores.get('garden') || 0) > (scores.get('unrelated') || 0));
 });
@@ -286,6 +291,17 @@ test('an unrelated dislike does not rescale the liked topics', () => {
   );
 });
 
+test('substanceFactor gives a stub less than a full article, never zero', () => {
+  assert.equal(substanceFactor(0), SEMANTIC_SUBSTANCE_FLOOR);
+  assert.equal(substanceFactor(SEMANTIC_SUBSTANCE_TOKENS), 1, 'a headline and a paragraph earn full weight');
+  assert.equal(substanceFactor(500), 1, 'longer than that changes nothing');
+  approx(substanceFactor(SEMANTIC_SUBSTANCE_TOKENS / 2), (SEMANTIC_SUBSTANCE_FLOOR + 1) / 2);
+  assert.ok(
+    substanceFactor(15) < substanceFactor(45),
+    'a bare headline counts for less than a headline with a body',
+  );
+});
+
 test('a matching dislike pulls its own topic below neutral', () => {
   const feedback = [
     vote({ id: 'like', vote: 'like', title: 'Rust memory safety', text: 'rust memory safety borrow checker' }),
@@ -311,7 +327,7 @@ test('decay is measured from the clock and stops at the floor', () => {
   const fresh = localSemanticScores(feedback, candidates, NOW).get('rust') || 0;
   const stale = localSemanticScores(feedback, candidates, NOW + 3 * 365 * DAY).get('rust') || 0;
 
-  assert.ok(fresh > 0.9, `a fresh vote counts in nearly full, got ${fresh}`);
+  assert.ok(fresh > 0.6, `a fresh vote still matches strongly, got ${fresh}`);
   approx(stale, fresh * SEMANTIC_DECAY_FLOOR, 'a stale vote keeps the floor, not its full weight');
   approx(feedbackDecay(0, DAY), 1);
   approx(feedbackDecay(DAY, DAY), 0.5);

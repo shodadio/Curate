@@ -72,8 +72,9 @@ const story = (
 };
 
 // [thin, full] pairs. The reader wants the piece with something behind it; the pair metric asks
-// whether the engine agrees. Today it does not always: a bare headline can outscore the same
-// story with a body, because the body dilutes the vector and the headline does not.
+// whether the engine agrees. Each pair is the same story twice: the headline alone, and the
+// headline with the body that earns it. Cosine similarity alone gets this wrong, because the body
+// dilutes the vector and the headline does not, so the pairs are where a length fix shows up.
 export const EVAL_PAIRS: Array<[string, string]> = [
   ['p43', 'p44'],
   ['p45', 'p46'],
