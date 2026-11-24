@@ -38,6 +38,7 @@ import { buildReadableDigest } from './lib/digestAvailability';
 import { legacyStoryIdFor, storyIdFor } from './lib/storyId';
 import { findVideoEmbed, videoEmbedFromUrl, type VideoEmbed } from './lib/videoEmbed';
 import { apifyCandidatesFromDataset, apifySearchInput, apifySearchUrl } from './lib/apifySearch';
+import { normalizeModelCatalog } from './lib/modelCatalog';
 
 dotenv.config();
 
@@ -1097,29 +1098,43 @@ async function startServer() {
     const provider = String(req.body?.provider || '').trim();
     const apiKey = String(req.body?.apiKey || '').trim();
     const baseUrl = String(req.body?.baseUrl || '').trim();
+    const kind = req.body?.kind === 'embedding' ? 'embedding' : 'chat';
+
+    if (provider !== 'openai-compatible') {
+      return res.status(400).json({ ok: false, error: 'Model lists come from OpenAI-compatible services.' });
+    }
+    if (!apiKey) return res.status(400).json({ ok: false, error: 'Add a provider API key first.' });
+    if (!baseUrl) return res.status(400).json({ ok: false, error: 'Add a provider URL first.' });
 
     try {
-      if (provider !== 'openai-compatible') {
-        throw new Error('Model lists come from OpenAI-compatible services.');
-      }
-      if (!apiKey) throw new Error('Add a provider API key first.');
-      if (!baseUrl) throw new Error('Add a provider URL first.');
-
-      const data = await getProviderJson(providerEndpoint(baseUrl, 'models'), {
+      const modelUrl = providerEndpoint(baseUrl, 'models');
+      const hostname = new URL(baseUrl).hostname.toLowerCase();
+      const openRouter = hostname === 'openrouter.ai' || hostname.endsWith('.openrouter.ai');
+      const data = await getProviderJson(modelUrl, {
         Authorization: `Bearer ${apiKey}`,
       });
       const entries = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
-      const models = Array.from(new Set<string>(entries
-        .map((entry: any) => (typeof entry === 'string' ? entry : typeof entry?.id === 'string' ? entry.id : ''))
-        .map((id: string) => id.trim())
-        .filter(Boolean)))
-        .sort((a, b) => a.localeCompare(b))
-        .slice(0, 500);
-      if (models.length === 0) throw new Error('The provider returned no models.');
+      const modelOptions = normalizeModelCatalog(entries, { openRouter, kind });
+      if (modelOptions.length === 0) {
+        const message = openRouter && kind === 'embedding'
+          ? 'OpenRouter returned no models that support embeddings.'
+          : openRouter
+            ? 'OpenRouter returned no models that support chat completions.'
+            : 'The provider returned no models.';
+        return res.status(422).json({ ok: false, error: message });
+      }
 
-      return res.json({ ok: true, models });
+      return res.json({
+        ok: true,
+        models: modelOptions.map(model => model.id),
+        modelOptions,
+        source: openRouter ? 'openrouter' : 'provider',
+      });
     } catch (err: any) {
-      return res.json({ ok: false, error: err?.message || 'Could not fetch the model list.' });
+      return res.status(502).json({
+        ok: false,
+        error: err?.message || 'Could not fetch the model list. Check the provider URL and API key, then try again.',
+      });
     }
   });
 
