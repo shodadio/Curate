@@ -21,6 +21,7 @@ import { SourceDescription } from './components/SourceDescription';
 import { SourceFeedLink } from './components/SourceFeedLink';
 import { ReaderVideo } from './components/ReaderVideo';
 import { NewBuildPrompt } from './components/NewBuildPrompt';
+import { CheckLatestUpdates } from './components/CheckLatestUpdates';
 import { readVideoEmbed, type VideoEmbed } from '../lib/videoEmbed';
 import { loadInterests, saveInterests, emptyInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
 import { clearAppData, safeGetItem, safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, readAppData, type StorageFailure } from './storage';
@@ -72,7 +73,6 @@ import {
   speechVoiceChoices,
   splitIntoSentences,
 } from '../lib/speech';
-import { formatBuildStamp } from '../lib/buildStamp';
 import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, isPlayerChrome, isStrayCommentLink, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
 
 // One-click provider addresses: the popular OpenAI-compatible services, so a working setup
@@ -6579,14 +6579,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
               </div>
             </SettingsSection>
 
-            {/* Which build this device is running: the quickest way to tell a stale phone from
-                an updated one after a deploy. */}
-            <p
-              className="select-all px-1 pt-1 text-center text-[0.7rem] text-[#6f675c]"
-              title="The version of Curator loaded on this device"
-            >
-              {formatBuildStamp(__BUILD_INFO__)}
-            </p>
+            {/* Which build this device is running, and a way to ask the server whether it has
+                moved on since this bundle was loaded. */}
+            <CheckLatestUpdates />
 
           </div>
         )}
