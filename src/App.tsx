@@ -855,13 +855,6 @@ export default function App() {
 
   // The last few days' editions, so a morning the reader skipped is still readable.
   const [editions, setEditions] = useState<Edition[]>(() => readEditions(safeGetItem('curator_editions')));
-  // The masthead's edition number: how many editions this browser has built, so the front page
-  // is numbered like an issue. An install that predates the count starts from the mornings
-  // already in its folio rather than calling this morning the first.
-  const [editionNumber, setEditionNumber] = useState<number>(() => {
-    const stored = Math.floor(Number(safeGetItem('curator_edition_number')));
-    return Number.isFinite(stored) && stored > 0 ? stored : readEditions(safeGetItem('curator_editions')).length;
-  });
   // Which earlier edition the reader has opened in the folio at the end of the page.
   const [openEditionAt, setOpenEditionAt] = useState<number | null>(null);
   const [savedQuery, setSavedQuery] = useState<string>('');
@@ -2150,12 +2143,6 @@ export default function App() {
         safeSetJson('curator_digest_cache', { curatedAt: builtAt, items: outcome.items });
         // The edition that just arrived joins the archive, so tomorrow's miss is not a loss.
         setEditions(prev => recordEdition(prev, builtAt, outcome.items));
-        // One number per edition that arrives, so the masthead counts up the way an issue does.
-        setEditionNumber(previous => {
-          const next = Math.max(previous, 0) + 1;
-          safeSetItem('curator_edition_number', String(next));
-          return next;
-        });
         applySourceMetadata(outcome.items);
         if (outcome.semanticSummary) setSemanticSummary(outcome.semanticSummary);
         if (outcome.feedReport) {
@@ -4862,8 +4849,8 @@ export default function App() {
       )}
 
       {/* Today opens like a printed front page rather than an app: a masthead with the name set
-          as a logotype, an edition number, a dateline, the count and minutes on one line, and
-          the editor's line. Refresh, Edition and Settings are words on its baseline. */}
+          as a logotype, a dateline, the count and minutes on one line, and
+          the editor's line. Refresh and Settings are icons, Edition a word on its baseline. */}
       {activeTab === 'today' ? (
         <header inert={backgroundInert} className="w-full">
           <div className="mx-auto w-full max-w-3xl px-4 pb-3 pt-[max(1rem,env(safe-area-inset-top))] sm:px-6 sm:pt-[max(1.25rem,env(safe-area-inset-top))]">
@@ -4875,11 +4862,6 @@ export default function App() {
                   <span className="font-semibold uppercase leading-none tracking-[0.015em] text-[#1c1a17]">Curator</span>
                 </span>
               </h1>
-              {todayDigest.length > 0 && editionNumber > 0 && (
-                <p className="shrink-0 pt-1.5 text-[10px] font-medium uppercase leading-none tabular-nums tracking-[0.28em] text-[#6f675c]">
-                  No. {editionNumber}
-                </p>
-              )}
             </div>
 
             {/* The masthead rule: heavy over hairline, the way a front page divides its name
@@ -4900,19 +4882,23 @@ export default function App() {
               </p>
             </div>
 
-            <div className="mt-2.5 flex flex-col gap-1 border-b border-[#ddd2bc] pb-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-              <p className="min-w-0 text-[11px] italic leading-snug text-[#6f675c] sm:flex-1">
+            {/* Three columns so the tagline sits on the page's centre line, not the space left
+                over beside the controls. On a phone it stacks and both lines centre. */}
+            <div className="mt-2.5 flex flex-col items-center gap-1 border-b border-[#ddd2bc] pb-1.5 sm:grid sm:grid-cols-[1fr_auto_1fr] sm:items-center sm:gap-3">
+              <span aria-hidden="true" className="hidden sm:block" />
+              <p className="min-w-0 text-center text-[11px] italic leading-snug text-[#6f675c]">
                 Your feeds, minus the noise.
               </p>
-              <nav aria-label="Masthead" className="flex shrink-0 items-center gap-2.5">
+              <nav aria-label="Masthead" className="flex shrink-0 items-center gap-2.5 sm:justify-self-end">
                 <button
                   type="button"
                   onClick={() => generateDigest({ fresh: true })}
                   disabled={loadingDigest}
-                  className="inline-flex min-h-9 items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#3f3a33] transition hover:text-[#1c1a17] disabled:opacity-50"
+                  aria-label={loadingDigest ? 'Refreshing the edition' : 'Refresh the edition'}
+                  title={loadingDigest ? 'Refreshing the edition' : 'Refresh the edition'}
+                  className="inline-flex min-h-9 min-w-9 items-center justify-center text-[#3f3a33] transition hover:text-[#1c1a17] disabled:opacity-50"
                 >
-                  <RefreshCw className={`h-3 w-3 ${loadingDigest ? 'animate-spin' : ''}`} />
-                  {loadingDigest ? 'Refreshing' : 'Refresh'}
+                  <RefreshCw aria-hidden="true" className={`h-4 w-4 ${loadingDigest ? 'animate-spin' : ''}`} />
                 </button>
                 <span aria-hidden="true" className="text-[10px] text-[#b9ad97]">·</span>
                 <button
@@ -4930,9 +4916,11 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setActiveTab('settings')}
-                  className="inline-flex min-h-9 items-center text-[10px] font-semibold uppercase tracking-[0.18em] text-[#3f3a33] transition hover:text-[#1c1a17]"
+                  aria-label="Settings"
+                  title="Settings"
+                  className="inline-flex min-h-9 min-w-9 items-center justify-center text-[#3f3a33] transition hover:text-[#1c1a17]"
                 >
-                  Settings
+                  <Sliders aria-hidden="true" className="h-4 w-4" />
                 </button>
               </nav>
             </div>
