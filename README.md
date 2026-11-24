@@ -23,7 +23,7 @@
   - [5. Outbound SSRF Hardening & Network Security](#5-outbound-ssrf-hardening--network-security)
   - [6. Provider-Configurable Curation & Semantic Ranking](#6-provider-configurable-curation--semantic-ranking)
   - [7. OPML Import & Export](#7-opml-import--export)
-  - [8. Distraction-Free Reader & Onboard Read Aloud](#8-distraction-free-reader--onboard-read-aloud)
+  - [8. Distraction-Free Reader & Read Aloud](#8-distraction-free-reader--read-aloud)
   - [9. Mobile & iOS Safari Viewport Hardening](#9-mobile--ios-safari-viewport-hardening)
   - [10. Progressive Web App (PWA) Support](#10-progressive-web-app-pwa-support)
   - [11. Your Library: Search, Archive, Backup and Storage](#11-your-library-search-archive-backup-and-storage)
@@ -113,15 +113,16 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 - **Folder Preservation**: Preserves nested categories, folders, and custom tags.
 - **Export Anytime**: Download a clean, standardized `.opml` XML file containing your complete watch list.
 
-### 8. Distraction-Free Reader & Onboard Read Aloud
+### 8. Distraction-Free Reader & Read Aloud
 - **Typographic Discipline**: Two self-hosted variable families, both served from the app — *Inter* (roman 47 KB + italic 51 KB woff2, `font-display: optional`) for the interface and metadata, and *Literata* (roman 108 KB + italic 111 KB woff2, optical-size axis, `font-display: swap`, roman preloaded) for article bodies, the edition's headlines and the wordmark. No Google Fonts requests, so no text depends on a third party's uptime.
 - **Colour Discipline**: The edition is paper (ink `#1c1a17` on `#f6f1e7`), so Today reads in black and white. One amber accent (`#8a5a24`) marks only the editor's flag — pieces outside the reader's bubble — plus focus rings; every other state (saved, read, synced, failed, unread) is weight, a mark, or a word. No gradients, no image scrims, no state colours.
-- **Native Read Aloud**:
-  - A sentence-by-sentence queue over the browser's own `window.speechSynthesis`, so an article is never cut off by the engine's long-utterance limit (Chrome stops at roughly fifteen seconds, iOS stalls on very long strings), and every paragraph break gets a natural beat.
-  - Defaults to **Jamie (Premium)** at a calm 0.95× rate when the browser exposes that voice; otherwise it leaves voice selection to the device's Spoken Content settings. Automatic mode prefers voices explicitly named Enhanced, Premium, Neural or Natural. Other installed voices and any speed can be chosen by hand in **Settings → Read aloud**, with a *Hear this voice* preview.
+- **Read Aloud, with three voices**: **Settings → Read aloud** offers the device's own voice, a neural voice downloaded once, or Gemini, each with a *Hear this voice* preview. The queue, the progress bar, the paragraph highlight and the tap-to-listen control are the same for all three, and a voice that cannot speak a passage passes the rest of the article to the device voice instead of stopping the reading.
+  - **The device voice** is instant, free and always available. It speaks a sentence at a time through the browser's own `window.speechSynthesis`, so an article is never cut off by the engine's long-utterance limit (Chrome stops at roughly fifteen seconds, iOS stalls on very long strings), and every paragraph break gets a natural beat. It defaults to **Jamie (Premium)** at a calm 0.95× rate when the browser exposes that voice; otherwise it leaves voice selection to the device's Spoken Content settings. Automatic mode prefers voices explicitly named Enhanced, Premium, Neural or Natural. Its quality is whatever the operating system installed, which is the robotic part on Windows and many Android phones.
+  - **The downloaded voice** is a Piper model kept on the device: about 60 MB of voice plus roughly 12 MB of speech engine the browser stores afterwards, fetched once from **Settings → Read aloud**. Once it has downloaded, reading aloud needs no connection at all. Two voices are offered — **Cori** (British English, public domain) and **Alba** (Scottish English, CC BY 4.0) — because the wider Piper catalogue includes non-commercial voices this licence cannot ship. The first download is slower on mobile data, and a low-memory phone may take a second or two per sentence or give up; either way the device voice covers the passage.
+  - **Gemini** sounds the best and is the only one that costs money: about a penny a minute of listening. It reads each sentence through Curator's own server, so the key never goes from the browser to Google directly, and every sentence needs a connection. The key can be pasted in **Settings → Read aloud** for reading alone, reused from **Connect an AI service** when that is set to Gemini, or left to the server's own `GEMINI_API_KEY`.
   - Live progress bar with paragraph and sentence position, the spoken paragraph highlighted, and tap-any-paragraph to listen from that point.
   - A headphones control in the reader's sticky header, so listening can start from wherever the reader has scrolled to: it speaks from the paragraph on screen rather than the headline, then pauses and resumes from the same place.
-  - Feed debris — URLs, footnote marks, bracket asides, "Read more" furniture, abbreviations and currency — is normalised out of the text before it reaches the voice.
+  - Feed debris — URLs, footnote marks, bracket asides, "Read more" furniture, abbreviations and currency — is normalised out of the text before it reaches the voice, whichever voice is speaking.
 - **Scroll Depth Tracker**: Automatically tracks reading progress and marks articles as finished once the user scrolls past 85% depth.
 - **Video in the reader**: a piece that carries a video plays it where the article is, above the prose. A video file (mp4, webm, or HLS) plays in the page's own player; a YouTube or Vimeo piece is a still with a play button until the reader taps it, so the video host is never contacted on their behalf. Publishers that refuse to be framed fall back to one link out, and a piece with no video is unchanged.
 
@@ -156,7 +157,7 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 │  - Top Header Navigation with Refresh & Settings Controls       │
 │  - Bottom Dock Navigation (Today, Feeds, Saved, Sources)        │
 │  - Signal Tuning with Undo Fallbacks                            │
-│  - Sentence-Queued Read Aloud (voice + rate)                    │
+│  - Sentence-Queued Read Aloud (device, Piper, Gemini)           │
 │  - LocalStorage State Manager (Bookmarks, Stats, Signal Weights)│
 └────────────────────────────────┬────────────────────────────────┘
                                  │ HTTP / JSON
