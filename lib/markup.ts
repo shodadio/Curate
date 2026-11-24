@@ -67,6 +67,23 @@ export const stripMarkdownBlocks = (text: string): string =>
     .replace(/\|/g, ' ')
     .replace(/[ \t]{2,}/g, ' ');
 
+// A table and a picture are part of the piece, not decoration: the chart the article refers to
+// and the numbers under it are the argument. A stored body is plain text, so both travel as
+// markers the reader draws again — a pipe table (one row per line) and a Markdown image.
+const IMAGE_BLOCK = /^!\[[^\]]*\]\(https?:\/\/[^)\s]+\)$/;
+
+/** True for a paragraph that is one picture marker. */
+export const isImageBlock = (paragraph: string): boolean => IMAGE_BLOCK.test(paragraph.trim());
+
+/**
+ * True for a table block: two lines or more, each a row of pipe-delimited cells. A single line
+ * that happens to carry a pipe stays prose.
+ */
+export const isTableBlock = (paragraph: string): boolean => {
+  const lines = paragraph.split('\n').map(line => line.trim()).filter(Boolean);
+  return lines.length >= 2 && lines.every(line => line.startsWith('|') && line.endsWith('|'));
+};
+
 // A blurb written in Markdown reaches the page as prose: a link keeps its label, and the
 // emphasis and code marks come off.
 export const stripMarkdownSyntax = (text: string): string =>
@@ -193,7 +210,11 @@ export const joinContinuedParagraphs = (paragraphs: string[]): string[] => {
   const joined: string[] = [];
   for (const paragraph of paragraphs) {
     const previous = joined[joined.length - 1];
+    // A picture and a table are whole blocks of their own, so the sentence rule cannot reach
+    // across them: a table row ends in a pipe, and the prose after it is a new paragraph.
     const continues = previous && !endsSentence(previous) &&
+      !isTableBlock(previous) && !isImageBlock(previous) &&
+      !isTableBlock(paragraph) && !isImageBlock(paragraph) &&
       (endsOnContinuation.test(previous) ||
         (startsLowerCase.test(paragraph) && !endsOnBlockBreak.test(previous)));
     if (continues) {
@@ -432,7 +453,87 @@ export const dropRepeatedShortParagraphs = (paragraphs: string[]): string[] => {
 // only the label.
 const ANCHOR_TAG = /<[^>]+>/g;
 
+// ---- Pictures ---------------------------------------------------------------
+// A picture the feed or the page carries is shown where the publisher put it. The body is plain
+// text, so the tag becomes an image marker; only an http(s) address is kept, because the reader
+// must not load anything else.
+const IMAGE_ATTR = (name: string) => new RegExp(`(?:^|\\s)${name}\\s*=\\s*["']([^"']+)["']`, 'i');
+
+const imageAttribute = (tag: string, name: string): string =>
+  decodeEntities(tag.match(IMAGE_ATTR(name))?.[1] ?? '').trim();
+
+// A spacer, a tracker, an icon or a logo is not a picture the piece is arguing with.
+const pictureDebris = /(?:feedburner|doubleclick|scorecardresearch|tracking|tracker|spacer|pixel|1x1|blank\.(?:gif|png)|transparent\.(?:gif|png))/i;
+
+const pictureIsTiny = (tag: string): boolean => {
+  const width = Number(imageAttribute(tag, 'width'));
+  const height = Number(imageAttribute(tag, 'height'));
+  return (Number.isFinite(width) && width > 0 && width < 64) ||
+    (Number.isFinite(height) && height > 0 && height < 64);
+};
+
+/** A picture tag as a Markdown image marker, or nothing when it is not a picture to show. */
+export const imageMarkdownFromTag = (tag: string): string => {
+  if (/\baria-hidden\s*=\s*["']true["']/i.test(tag)) return '';
+  // A lazy-loaded picture keeps its real address in a data attribute and a placeholder in src.
+  const source = ['data-src', 'data-lazy-src', 'data-original', 'src']
+    .map(name => imageAttribute(tag, name))
+    .find(value => /^https?:\/\//i.test(value)) ?? '';
+  if (!source || pictureDebris.test(source) || pictureIsTiny(tag)) return '';
+  const url = source.replace(/\(/g, '%28').replace(/\)/g, '%29');
+  const alt = imageAttribute(tag, 'alt')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[[\]|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return `![${alt}](${url})`;
+};
+
+// ---- Tables -----------------------------------------------------------------
+// A table reaches the reader as a row of cells, not a run of words. A header row keeps its
+// `<th>` cells and gains the separator line that marks it; every other row is a body row.
+const TABLE_ROW = /<tr\b[^>]*>([\s\S]*?)<\/tr\s*>/gi;
+const TABLE_CELL = /<t([hd])\b[^>]*>([\s\S]*?)<\/t\1\s*>/gi;
+
+// A cell's own markup is not part of the value, and a pipe inside it would end the column.
+const tableCellText = (cell: string): string => decodeEntities(cell)
+  .replace(/<br\s*\/?>/gi, ' ')
+  .replace(/<[^>]+>/g, ' ')
+  .replace(/\|/g, '\\|')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const tableRow = (row: string): { header: boolean; cells: string[] } => {
+  const cells = [...row.matchAll(TABLE_CELL)].map(match => ({
+    header: match[1].toLowerCase() === 'h',
+    text: tableCellText(match[2]),
+  }));
+  return {
+    header: cells.length > 0 && cells.every(cell => cell.header),
+    cells: cells.map(cell => cell.text),
+  };
+};
+
+const markdownTable = (table: string): string => {
+  const rows = [...table.matchAll(TABLE_ROW)]
+    .map(match => tableRow(match[1]))
+    .filter(row => row.cells.some(cell => cell));
+  // A one-row table is a line of words, not a grid; it reads better as prose.
+  if (rows.length < 2) return rows.length ? rows[0].cells.join(' ') : ' ';
+  const columns = Math.max(...rows.map(row => row.cells.length));
+  const line = (cells: string[]) =>
+    `| ${Array.from({ length: columns }, (_, index) => cells[index] ?? '').join(' | ')} |`;
+  const lines = [line(rows[0].cells)];
+  if (rows[0].header) lines.push(`| ${Array.from({ length: columns }, () => '---').join(' | ')} |`);
+  for (const row of rows.slice(1)) lines.push(line(row.cells));
+  return `\n\n${lines.join('\n')}\n\n`;
+};
+
 const markdownLinkFromAnchor = (href: string, label: string, baseUrl: string): string => {
+  // An anchor that wraps a picture is the picture: the link around it is a click-through
+  // address, and what the reader needs is the image itself.
+  const picture = label.match(/!\[[^\]]*\]\(https?:\/\/[^)\s]+\)/);
+  if (picture) return picture[0];
   const text = decodeEntities(label)
     .replace(ANCHOR_TAG, ' ')
     .replace(/[[\]]/g, ' ')
@@ -468,8 +569,13 @@ export const htmlToReadableText = (html: string, baseUrl = ''): string => {
       .replace(/<style[\s\S]*?<\/style>/gi, '')
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<figcaption[\s\S]*?<\/figcaption>/gi, '')
-      .replace(/<figure[\s\S]*?<\/figure>/gi, '')
       .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
+      // A table is a grid in the piece, not a run of words, so its rows are kept as rows. The
+      // pictures inside figures are kept too; only the captions around them go.
+      .replace(/<table\b[^>]*>([\s\S]*?)<\/table\s*>/gi, (_match, table: string) => markdownTable(table))
+      .replace(/<img\b[^>]*>/gi, (tag: string) => imageMarkdownFromTag(tag))
+      .replace(/<figure\b[^>]*>/gi, '\n\n')
+      .replace(/<\/figure\s*>/gi, '\n\n')
       // Keep the address behind a link, not only its words.
       .replace(/<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a\s*>/gi, (_match, href: string, label: string) =>
         markdownLinkFromAnchor(href, label, baseUrl))
@@ -498,6 +604,11 @@ export const htmlToReadableText = (html: string, baseUrl = ''): string => {
     .replace(/\n{3,}/g, '\n\n')
     .split(/\n{2,}/)
     .map(paragraph => {
+      // A table's rows are the lines of one block; collapsing them would run the grid together.
+      if (isTableBlock(paragraph)) {
+        return paragraph.split('\n').map(line => line.trim()).filter(Boolean).join('\n');
+      }
+      const pictureLine = isImageBlock(paragraph);
       let next = paragraph
         .replace(/\s*\n\s*/g, ' ')
         .replace(/\s+([,.;:!?])/g, '$1')
@@ -506,7 +617,8 @@ export const htmlToReadableText = (html: string, baseUrl = ''): string => {
         .replace(/\s+([”’)])/g, '$1')
         .replace(/\s{2,}/g, ' ')
         // A stripped table cell can weld a word to the parameter that followed it ("The?install=").
-        .replace(/([a-z])(?=[?#][a-z_]+=)/gi, '$1 ')
+        // A picture's address carries its own query, so its marker is left whole.
+        .replace(/([a-z])(?=[?#][a-z_]+=)/gi, (letter: string) => (pictureLine ? letter : `${letter} `))
         // A URL broken across lines leaves its continuation marked by a bare ampersand.
         .replace(/^&\s*(?=[a-z_]+\s*=)/i, '')
         .trim();
@@ -545,7 +657,13 @@ export const htmlToReadableText = (html: string, baseUrl = ''): string => {
     .filter(paragraph => !/^#[\p{L}\d_]{2,30}$/u.test(paragraph))
     .filter(paragraph => !/^the post .+ appeared first on /i.test(linkLabelsOnly(paragraph)))
     // A stripped table cell leaves "| [20 Comments](https://…)": a bare link, not prose.
-    .filter(paragraph => !isStrayCommentLink(paragraph));
+    .filter(paragraph => !isStrayCommentLink(paragraph))
+    // A picture that sits inside a sentence has no place on the page; only one that stands in
+    // its own paragraph is drawn, so an inline marker is dropped with its words kept.
+    .map(paragraph => (isImageBlock(paragraph)
+      ? paragraph
+      : paragraph.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\s{2,}/g, ' ').trim()))
+    .filter(paragraph => paragraph.length > 0);
 
   return joinContinuedParagraphs(dropEndingFurniture(dropBylineFurniture(dropRepeatedShortParagraphs(dropChromeRuns(paragraphs))))).join('\n\n');
 };
@@ -716,6 +834,29 @@ export function articleNeedsLinkRefresh(item: {
   linkRefreshAt?: number;
 }): boolean {
   return Boolean(item.url) && !item.linksCleaned && !item.linkRefreshAt;
+}
+
+// A body cleaned before pictures and tables were kept has neither: the chart the piece refers to
+// and the numbers under it are missing from its stored text. `mediaCleaned` marks a body that
+// carries them, and `mediaRefreshAt` records a refresh that already happened, so a piece with no
+// pictures of its own is not fetched on every open.
+export function articleNeedsMediaRefresh(item: {
+  url?: string;
+  mediaCleaned?: boolean;
+  mediaRefreshAt?: number;
+}): boolean {
+  return Boolean(item.url) && !item.mediaCleaned && !item.mediaRefreshAt;
+}
+
+/** True when a stored body predates the cleaner that keeps links, pictures or tables. */
+export function articleNeedsBodyRefresh(item: {
+  url?: string;
+  linksCleaned?: boolean;
+  linkRefreshAt?: number;
+  mediaCleaned?: boolean;
+  mediaRefreshAt?: number;
+}): boolean {
+  return articleNeedsLinkRefresh(item) || articleNeedsMediaRefresh(item);
 }
 
 // A feed can carry only the opening of a piece: a short body, a sentence that runs out with an

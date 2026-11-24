@@ -352,6 +352,46 @@ body {
   background-color: var(--reader-track);
 }
 
+/* A picture inside the piece is shown whole rather than cropped to a band: a chart's edges and
+   labels are the point, so the image keeps its own proportion. */
+.reader-body-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 0.35rem;
+  background-color: var(--reader-track);
+}
+
+/* A table the piece published keeps its columns; a narrow phone scrolls it sideways inside its
+   own box instead of widening the page. */
+.reader-table-wrap {
+  margin-bottom: 1.45em;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.reader-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: var(--reader-ink);
+}
+
+.reader-table th,
+.reader-table td {
+  padding: 0.5rem 0.65rem;
+  border-bottom: 1px solid var(--reader-line);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.reader-table th {
+  font-weight: 600;
+  border-bottom-color: var(--reader-accent);
+}
+
 /* The curator's line is an aside, not a card: a hairline above, then a label and a sentence
    in the same ink as the page. */
 .reader-note {

@@ -1347,6 +1347,9 @@ async function startServer() {
         // This text came from the cleaner that keeps a link's address, so a reader holding it
         // needs no refresh. Saves written before that change lack the flag and are refreshed.
         linksCleaned: true,
+        // The same cleaner keeps the pictures and tables the piece carries; a body stored before
+        // it has neither, so the flag marks a body that already holds them.
+        mediaCleaned: true,
         // The feed carried no body: a paid post, an image-only issue, or a feed of descriptions.
         // Such a story only earns a slot in an edition if its page can be read, so the card is
         // not one the reader cannot open.
@@ -1398,8 +1401,10 @@ async function startServer() {
     let body = articleRegion(html);
     if (!body) return '';
 
+    // A figure is kept: it holds the chart or the illustration the piece is about. Its caption
+    // and the player and page chrome around it still go.
     body = body
-      .replace(/<(figure|figcaption|audio|video|iframe|script|style|noscript|svg|form|button|nav|header|footer)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+      .replace(/<(figcaption|audio|video|iframe|script|style|noscript|svg|form|button|nav|header|footer)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
       .replace(/<h1\b[^>]*>[\s\S]*?<\/h1\s*>/gi, ' ');
 
     const excludedClassNames = /(?:^|[\s_-])(?:author|byline|related|recommend(?:ation|ed)?|newsletter|subscribe|share|social|audio|player|caption|tldr|standfirst|dek|bio|advert|promoted|read[-_ ]?more|post[-_ ]?meta|article[-_ ]?meta|outbrain|taboola)(?=$|[\s_-])/i;

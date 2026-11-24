@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { articleLooksIncomplete, articleNeedsLinkRefresh, cleanHtml, decodeEntities, htmlToReadableText, repairSplitDigits, splitDenseParagraph, splitSentences, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, trimSummaryFurniture } from '../lib/markup.ts';
+import { articleLooksIncomplete, articleNeedsBodyRefresh, articleNeedsLinkRefresh, articleNeedsMediaRefresh, cleanHtml, decodeEntities, htmlToReadableText, isImageBlock, isTableBlock, repairSplitDigits, splitDenseParagraph, splitSentences, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, trimSummaryFurniture } from '../lib/markup.ts';
 
 test('only a piece saved before links were kept is refreshed', () => {
   assert.equal(articleNeedsLinkRefresh({ url: 'https://example.com/story' }), true);
@@ -12,6 +12,14 @@ test('only a piece saved before links were kept is refreshed', () => {
 });
 
 const hasTag = (text: string) => /<[a-z/!][^>]*>/i.test(text);
+
+test('a body saved before pictures and tables were kept is refreshed once', () => {
+  assert.equal(articleNeedsMediaRefresh({ url: 'https://example.com/story' }), true);
+  assert.equal(articleNeedsMediaRefresh({ url: 'https://example.com/story', mediaCleaned: true }), false);
+  assert.equal(articleNeedsMediaRefresh({ url: 'https://example.com/story', mediaRefreshAt: 1 }), false);
+  assert.equal(articleNeedsBodyRefresh({ url: 'https://example.com/story', linksCleaned: true }), true);
+  assert.equal(articleNeedsBodyRefresh({ url: 'https://example.com/story', linksCleaned: true, mediaCleaned: true }), false);
+});
 
 // ---------------------------------------------------------------------------
 // Card summaries
@@ -442,6 +450,46 @@ test('htmlToReadableText drops a comment count printed as a list line', () => {
   const body = htmlToReadableText(
     '<p>Real article text.</p><p>• <a href="https://example.com/story#comments">20 Comments</a></p>',
   );
+  assert.equal(body, 'Real article text.');
+});
+
+test('a table in a feed body reaches the reader as a table, not a run of words', () => {
+  const body = htmlToReadableText([
+    '<p>Real article text.</p>',
+    '<table><thead><tr><th>Decade</th><th>Company</th><th>Revenue</th></tr></thead>',
+    '<tbody><tr><td>1970s</td><td>IBM</td><td>$106.3B</td></tr>',
+    '<tr><td>1980s</td><td>IBM</td><td>$170.6B</td></tr></tbody></table>',
+    '<p>Real article text continues.</p>',
+  ].join(''));
+  assert.equal(body, [
+    'Real article text.',
+    '| Decade | Company | Revenue |\n| --- | --- | --- |\n| 1970s | IBM | $106.3B |\n| 1980s | IBM | $170.6B |',
+    'Real article text continues.',
+  ].join('\n\n'));
+  assert.equal(isTableBlock(body.split('\n\n')[1]), true);
+});
+
+test('the prose after a table is not pulled into its last row', () => {
+  const body = htmlToReadableText(
+    '<table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table><p>and the argument continues here.</p>',
+  );
+  assert.equal(body, '| a | b |\n| c | d |\n\nand the argument continues here.');
+});
+
+test('a chart the piece carries reaches the reader as a picture', () => {
+  const body = htmlToReadableText([
+    '<p>Real article text.</p>',
+    '<figure class="wp-block-image"><a href="https://example.com/full">',
+    '<img src="https://cdn.example.com/chart.png?w=1280&amp;ssl=1" alt="Revenue chart" width="1280" height="640">',
+    '</a></figure>',
+    '<p>Real article text continues.</p>',
+  ].join(''));
+  assert.equal(body, 'Real article text.\n\n![Revenue chart](https://cdn.example.com/chart.png?w=1280&ssl=1)\n\nReal article text continues.');
+  assert.equal(isImageBlock(body.split('\n\n')[1]), true);
+});
+
+test('a tracker or a spacer is not taken for a picture', () => {
+  const body = htmlToReadableText('<p>Real article text.</p><img src="https://example.com/pixel.gif" width="1" height="1">');
   assert.equal(body, 'Real article text.');
 });
 

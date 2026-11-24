@@ -73,7 +73,7 @@ import {
   speechVoiceChoices,
   splitIntoSentences,
 } from '../lib/speech';
-import { articleLooksIncomplete, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isMediaCreditParagraph, isPlayerChrome, isStrayCommentLink, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
+import { articleLooksIncomplete, articleNeedsBodyRefresh, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isImageBlock, isMediaCreditParagraph, isPlayerChrome, isStrayCommentLink, isTableBlock, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
 
 // One-click provider addresses: the popular OpenAI-compatible services, so a working setup
 // starts with a name and a key rather than a copied URL and a guessed model ID.
@@ -183,6 +183,10 @@ interface DigestItem {
   // stored copy; `linkRefreshAt` keeps a piece with no links of its own from being fetched twice.
   linksCleaned?: boolean;
   linkRefreshAt?: number;
+  // The cleaner keeps the pictures and tables a piece publishes too; a save written before it
+  // lacks the flag, and the reader fetches the page once to gain them.
+  mediaCleaned?: boolean;
+  mediaRefreshAt?: number;
   // The feed itself ended by offering the rest of the piece ("Read more", "Read full article").
   // The cleaner drops that line, so the excerpt alone can look whole; the flag keeps the fact
   // that the publisher said there is more, and the reader fetches the rest once when it opens.
@@ -314,7 +318,8 @@ function webUrlHref(url?: string | null): string | undefined {
 // so the first real paragraph is used; a long one is cut at a sentence, and a body with no prose
 // yields nothing at all rather than an empty line.
 function openingParagraph(text: string): string {
-  const first = buildArticleParagraphs(text).find(paragraph => paragraph.length > 80);
+  const first = buildArticleParagraphs(text)
+    .find(paragraph => paragraph.length > 80 && !isImageBlock(paragraph) && !isTableBlock(paragraph));
   if (!first) return '';
   if (first.length <= 520) return first;
   const cut = first.slice(0, 520);
@@ -345,12 +350,18 @@ function buildArticleParagraphs(text: string): string[] {
   const paragraphs = repairSplitDigits(clean)
     .split(/\n{2,}/)
     .map(paragraph => {
+      // A table's rows are the lines of one block; collapsing them would run the grid together.
+      if (isTableBlock(paragraph)) {
+        return paragraph.split('\n').map(line => line.trim()).filter(Boolean).join('\n');
+      }
+      const pictureLine = isImageBlock(paragraph);
       let next = paragraph
         .replace(/\s*\n\s*/g, ' ')
         .replace(/\s+([,.;:!?])/g, '$1')
         .replace(/\s{2,}/g, ' ')
         // A stripped table cell can weld a word to the parameter that followed it ("The?install=").
-        .replace(/([a-z])(?=[?#][a-z_]+=)/gi, '$1 ')
+        // A picture's address carries its own query, so its marker is left whole.
+        .replace(/([a-z])(?=[?#][a-z_]+=)/gi, (letter: string) => (pictureLine ? letter : `${letter} `))
         // A URL broken across lines leaves its continuation marked by a bare ampersand.
         .replace(/^&\s*(?=[a-z_]+\s*=)/i, '')
         .trim();
@@ -378,14 +389,20 @@ function buildArticleParagraphs(text: string): string[] {
     // A caption that is nothing but a hashtag ("#nofilter") is image furniture.
     .filter(paragraph => !/^#[\p{L}\d_]{2,30}$/u.test(paragraph))
     .filter(paragraph => !/^the post .+ appeared first on /i.test(paragraph))
-    .filter(paragraph => !isStrayCommentLink(paragraph));
+    .filter(paragraph => !isStrayCommentLink(paragraph))
+    // A picture standing in its own paragraph is drawn; one that sits inside a sentence is
+    // dropped, with the sentence's words kept.
+    .map(paragraph => (isImageBlock(paragraph)
+      ? paragraph
+      : paragraph.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\s{2,}/g, ' ').trim()))
+    .filter(paragraph => paragraph.length > 0);
 
   // A quotation and the attribution a publisher printed as its own paragraph are one
   // sentence; the reader and the voice both take their paragraphs from this list.
   // A section handed over as one <p> is shown as a few shorter paragraphs; read-aloud speaks
   // from this same list, so a spoken paragraph is still a paragraph on screen.
   return joinContinuedParagraphs(dropEndingFurniture(dropBylineFurniture(dropRepeatedShortParagraphs(paragraphs))))
-    .flatMap(paragraph => splitDenseParagraph(paragraph));
+    .flatMap(paragraph => (isTableBlock(paragraph) ? [paragraph] : splitDenseParagraph(paragraph)));
 }
 
 // A feed that strips an anchor down to its text leaves a bare URL in the body, which the
@@ -481,6 +498,40 @@ function renderParagraphText(paragraph: string) {
       <span key={index}>{token.text}</span>
     ),
   );
+}
+
+// A table the piece published is drawn as a table, so its columns still line up. The stored
+// block is one row per line, and the header row is the one a separator line follows.
+interface ReaderTable {
+  header: string[] | null;
+  rows: string[][];
+}
+
+const TABLE_SEPARATOR = /^\|(?:\s*:?-{1,}:?\s*\|)+$/;
+
+function parseTableBlock(block: string): ReaderTable | null {
+  if (!isTableBlock(block)) return null;
+  const lines = block.split('\n').map(line => line.trim()).filter(Boolean);
+  // A pipe inside a cell was escaped by the cleaner, so it has to survive the split.
+  const cells = (line: string): string[] => line
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .replace(/\\\|/g, '\u0000')
+    .split('|')
+    .map(cell => cell.replace(/\u0000/g, '|').trim());
+  const header = lines.length > 1 && TABLE_SEPARATOR.test(lines[1]) ? cells(lines[0]) : null;
+  const rows = lines.slice(header ? 2 : 0).map(cells).filter(row => row.some(cell => cell));
+  if (!header && rows.length === 0) return null;
+  return { header, rows };
+}
+
+// A picture the piece carries, drawn where the publisher put it. Only a web address is shown.
+function parseImageBlock(paragraph: string): { alt: string; url: string } | null {
+  if (!isImageBlock(paragraph)) return null;
+  const match = paragraph.trim().match(/^!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)$/);
+  if (!match) return null;
+  const url = webUrlHref(match[2]);
+  return url ? { alt: match[1], url } : null;
 }
 
 // ---- Read Aloud: text preparation and the spoken queue -----------------------
@@ -3285,7 +3336,7 @@ export default function App() {
       }
       const refreshedAt = Date.now();
       const upgrade = (entry: DigestItem): DigestItem => entry.id === item.id
-        ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt, teaser: false, articleUnavailable: false, video: entry.video || video || undefined }
+        ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt, mediaCleaned: true, mediaRefreshAt: refreshedAt, teaser: false, articleUnavailable: false, video: entry.video || video || undefined }
         : entry;
       setSelectedArticle(prev => (prev && prev.id === item.id ? upgrade(prev) : prev));
       setSavedArticles(prev => prev.map(upgrade));
@@ -3361,8 +3412,8 @@ export default function App() {
             // A piece the server could not read (a dead page, a paywall) keeps its stored body;
             // the stamp records that this pass asked, so the count does not sit at one forever.
             return text
-              ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt, teaser: false }
-              : { ...entry, linkRefreshAt: refreshedAt };
+              ? { ...entry, fullText: text, linksCleaned: true, linkRefreshAt: refreshedAt, mediaCleaned: true, mediaRefreshAt: refreshedAt, teaser: false }
+              : { ...entry, linkRefreshAt: refreshedAt, mediaRefreshAt: refreshedAt };
           };
           setSelectedArticle(prev => (prev ? applyBatch(prev) : prev));
           setSavedArticles(prev => prev.map(applyBatch));
@@ -3428,7 +3479,7 @@ export default function App() {
 
     // A piece the feed only began — its own "Read more" line, or an excerpt that stops short —
     // earns one page read when it is opened, whatever its excerpt looks like.
-    if (articleNeedsLinkRefresh(item) || articleLooksIncomplete(item) || item.teaser) void refreshArticleLinks(item);
+    if (articleNeedsBodyRefresh(item) || articleLooksIncomplete(item) || item.teaser) void refreshArticleLinks(item);
 
     window.history.pushState({ curatorReader: true }, '');
     readerHistoryDepthRef.current += 1;
@@ -4180,6 +4231,46 @@ export default function App() {
             <div className="reader-body mt-11">
               {articleParagraphs.length > 0 ? articleParagraphs.map((paragraph, idx) => {
                 const isSpeakingHere = readAloudActive && speechProgress.paragraph === idx;
+                const picture = parseImageBlock(paragraph);
+                if (picture) {
+                  // The lead picture already sits above the byline; a body that repeats it would
+                  // show the same image twice.
+                  if (webUrlHref(selectedArticle.bannerImage) === picture.url) return null;
+                  return (
+                    <figure key={idx} className="reader-body-figure font-sans">
+                      <img
+                        src={picture.url}
+                        alt={picture.alt}
+                        loading="lazy"
+                        decoding="async"
+                        onError={(event) => { (event.currentTarget.parentElement as HTMLElement).style.display = 'none'; }}
+                      />
+                    </figure>
+                  );
+                }
+                const table = parseTableBlock(paragraph);
+                if (table) {
+                  return (
+                    <div
+                      key={idx}
+                      id={`reader-paragraph-${idx}`}
+                      className={`reader-table-wrap font-sans${isSpeakingHere ? ' reader-speaking reader-ink' : ''}`}
+                    >
+                      <table className="reader-table">
+                        {table.header && (
+                          <thead>
+                            <tr>{table.header.map((cell, column) => <th key={column} scope="col">{cell}</th>)}</tr>
+                          </thead>
+                        )}
+                        <tbody>
+                          {table.rows.map((row, rowIndex) => (
+                            <tr key={rowIndex}>{row.map((cell, column) => <td key={column}>{cell}</td>)}</tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                }
                 return (
                   <p
                     key={idx}
