@@ -131,6 +131,11 @@ export function WeeklyReviewModal({
 
   const maxDayMins = Math.max(0, ...dailyMinutes.map(d => d.minutes));
 
+  // One ranked ink ladder for the whole review: the topic bar's slices and the topic
+  // rows carry the same shade for the same rank, so the widest slice is the darkest.
+  const topicShades = ['bg-[#1c1a17]', 'bg-[#1c1a17]/80', 'bg-[#1c1a17]/60', 'bg-[#1c1a17]/45', 'bg-[#1c1a17]/35'];
+  const shadeFor = (index: number) => topicShades[Math.min(index, topicShades.length - 1)];
+
   // Sources breakdown
   const sourceMap = new Map<string, { count: number; minutes: number }>();
   recentItems.forEach(it => {
@@ -199,9 +204,9 @@ export function WeeklyReviewModal({
           <div className="flex items-center gap-3.5 mb-3 pr-14">
             <CuratorMark className="w-11 h-11" />
             <div>
-              <div className="flex items-center gap-2">
-                <span className="font-serif text-sm tracking-[0.08em] font-semibold text-[#8a5a24]">THE CURATOR</span>
-                <span className="text-xs uppercase font-mono tracking-wider px-2 py-0.5 rounded-full bg-transparent text-[#3f3a33] border border-[#c9bc9f]">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="whitespace-nowrap font-serif text-sm tracking-[0.08em] font-semibold text-[#8a5a24]">THE CURATOR</span>
+                <span className="whitespace-nowrap text-xs uppercase font-mono tracking-wider px-2 py-0.5 rounded-full bg-transparent text-[#3f3a33] border border-[#c9bc9f]">
                   Weekly Review
                 </span>
               </div>
@@ -294,24 +299,26 @@ export function WeeklyReviewModal({
               <span className="text-[#6f675c] text-xs">Past 7 Days</span>
             </div>
 
-            <div className="pt-4 pb-1 grid grid-cols-7 gap-2 items-end h-32">
+            <div className="pt-4 pb-1 grid grid-cols-7 gap-1 sm:gap-2 items-end h-32">
               {dailyMinutes.map((d, i) => {
                 const heightPct = maxDayMins > 0 ? Math.max(4, Math.round((d.minutes / maxDayMins) * 100)) : 0;
                 const isPeak = maxDayMins > 0 && d.minutes === maxDayMins;
                 return (
                   <div key={d.day} className="flex flex-col items-center gap-1.5 h-full justify-end group">
-                    <span className="text-xs font-mono text-[#6f675c] opacity-0 group-hover:opacity-100 transition-opacity">
+                    <span
+                      className={`text-[10px] font-mono tabular-nums ${isPeak ? 'text-[#1c1a17] font-semibold' : 'text-[#6f675c]'}`}
+                    >
                       {d.minutes}m
                     </span>
                     <div 
                       className={`w-full max-w-[28px] rounded-t-lg transition-all ${
                         isPeak
                           ? 'bg-[#1c1a17]'
-                          : 'bg-[#1c1a17]/20'
+                          : 'bg-[#1c1a17]/55'
                       }`}
                       style={{ height: `${heightPct}%` }}
                     />
-                    <span className={`text-xs ${isPeak ? 'text-[#1c1a17] font-bold' : 'text-[#6f675c] font-medium'}`}>
+                    <span className={`whitespace-nowrap text-[10px] sm:text-xs ${isPeak ? 'text-[#1c1a17] font-bold' : 'text-[#6f675c] font-medium'}`}>
                       {d.day}
                     </span>
                   </div>
@@ -331,11 +338,11 @@ export function WeeklyReviewModal({
 
             {/* Proportional Segmented Bar */}
             <div className="h-3 w-full rounded-full bg-[#1c1a17]/10 flex overflow-hidden p-0.5 gap-0.5">
-              {sortedTopics.map((top) => {
+              {sortedTopics.map((top, idx) => {
                 return (
                   <div
                     key={top.topic}
-                    className="bg-[#1c1a17]/70 rounded-full transition-all"
+                    className={`${shadeFor(idx)} rounded-full transition-all`}
                     style={{ width: `${top.pct}%` }}
                     title={`${top.topic}: ${top.minutes}m (${top.pct}%)`}
                   />
@@ -345,14 +352,14 @@ export function WeeklyReviewModal({
 
             {/* Topic List */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              {sortedTopics.map((top) => {
+              {sortedTopics.map((top, idx) => {
                 return (
                   <div
                     key={top.topic}
                     className="p-3 rounded-xl bg-[#ece4d1] border border-[#ddd2bc] flex items-center justify-between text-xs"
                   >
                     <div className="flex items-center gap-2 min-w-0">
-                      <div className="w-2 h-2 rounded-full bg-[#1c1a17]" />
+                      <div className={`w-2 h-2 rounded-full ${shadeFor(idx)}`} />
                       <span className="font-medium text-[#1c1a17] truncate">{top.topic}</span>
                     </div>
                     <div className="flex items-center gap-2 text-[#6f675c] shrink-0">
