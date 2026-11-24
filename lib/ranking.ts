@@ -420,13 +420,18 @@ export const cosineSimilarity = (left: number[], right: number[]): number => {
 
 // Score against individual feedback examples rather than averaging every interest into one
 // vector. This preserves distinct topics while letting newer votes outweigh older ones.
+//
+// `candidateShares` is one substance share per candidate, passed in rather than measured here so
+// that this engine and the built-in one discount a bare headline by exactly the same amount; the
+// embeddings know nothing about how much article sits behind them.
 export const denseFeedbackScores = (
   feedback: SemanticVoteExample[],
   feedbackEmbeddings: Array<number[] | null>,
   candidateEmbeddings: Array<number[] | null>,
+  candidateShares: number[],
   nowMs: number = Date.now(),
 ): number[] => {
-  const scoreFor = (candidate: number[] | null): number => {
+  const scoreFor = (candidate: number[] | null, candidateIndex: number): number => {
     if (!candidate) return 0;
     const bestByVote: Record<'like' | 'dislike', number> = { like: 0, dislike: 0 };
     feedback.forEach((example, index) => {
@@ -437,7 +442,9 @@ export const denseFeedbackScores = (
       const similarity = cosineSimilarity(candidate, vector) * recency;
       bestByVote[example.vote] = Math.max(bestByVote[example.vote], similarity);
     });
-    return clampSemanticScore(bestByVote.like - bestByVote.dislike);
+    return clampSemanticScore(
+      (bestByVote.like - bestByVote.dislike) * substanceFactor(candidateShares[candidateIndex] ?? 0),
+    );
   };
 
   return candidateEmbeddings.map(scoreFor);

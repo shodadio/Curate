@@ -364,10 +364,19 @@ test('denseFeedbackScores preserves multiple interests and decays older votes', 
     feedback,
     [[1, 0], [0, 1]],
     [[1, 0], [0, 1]],
+    [1, 1],
     NOW,
   );
   approx(scores[0], 1, 'most recent matching interest');
   approx(scores[1], 0.5, 'one-half-life-old interest is down-weighted');
+});
+
+test('provider scores discount a stub by the same amount as the built-in engine', () => {
+  const feedback = [vote({ vote: 'like', text: 'rust memory safety', timestamp: NOW })];
+  // Same embedding for both candidates: only the article behind the headline differs.
+  const scores = denseFeedbackScores(feedback, [[1, 0]], [[1, 0], [1, 0]], [0, 1], NOW);
+  assert.equal(scores[0], substanceFactor(0), 'a bare headline keeps the stub floor');
+  approx(scores[1], 1, 'a full article keeps the whole match');
 });
 
 test('provider embeddings are blended 65/35 with the built-in engine', () => {
