@@ -928,9 +928,10 @@ export default function App() {
   };
 
   // The bodies of saved pieces are the largest thing stored and the only part that can be
-  // fetched again, so freeing space starts there and keeps the newest few for offline reading.
+  // fetched again, so freeing space starts there and keeps the newest few, plus whatever the
+  // edition on screen still holds.
   const freeStorageSpace = () => {
-    const result = pruneArticleBodies(savedArticles, 5);
+    const result = pruneArticleBodies(savedArticles, 5, digest.map(item => item.id));
     if (result.prunedCount === 0) {
       showToast('Nothing to free: only your newest saves still hold a full article.');
       return;
@@ -1494,6 +1495,75 @@ export default function App() {
     if (safeSetJson('curator_saved_articles', savedArticles)) return;
     safeSetJson('curator_saved_articles', savedArticles.map(({ fullText, ...rest }) => rest));
   }, [savedArticles]);
+
+  // The edition on screen is also the offline copy: a launch with no signal should read the
+  // pieces it lists, not five of them. So the ones the feeds only began are fetched once per
+  // edition and kept with it — the server reads those pages through the cache the digest already
+  // filled, which makes this a batch of cache hits in practice rather than a crawl.
+  const latestDigestRef = React.useRef<DigestItem[]>([]);
+  const editionBodiesRef = React.useRef(0);
+  useEffect(() => {
+    latestDigestRef.current = digest;
+  }, [digest]);
+  useEffect(() => {
+    if (digestCuratedAt <= 0) return;
+    const items = latestDigestRef.current;
+    if (items.length === 0 || editionBodiesRef.current === digestCuratedAt) return;
+    const missing = items.filter(item => item.url && (item.teaser || articleLooksIncomplete(item)));
+    editionBodiesRef.current = digestCuratedAt;
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    const controller = new AbortController();
+    void (async () => {
+      for (let start = 0; start < missing.length; start += 8) {
+        const batch = missing.slice(start, start + 8);
+        let articles: unknown[] = [];
+        try {
+          const response = await fetch('/api/article-texts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: batch.map(({ id, url }) => ({ id, url })) }),
+            signal: controller.signal,
+          });
+          if (!response.ok) break;
+          const data = await response.json().catch(() => ({}));
+          articles = Array.isArray(data?.articles) ? data.articles : [];
+        } catch {
+          return;
+        }
+        if (cancelled) return;
+        const accepted = new Map<string, string>();
+        for (const entry of articles as Array<{ id?: unknown; text?: unknown }>) {
+          const id = typeof entry?.id === 'string' ? entry.id : '';
+          const text = typeof entry?.text === 'string' ? entry.text : '';
+          // A paywall or a dead page leaves the stored excerpt the better read
+          if (id && text.length >= 200) accepted.set(id, text);
+        }
+        if (accepted.size === 0) continue;
+        setDigest(prev => prev.map(item => {
+          const text = accepted.get(item.id);
+          return text ? { ...item, fullText: text, teaser: false, articleUnavailable: false } : item;
+        }));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [digestCuratedAt]);
+
+  // The cache follows every body that arrives, not only the build that made the edition, so a
+  // reload with no connection finds the same pieces the reader had.
+  const digestCacheStampRef = React.useRef('');
+  useEffect(() => {
+    if (digest.length === 0 || digestCuratedAt <= 0) return;
+    const stamp = `${digestCuratedAt}|${digest.map(item => `${item.id}:${item.fullText ? item.fullText.length : 0}`).join('|')}`;
+    if (digestCacheStampRef.current === stamp) return;
+    digestCacheStampRef.current = stamp;
+    safeSetJson('curator_digest_cache', { curatedAt: digestCuratedAt, items: digest });
+  }, [digest, digestCuratedAt]);
 
   // A byline found once is kept; a page that named nobody is asked again only after a week, so
   // an offline launch does not leave a piece unsigned for good.
