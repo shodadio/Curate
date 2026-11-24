@@ -73,6 +73,29 @@ import {
   speechVoiceChoices,
   splitIntoSentences,
 } from '../lib/speech';
+import { PIPER_DEFAULT_VOICE_ID, findPiperVoice } from '../lib/piperVoices';
+import {
+  SPEECH_ENGINE_STORAGE_KEY,
+  SPEECH_GEMINI_VOICE_STORAGE_KEY,
+  SPEECH_PIPER_VOICE_STORAGE_KEY,
+  SPEECH_RATE_DEFAULT,
+  SPEECH_RATE_MAX,
+  SPEECH_RATE_MIN,
+  type PiperDownloadState,
+  type SpeechEngine,
+} from '../lib/readAloud';
+import { GEMINI_TTS_DEFAULT_VOICE, synthesizeGeminiSpeech } from './lib/geminiTts';
+import { downloadPiperVoice, piperSupported, removePiperVoice, storedPiperVoices, synthesizePiper } from './lib/piper';
+import {
+  pauseSpeechAudio,
+  playSpeechAudio,
+  prefetchSpeechAudio,
+  primeSpeechAudio,
+  resumeSpeechAudio,
+  stopSpeechAudio,
+  takePrefetchedSpeechAudio,
+} from './lib/speechAudio';
+import { ReadAloudSettings } from './components/ReadAloudSettings';
 import { articleLooksIncomplete, articleNeedsBodyRefresh, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isImageBlock, isMediaCreditParagraph, isPlayerChrome, isStrayCommentLink, isTableBlock, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
 
 // One-click provider addresses: the popular OpenAI-compatible services, so a working setup
@@ -551,9 +574,6 @@ const SPEECH_SENTENCE_PAUSE_MS = 40;
 const SPEECH_START_GRACE_MS = 3000;
 const SPEECH_PARAGRAPH_PAUSE_MS = 340;
 
-const SPEECH_RATE_DEFAULT = 0.95;
-const SPEECH_RATE_MIN = 0.7;
-const SPEECH_RATE_MAX = 1.5;
 const SPEECH_FALLBACK_LANG = 'en-GB';
 
 // v4 defaults to Jamie (Premium), while retaining an explicitly chosen voice from v3.
@@ -1198,6 +1218,8 @@ export default function App() {
   const speechArticleItemRef = React.useRef<DigestItem | null>(null);
   // Whether the engine actually started the current session (iOS refuses silently sometimes)
   const speechStartedRef = React.useRef(false);
+  // Set when the chosen neural voice failed, so the rest of the session keeps the device voice
+  const speechVoiceFallbackRef = React.useRef(false);
 
   // Hidden cards: each "Less like this" keeps the story in place as an inline Undo target
   const [mutedCards, setMutedCards] = useState<Record<string, DigestItem>>({});
@@ -1307,6 +1329,21 @@ export default function App() {
       : SPEECH_RATE_DEFAULT;
   });
 
+  // Three voices are offered: the device's own, a Piper voice downloaded once and kept on the
+  // device, and Gemini over the network. The device voice is always the floor, so a chosen
+  // engine that fails takes nothing away from the reading.
+  const [speechEngine, setSpeechEngine] = useState<SpeechEngine>(() => {
+    const saved = safeGetItem(SPEECH_ENGINE_STORAGE_KEY);
+    return saved === 'piper' || saved === 'gemini' ? saved : 'device';
+  });
+  const [piperVoiceId, setPiperVoiceId] = useState<string>(
+    () => safeGetItem(SPEECH_PIPER_VOICE_STORAGE_KEY) || PIPER_DEFAULT_VOICE_ID
+  );
+  const [geminiVoice, setGeminiVoice] = useState<string>(
+    () => safeGetItem(SPEECH_GEMINI_VOICE_STORAGE_KEY) || GEMINI_TTS_DEFAULT_VOICE
+  );
+  const [piperDownloadState, setPiperDownloadState] = useState<PiperDownloadState>({ status: 'idle', progress: 0 });
+
   useEffect(() => {
     safeSetItem(SPEECH_VOICE_STORAGE_KEY, speechVoiceUri);
   }, [speechVoiceUri]);
@@ -1314,6 +1351,38 @@ export default function App() {
   useEffect(() => {
     safeSetItem(SPEECH_RATE_STORAGE_KEY, String(speechRate));
   }, [speechRate]);
+
+  useEffect(() => {
+    safeSetItem(SPEECH_ENGINE_STORAGE_KEY, speechEngine);
+    safeSetItem(SPEECH_PIPER_VOICE_STORAGE_KEY, piperVoiceId);
+    safeSetItem(SPEECH_GEMINI_VOICE_STORAGE_KEY, geminiVoice);
+  }, [speechEngine, piperVoiceId, geminiVoice]);
+
+  // A downloaded voice lives in this origin's private storage, so whether it is there is asked
+  // of the browser rather than remembered here.
+  useEffect(() => {
+    if (speechEngine !== 'piper') return;
+    if (!piperSupported()) {
+      setPiperDownloadState({ status: 'unsupported', progress: 0, error: 'This browser cannot keep a downloaded voice.' });
+      return;
+    }
+
+    let cancelled = false;
+    setPiperDownloadState(previous => (previous.status === 'downloading' ? previous : { status: 'checking', progress: 0 }));
+    storedPiperVoices()
+      .then(stored => {
+        if (cancelled) return;
+        const ready = stored.includes(piperVoiceId);
+        setPiperDownloadState({ status: ready ? 'ready' : 'idle', progress: ready ? 1 : 0 });
+      })
+      .catch(() => {
+        if (!cancelled) setPiperDownloadState({ status: 'idle', progress: 0 });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [speechEngine, piperVoiceId]);
 
   // Safari fills the voice list lazily and does not always fire voiceschanged
   useEffect(() => {
@@ -1346,7 +1415,18 @@ export default function App() {
     [speechVoices, speechVoiceUri, automaticSpeechVoice]
   );
 
-  const speechVoiceLabel = activeSpeechVoice ? activeSpeechVoice.name : 'your device voice';
+  // What the listening bar, the tooltips and Settings name as the voice in use
+  const speechVoiceLabel = React.useMemo(() => {
+    if (speechEngine === 'piper') return `${findPiperVoice(piperVoiceId).label} (downloaded)`;
+    if (speechEngine === 'gemini') return `Gemini ${geminiVoice}`;
+    return activeSpeechVoice ? activeSpeechVoice.name : 'your device voice';
+  }, [speechEngine, piperVoiceId, geminiVoice, activeSpeechVoice]);
+
+  const piperVoiceChoice = findPiperVoice(piperVoiceId);
+  // A Gemini key typed for the digest serves the voice too; a server key does as well
+  const geminiSpeechConfigured = Boolean(
+    (aiProvider === 'gemini' && customApiKey.trim()) || serverGeminiAvailable
+  );
 
   // One entry per voice, English first, by name
   const speechVoiceOptions = React.useMemo(
@@ -2973,6 +3053,8 @@ export default function App() {
     speechArticleIdRef.current = null;
     speechArticleItemRef.current = null;
     speechUtteranceRef.current = null;
+    stopSpeechAudio();
+    speechVoiceFallbackRef.current = false;
     releaseWakeLock();
     setSpeechPlaying(false);
     setSpeechPaused(false);
@@ -3012,26 +3094,97 @@ export default function App() {
     showToast('Finished listening · Read through recorded');
   };
 
-  const speakSpeechChunk = () => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+  // Shared by both paths: move the queue on, keeping the longer beat between paragraphs and
+  // letting a pause inside that gap win over continuing.
+  const advanceSpeechQueue = (chunk: SpeechChunk, index: number, session: number) => {
+    speechIndexRef.current = index + 1;
+    const next = speechQueueRef.current[index + 1];
+    const endsParagraph = Boolean(next) && chunk.paragraphIndex >= 0 && next.paragraphIndex !== chunk.paragraphIndex;
 
+    speechGapTimerRef.current = setTimeout(() => {
+      speechGapTimerRef.current = null;
+      if (session !== speechSessionRef.current) return;
+      // Paused inside the gap: resume() picks the queue back up
+      if (speechStateRef.current !== 'playing') return;
+      speakSpeechChunk();
+    }, endsParagraph ? SPEECH_PARAGRAPH_PAUSE_MS : SPEECH_SENTENCE_PAUSE_MS);
+  };
+
+  // One neural sentence: Piper from the downloaded model, or Gemini through this app's server
+  const renderSpeechChunk = (text: string): Promise<Blob> => {
+    if (speechEngine === 'piper') return synthesizePiper(piperVoiceId, text);
+    return synthesizeGeminiSpeech({
+      text,
+      voice: geminiVoice,
+      apiKey: aiProvider === 'gemini' ? customApiKey : '',
+    });
+  };
+
+  const speechChunkKey = (text: string) =>
+    `${speechEngine}|${speechEngine === 'piper' ? piperVoiceId : geminiVoice}|${text}`;
+
+  // A neural voice that fails halfway must not silence the article: the rest of the reading
+  // continues in the device voice, from the sentence it had reached.
+  const handleNeuralSpeechFailure = (session: number, reason?: unknown) => {
+    if (session !== speechSessionRef.current) return;
+    stopSpeechAudio();
+    speechVoiceFallbackRef.current = true;
+    const detail = reason instanceof Error && reason.message ? ` (${reason.message})` : '';
+    const which = speechEngine === 'piper' ? 'The downloaded voice' : 'Gemini';
+    showToast(`${which} could not speak that passage${detail} — carrying on with ${speechVoiceLabel}.`);
+    speakDeviceChunk();
+  };
+
+  // Both engines start a sentence the same way: the queue position is the progress indicator
+  const beginSpeechChunk = () => {
     const queue = speechQueueRef.current;
     const index = speechIndexRef.current;
-    const session = speechSessionRef.current;
-
     if (index >= queue.length) {
       finishSpeech();
-      return;
+      return null;
     }
 
     const chunk = queue[index];
-    const utterance = new SpeechSynthesisUtterance(chunk.text);
-    configureSpeechUtterance(utterance);
-
     speechStateRef.current = 'playing';
     setSpeechPlaying(true);
     setSpeechPaused(false);
     setSpeechProgress({ index, total: queue.length, paragraph: chunk.paragraphIndex });
+    return { queue, chunk, index, session: speechSessionRef.current };
+  };
+
+  const speakNeuralChunk = () => {
+    const started = beginSpeechChunk();
+    if (!started) return;
+    const { queue, chunk, index, session } = started;
+
+    // The next sentence is generated while this one plays, which is what keeps the gap short
+    const nextText = queue[index + 1]?.text;
+    if (nextText) prefetchSpeechAudio(speechChunkKey(nextText), () => renderSpeechChunk(nextText));
+
+    const pendingAudio = takePrefetchedSpeechAudio(speechChunkKey(chunk.text)) || renderSpeechChunk(chunk.text);
+    pendingAudio
+      .then(blob => {
+        if (session !== speechSessionRef.current || speechStateRef.current === 'idle') return;
+        playSpeechAudio(blob, speechRate, {
+          onEnded: () => {
+            if (session !== speechSessionRef.current || speechStateRef.current === 'idle') return;
+            advanceSpeechQueue(chunk, index, session);
+          },
+          onError: error => handleNeuralSpeechFailure(session, error),
+        });
+      })
+      .catch(error => handleNeuralSpeechFailure(session, error));
+  };
+
+  const speakDeviceChunk = () => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+    const started = beginSpeechChunk();
+    if (!started) return;
+    const { chunk, index, session } = started;
+
+    const utterance = new SpeechSynthesisUtterance(chunk.text);
+    configureSpeechUtterance(utterance);
 
     utterance.onstart = () => {
       speechStartedRef.current = true;
@@ -3044,17 +3197,7 @@ export default function App() {
       if (speechStateRef.current === 'idle') return;
 
       speechUtteranceRef.current = null;
-      speechIndexRef.current = index + 1;
-      const next = queue[index + 1];
-      const endsParagraph = Boolean(next) && chunk.paragraphIndex >= 0 && next.paragraphIndex !== chunk.paragraphIndex;
-
-      speechGapTimerRef.current = setTimeout(() => {
-        speechGapTimerRef.current = null;
-        if (session !== speechSessionRef.current) return;
-        // Paused inside the gap: resume() picks the queue back up
-        if (speechStateRef.current !== 'playing') return;
-        speakSpeechChunk();
-      }, endsParagraph ? SPEECH_PARAGRAPH_PAUSE_MS : SPEECH_SENTENCE_PAUSE_MS);
+      advanceSpeechQueue(chunk, index, session);
     };
 
     utterance.onerror = (event) => {
@@ -3069,6 +3212,15 @@ export default function App() {
 
     speechUtteranceRef.current = utterance;
     window.speechSynthesis.speak(utterance);
+  };
+
+  // One entry point: the chosen engine, or the device voice when that engine has stepped aside
+  const speakSpeechChunk = () => {
+    if (speechEngine === 'device' || speechVoiceFallbackRef.current) {
+      speakDeviceChunk();
+      return;
+    }
+    speakNeuralChunk();
   };
 
   const startSpeech = (article: DigestItem, startIndex = 0) => {
@@ -3090,6 +3242,12 @@ export default function App() {
     speechArticleIdRef.current = article.id;
     speechArticleItemRef.current = article;
     speechStartedRef.current = false;
+    // Starting a reading must never quietly pull down a 60 MB voice mid-sentence
+    speechVoiceFallbackRef.current = speechEngine === 'piper' && piperDownloadState.status !== 'ready';
+    if (speechVoiceFallbackRef.current) {
+      showToast('Download that voice in Settings → Read aloud first — using your device voice meanwhile.');
+    }
+    if (speechEngine !== 'device' && !speechVoiceFallbackRef.current) primeSpeechAudio();
     setSpeechArticleId(article.id);
     setSpeechPanelOpen(true);
     setSpeechProgress({ index: first, total: queue.length, paragraph: queue[first].paragraphIndex });
@@ -3097,7 +3255,9 @@ export default function App() {
     // Still inside the tap: iOS only starts speaking from a user gesture
     speakSpeechChunk();
 
-    // If the engine never started, say so instead of leaving a bar that never moves
+    // Only the device engine can fail silently at the start: a neural sentence is still being
+    // generated at this point, so this watchdog would stop a perfectly good reading
+    if (speechEngine !== 'device' && !speechVoiceFallbackRef.current) return;
     const session = speechSessionRef.current;
     setTimeout(() => {
       if (speechSessionRef.current !== session) return;
@@ -3116,14 +3276,14 @@ export default function App() {
     speechStateRef.current = 'paused';
     setSpeechPaused(true);
     releaseWakeLock();
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    // A neural sentence pauses through its audio element; the device voice through its engine
+    if (!pauseSpeechAudio() && typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.pause();
     }
     showToast('Paused reading aloud');
   };
 
   const resumeSpeech = () => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     if (speechStateRef.current !== 'paused') return;
 
     speechStateRef.current = 'playing';
@@ -3131,6 +3291,10 @@ export default function App() {
     requestWakeLock();
     showToast('Resumed reading aloud');
 
+    // A sentence paused mid-flight is picked up where it stopped
+    if (resumeSpeechAudio(() => speakSpeechChunk())) return;
+
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     // pause() marks the engine paused even with nothing queued, so always clear it first
     if (window.speechSynthesis.paused) window.speechSynthesis.resume();
     // Paused in the breath between two sentences: nothing is loaded with the engine
@@ -3170,6 +3334,7 @@ export default function App() {
       speechGapTimerRef.current = null;
     }
     window.speechSynthesis.cancel();
+    stopSpeechAudio();
     speechIndexRef.current = at;
     requestWakeLock();
     speakSpeechChunk();
@@ -3177,15 +3342,59 @@ export default function App() {
 
   // Settings › Read aloud › Hear this voice
   const handlePreviewSpeech = () => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    const preview = 'Curator. Your morning reading, read aloud.';
+
+    if (speechEngine === 'device' && (typeof window === 'undefined' || !('speechSynthesis' in window))) {
       showToast('Speech audio is not supported in this browser.');
       return;
     }
+    if (speechEngine === 'piper' && piperDownloadState.status !== 'ready') {
+      showToast('Download that voice first — the device voice is the one you would hear now.');
+      return;
+    }
+
     stopSpeech();
-    const utterance = new SpeechSynthesisUtterance('Curator. Your morning reading, read aloud.');
-    configureSpeechUtterance(utterance);
-    window.speechSynthesis.speak(utterance);
+
+    if (speechEngine === 'device') {
+      const utterance = new SpeechSynthesisUtterance(preview);
+      configureSpeechUtterance(utterance);
+      window.speechSynthesis.speak(utterance);
+    } else {
+      primeSpeechAudio();
+      void renderSpeechChunk(preview)
+        .then(blob => playSpeechAudio(blob, speechRate, {
+          onEnded: () => {},
+          onError: () => showToast('That voice could not speak just now.'),
+        }))
+        .catch(error => showToast(error?.message || 'That voice could not speak just now.'));
+    }
+
     showToast(`Trying ${speechVoiceLabel} at ${speechRate.toFixed(2)}×`);
+  };
+
+  const handleDownloadPiperVoice = async () => {
+    setPiperDownloadState({ status: 'downloading', progress: 0 });
+    try {
+      await downloadPiperVoice(piperVoiceId, fraction => {
+        setPiperDownloadState({ status: 'downloading', progress: fraction });
+      });
+      setPiperDownloadState({ status: 'ready', progress: 1 });
+      showToast(`${piperVoiceChoice.label} is ready — reading aloud now works with no connection.`);
+    } catch (error: any) {
+      const message = error?.message || 'The download did not finish.';
+      setPiperDownloadState({ status: 'error', progress: 0, error: message });
+      showToast(message);
+    }
+  };
+
+  const handleRemovePiperVoice = async () => {
+    try {
+      await removePiperVoice(piperVoiceId);
+      setPiperDownloadState({ status: 'idle', progress: 0 });
+      showToast(`${piperVoiceChoice.label} was removed from this device.`);
+    } catch (error: any) {
+      showToast(error?.message || 'That voice could not be removed.');
+    }
   };
 
   // Leaving the article ends the session, so speech never reads a page the reader closed
@@ -6122,69 +6331,26 @@ Search for writers, publications, or topics. Curator checks whether each result 
             </details>
             )}
 
-            {/* Read aloud: the onboard voice and pace the reader speaks with */}
-            <SettingsSection
-              icon={<Volume2 className="w-4 h-4" />}
-              title="Read aloud"
-              meta={`${speechRate.toFixed(2)}×`}
-            >
-              <div>
-                <label className="block text-xs font-medium text-[#3f3a33] mb-1.5">Voice</label>
-                <select
-                  value={speechVoiceUri}
-                  onChange={e => setSpeechVoiceUri(e.target.value)}
-                  className="w-full bg-[#f6f1e7] border border-[#ddd2bc] rounded-xl px-3 py-2 text-xs text-[#3f3a33] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8a5a24]/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#f6f1e7] focus:border-[#8a5a24] cursor-pointer"
-                >
-                  <option value={SPEECH_VOICE_JAMIE_DEFAULT}>
-                    Jamie (Premium){jamiePremiumSpeechVoice?.lang ? ` · ${jamiePremiumSpeechVoice.lang}` : ''} — default
-                  </option>
-                  <option value={SPEECH_VOICE_AUTO}>
-                    {automaticSpeechVoice ? `Automatic — ${automaticSpeechVoice.name}` : 'Automatic — your device voice'}
-                  </option>
-                  {speechVoiceOptions
-                    .filter(voice => voice.voiceURI !== jamiePremiumSpeechVoice?.voiceURI)
-                    .map(voice => (
-                    <option key={voice.voiceURI} value={voice.voiceURI}>
-                      {voice.name} · {voice.lang}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-[#6f675c] mt-1">
-                  {speechVoiceOptions.length > 0
-                    ? `${speechVoiceOptions.length} ${speechVoiceOptions.length === 1 ? 'voice' : 'voices'} on this device`
-                    : 'Start Read aloud once to load this device’s voices.'}
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-[#3f3a33] mb-1.5 flex items-center justify-between">
-                  <span>Speed</span>
-                  <span className="text-[#1c1a17] tabular-nums">{speechRate.toFixed(2)}×</span>
-                </label>
-                <input
-                  type="range"
-                  min={SPEECH_RATE_MIN}
-                  max={SPEECH_RATE_MAX}
-                  step={0.05}
-                  value={speechRate}
-                  onChange={e => setSpeechRate(Number(e.target.value))}
-                  className="w-full accent-[#8a5a24]"
-                  aria-label="Read aloud speed"
-                />
-                <div className="flex justify-between text-xs text-[#6f675c]">
-                  <span>Slower</span>
-                  <span>Faster</span>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={handlePreviewSpeech}
-                className="px-4 py-2 text-xs font-medium rounded-xl bg-[#1c1a17]/10 border border-[#c9bc9f] text-[#1c1a17] hover:bg-[#1c1a17]/10 transition"
-              >
-                Hear this voice
-              </button>
-            </SettingsSection>
+            <ReadAloudSettings
+              engine={speechEngine}
+              onEngineChange={setSpeechEngine}
+              rate={speechRate}
+              onRateChange={setSpeechRate}
+              deviceVoiceUri={speechVoiceUri}
+              onDeviceVoiceChange={setSpeechVoiceUri}
+              deviceVoices={speechVoiceOptions}
+              automaticVoice={automaticSpeechVoice}
+              jamieVoice={jamiePremiumSpeechVoice}
+              piperVoiceId={piperVoiceId}
+              onPiperVoiceChange={setPiperVoiceId}
+              piperState={piperDownloadState}
+              onPiperDownload={handleDownloadPiperVoice}
+              onPiperRemove={handleRemovePiperVoice}
+              geminiVoice={geminiVoice}
+              onGeminiVoiceChange={setGeminiVoice}
+              geminiReady={geminiSpeechConfigured}
+              onPreview={handlePreviewSpeech}
+            />
 
             {/* Provider-configurable AI services */}
             <SettingsSection

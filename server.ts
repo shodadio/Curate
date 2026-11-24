@@ -1152,6 +1152,63 @@ async function startServer() {
     }
   });
 
+  // Read aloud with Gemini's speech models. Text arrives one sentence at a time, so a failed
+  // request costs a sentence rather than an article and the client can fall back to the device
+  // voice mid-reading. The reader's own key wins; the server's is used when it has one.
+  const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || 'gemini-3.8-flash-lite-tts';
+  const GEMINI_TTS_VOICES = new Set([
+    'Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Leda', 'Orus', 'Aoede', 'Callirrhoe', 'Autonoe',
+    'Enceladus', 'Iapetus', 'Umbriel', 'Algieba', 'Despina', 'Erinome', 'Algenib', 'Rasalgethi',
+    'Laomedeia', 'Achernar', 'Alnilam', 'Schedar', 'Gacrux', 'Pulcherrima', 'Achird',
+    'Zubenelgenubi', 'Vindemiatrix', 'Sadachbia', 'Sadaltager', 'Sulafat',
+  ]);
+
+  app.post('/api/tts', rateLimit('tts', 240), async (req, res) => {
+    const text = String(req.body?.text || '').replace(/\s+/g, ' ').trim().slice(0, 1200);
+    const voice = String(req.body?.voice || 'Kore').trim();
+    const clientKey = String(req.body?.apiKey || '').trim();
+
+    if (!text) return res.status(400).json({ ok: false, error: 'There was nothing to speak.' });
+    if (!GEMINI_TTS_VOICES.has(voice)) {
+      return res.status(400).json({ ok: false, error: 'That is not one of Gemini’s reading voices.' });
+    }
+
+    const gemini = clientKey
+      ? new GoogleGenAI({ apiKey: clientKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+      : ai;
+    if (!gemini) {
+      return res.status(400).json({ ok: false, error: 'Add a Gemini key in Settings, or set GEMINI_API_KEY on the server.' });
+    }
+
+    try {
+      const response = await gemini.models.generateContent({
+        model: GEMINI_TTS_MODEL,
+        contents: text,
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
+        } as any,
+      });
+      recordGeminiUsage(response);
+
+      const parts = response?.candidates?.[0]?.content?.parts || [];
+      const inline = parts.find((part: any) => part?.inlineData?.data)?.inlineData;
+      if (!inline?.data) throw new Error('Gemini answered without any audio.');
+
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({
+        ok: true,
+        mimeType: inline.mimeType || 'audio/wav',
+        audio: inline.data,
+      });
+    } catch (err: any) {
+      return res.status(502).json({
+        ok: false,
+        error: err?.message || 'Gemini could not speak that passage.',
+      });
+    }
+  });
+
   // OPML Parser endpoint
   app.post('/api/parse-opml', rateLimit('opml', 6), (req, res) => {
     try {

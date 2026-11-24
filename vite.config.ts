@@ -109,6 +109,43 @@ export default defineConfig(({ command }) => {
           enabled: true,
           type: 'module',
         },
+        workbox: {
+          // The speech worker is 640 KB of runtime almost nobody needs on first load, so it is
+          // fetched when a downloaded voice is chosen and cached from then on.
+          globIgnores: ['**/piper.worker-*.js'],
+          // The downloaded-voice runtime comes from two CDNs the speech library hard-codes.
+          // Keeping them in a cache is what makes the second reading work with no connection;
+          // the voice model itself is stored separately, by the library, once it is downloaded.
+          runtimeCaching: [
+            {
+              urlPattern: /\/assets\/piper\.worker-[^/]+\.js$/,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'speech-runtime',
+                expiration: { maxEntries: 4, maxAgeSeconds: 60 * 60 * 24 * 365 },
+                cacheableResponse: { statuses: [0, 200] },
+              },
+            },
+            {
+              urlPattern: /^https:\/\/cdnjs\.cloudflare\.com\/ajax\/libs\/onnxruntime-web\//,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'speech-runtime',
+                expiration: { maxEntries: 8, maxAgeSeconds: 60 * 60 * 24 * 365 },
+                cacheableResponse: { statuses: [0, 200] },
+              },
+            },
+            {
+              urlPattern: /^https:\/\/cdn\.jsdelivr\.net\/npm\/@diffusionstudio\/piper-wasm\//,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'speech-runtime',
+                expiration: { maxEntries: 8, maxAgeSeconds: 60 * 60 * 24 * 365 },
+                cacheableResponse: { statuses: [0, 200] },
+              },
+            },
+          ],
+        },
       }),
     ],
     resolve: {
