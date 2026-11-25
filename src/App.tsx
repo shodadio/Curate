@@ -1184,6 +1184,14 @@ export default function App() {
   // Starts true: the first digest request is queued by an effect right after mount, so the
   // view opens on the "synthesizing" state instead of flashing "no new items today".
   const [loadingDigest, setLoadingDigest] = useState<boolean>(true);
+  // True while the build on screen was asked for as a refresh, which re-reads every feed
+  // rather than rebuilding from the feeds already read. The Today folio names which of the
+  // two is running, so a spinning stamp is never the only word on it.
+  const [freshBuildRunning, setFreshBuildRunning] = useState<boolean>(false);
+  // The masthead scrolls away, its folio does not: once the wordmark has left the top of the
+  // screen the dateline pins itself under the safe area, and this is how that is noticed.
+  const [folioPinned, setFolioPinned] = useState<boolean>(false);
+  const todayHeaderRef = React.useRef<HTMLElement | null>(null);
   // A digest request can die on a cold container. Both are surfaced in the view, so a
   // stalled request never leaves "Synthesizing…" on screen forever.
   const [digestSlow, setDigestSlow] = useState<boolean>(false);
@@ -2147,6 +2155,9 @@ export default function App() {
     }
     const requestId = ++digestRequestRef.current;
     if (options?.fresh) freshRoundPendingRef.current = true;
+    // A build replaces the one it cancelled, so the folio's word follows the request that is
+    // actually running: fresh re-reads every feed, anything else only rebuilds the edition.
+    setFreshBuildRunning(Boolean(options?.fresh));
     // A retry must cancel the request it replaces, and a request that never answers has to
     // end in a retryable state rather than an endless "Synthesizing…".
     digestAbortRef.current?.abort();
@@ -2251,6 +2262,7 @@ export default function App() {
           }
         }
         setLoadingDigest(false);
+        setFreshBuildRunning(false);
         setDigestSlow(false);
       }
     }
@@ -4360,10 +4372,17 @@ export default function App() {
   const editionStatusLabel = digestCuratedAt <= 0
     ? loadingDigest ? 'Building today\u2019s edition' : 'No edition yet'
     : editionIsToday ? 'Today\u2019s edition' : 'Last edition';
+  // While a build runs the folio says which build it is, in place of the dateline. A refresh
+  // re-reads every feed; any other build only rebuilds the edition from the feeds already
+  // read. The first build of the day names itself, the way it always has.
+  const editionBuildLabel = digestCuratedAt <= 0
+    ? 'Building today\u2019s edition'
+    : freshBuildRunning ? 'Re-reading every feed' : 'Rebuilding the edition';
   // The dateline belongs to the edition, not to the moment it is read: an edition left open
   // overnight must not be dated this morning.
   const mastheadDateline = new Date(digestCuratedAt > 0 ? digestCuratedAt : Date.now())
-    .toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    .toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })
+    .toUpperCase();
   // The folio at the end lists the mornings this browser kept — never the edition being read,
   // which is the page itself.
   const earlierEditions = editions.filter(edition =>
@@ -4408,6 +4427,21 @@ export default function App() {
       window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
     }
   }, [loadingDigest, digest, activeTab]);
+  // The wordmark scrolls away like a printed masthead, the folio under its rules must not:
+  // the moment the page has carried the nameplate off the top of the screen, the dateline
+  // pins itself under the safe area, so Settings and a fresh build stay one tap away from
+  // anywhere in a long edition. Watching the masthead rather than the scroll offset means
+  // nothing runs on the scroll path, and no layout is read while the page is moving.
+  React.useEffect(() => {
+    const masthead = todayHeaderRef.current;
+    setFolioPinned(false);
+    if (activeTab !== 'today' || !masthead || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(entries => {
+      setFolioPinned(!(entries[0]?.isIntersecting ?? false));
+    });
+    observer.observe(masthead);
+    return () => observer.disconnect();
+  }, [activeTab]);
   // One row of doses, drawn the same in the Today edition sheet and in Settings: the word
   // carries the intent, the number the count, and the hint the time it will take.
   const renderDoseRow = (ariaLabel: string) => (
@@ -4435,8 +4469,8 @@ export default function App() {
     </div>
   );
 
-  // The dose is named once, in the masthead pill, so the dateline reports only what the
-  // edition actually holds — a short Deep edition reads "13 stories", not the setting.
+  // The dose is named once, in Settings' "Today's edition" panel, so the folio reports only
+  // what the edition actually holds — a short Deep edition reads "13 stories", not the setting.
   const currentDose = DIGEST_DOSES.find(dose => dose.count === itemCount) ?? DIGEST_DOSES[1];
   const editionCountLabel = todayDigest.length === 0
     ? 'No stories yet'
@@ -5135,141 +5169,129 @@ export default function App() {
         </div>
       )}
 
-      {/* Today opens like a printed front page rather than an app: a masthead with the name set
-          as a logotype, a dateline, the count and minutes on one line, and
-          the editor's line. Refresh and Settings are icons, Edition a word on its baseline. */}
+      {/* Today opens like a printed front page: the nameplate takes the page to itself, then
+          a double rule, then a folio that dates the edition and holds the two things you can
+          do to it as one pair of stamps. Only the folio stays on screen — the wordmark
+          scrolls away like a masthead, and the dateline pins itself once it has gone. */}
       {activeTab === 'today' ? (
-        <header inert={backgroundInert} className="w-full">
-          <div className="mx-auto w-full max-w-3xl px-4 pb-3 pt-[max(1rem,env(safe-area-inset-top))] sm:px-6 sm:pt-[max(1.25rem,env(safe-area-inset-top))]">
-            <div className="flex items-start justify-between gap-3">
-              <h1 className="flex min-w-0 items-center gap-2.5 text-[clamp(2.1rem,8.5vw,2.8rem)] leading-none">
-                <CuratorMark className="h-[1.1em] w-[1.1em] shrink-0" />
-                <span className="flex items-baseline gap-[0.14em]">
-                  <span className="text-[0.42em] font-semibold uppercase leading-none tracking-[0.36em] text-[#8a5a24]">The</span>
-                  <span className="font-semibold uppercase leading-none tracking-[0.015em] text-[#1c1a17]">Curator</span>
-                </span>
+        <>
+          <header ref={todayHeaderRef} inert={backgroundInert} className="w-full">
+            <div className="mx-auto w-full max-w-3xl px-4 pb-1 pt-[max(0.5rem,env(safe-area-inset-top))] sm:px-6 sm:pt-[max(0.75rem,env(safe-area-inset-top))]">
+              <h1 className="flex items-baseline justify-center gap-[0.12em] whitespace-nowrap font-serif text-[clamp(1.55rem,7vw,2.25rem)] leading-none">
+                <span className="text-[0.42em] font-semibold uppercase tracking-[0.24em] text-[#8a5a24]">The</span>
+                <span className="font-semibold uppercase tracking-[0.015em] text-[#1c1a17]">Curator</span>
               </h1>
-            </div>
 
-            {/* The masthead rule: heavy over hairline, the way a front page divides its name
-                from its dateline. */}
-            <div aria-hidden="true" className="mt-3 flex flex-col gap-[3px]">
-              <span className="h-[2px] w-full bg-[#1c1a17]/50" />
-              <span className="h-px w-full bg-[#1c1a17]/20" />
+              {/* The paired rules keep the newspaper feel without adding another header row. */}
+              <div aria-hidden="true" className="mt-1.5 flex flex-col gap-[3px]">
+                <span className="h-[2px] w-full bg-[#1c1a17]/50" />
+                <span className="h-px w-full bg-[#1c1a17]/20" />
+              </div>
             </div>
+          </header>
 
-            <div className="mt-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-              <p className="text-[10px] font-medium uppercase leading-none tracking-[0.24em] text-[#6f675c]">
-                {editionStatusLabel}{digestCuratedAt > 0 ? ` · ${mastheadDateline}` : ''}
-              </p>
-              <p className="text-[11px] leading-none tabular-nums text-[#6f675c]">
-                {editionCountLabel}
-                {editionMinutes > 0 ? ` · ${editionMinutes} min` : ''}
-                {mutedDigestItems.length > 0 ? ` · ${mutedDigestItems.length} hidden` : ''}
-              </p>
-            </div>
-
-            {/* Three columns so the tagline sits on the page's centre line, not the space left
-                over beside the controls. On a phone it stacks and both lines centre. */}
-            <div className="mt-2.5 flex flex-col items-center gap-1 border-b border-[#ddd2bc] pb-1.5 sm:grid sm:grid-cols-[1fr_auto_1fr] sm:items-center sm:gap-3">
-              <span aria-hidden="true" className="hidden sm:block" />
-              <p className="min-w-0 text-center text-[11px] italic leading-snug text-[#6f675c]">
-                Your feeds, minus the noise.
-              </p>
-              <nav aria-label="Masthead" className="flex shrink-0 items-center gap-2.5 sm:justify-self-end">
-                <button
-                  type="button"
-                  onClick={() => generateDigest({ fresh: true })}
-                  disabled={loadingDigest}
-                  aria-label={loadingDigest ? 'Refreshing the edition' : 'Refresh the edition'}
-                  title={loadingDigest ? 'Refreshing the edition' : 'Refresh the edition'}
-                  className="-mx-2.5 inline-flex min-h-9 min-w-9 items-center justify-center text-[#3f3a33] transition hover:text-[#1c1a17] disabled:opacity-50"
-                >
-                  <RefreshCw aria-hidden="true" className={`h-4 w-4 ${loadingDigest ? 'animate-spin' : ''}`} />
-                </button>
-                <span aria-hidden="true" className="text-[10px] text-[#b9ad97]">·</span>
-                <button
-                  type="button"
-                  onClick={() => setShowDigestSettings(true)}
-                  aria-haspopup="dialog"
-                  aria-expanded={showDigestSettings}
-                  aria-label={`Edition settings — ${currentDose.label}, ${itemCount} stories per edition`}
-                  className="inline-flex min-h-9 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#3f3a33] transition hover:text-[#1c1a17]"
-                >
-                  Edition
-                  <span className="text-[#8a5a24]">{currentDose.label}</span>
-                </button>
-                <span aria-hidden="true" className="text-[10px] text-[#b9ad97]">·</span>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('settings')}
-                  aria-label="Settings"
-                  title="Settings"
-                  className="-mx-2.5 inline-flex min-h-9 min-w-9 items-center justify-center text-[#3f3a33] transition hover:text-[#1c1a17]"
-                >
-                  <Sliders aria-hidden="true" className="h-4 w-4" />
-                </button>
-              </nav>
-            </div>
-          </div>
-        </header>
-      ) : (
-        <header inert={backgroundInert} className="sticky top-0 z-40 w-full safe-header bg-[#f6f1e7]/95 backdrop-blur-md border-b border-[#ddd2bc] px-4 sm:px-6 pb-3 shrink-0">
-        <div className="mx-auto w-full max-w-3xl">
-          <div className="flex items-start justify-between gap-3">
-            <button
-              type="button"
-              onClick={() => setActiveTab('today')}
-              className="flex min-w-0 items-center gap-2 text-left leading-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8a5a24]/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#f6f1e7]"
-              title="The Curator — Home"
+          {/* The folio is the one part of the masthead that pins, so the edition can be
+              rebuilt and Settings opened from anywhere in the page rather than only at its
+              top. The paper comes up behind it as the stories pass under. */}
+          <div
+            inert={backgroundInert}
+            className={`sticky top-0 z-30 w-full border-b transition-colors ${
+              folioPinned ? 'border-[#1c1a17]/20 bg-[#f6f1e7]' : 'border-transparent'
+            }`}
+          >
+            <div
+              className={`mx-auto w-full max-w-3xl px-4 sm:px-6 ${
+                folioPinned ? 'pb-1 pt-[max(0.25rem,env(safe-area-inset-top))]' : 'pb-2 pt-1.5'
+              }`}
             >
-              <CuratorMark className="h-9 w-9 shrink-0" />
-              <span className="flex items-baseline gap-[0.14em] text-[clamp(1.35rem,5.5vw,1.6rem)]">
-                <span className="text-[0.42em] font-semibold uppercase leading-none tracking-[0.36em] text-[#8a5a24]">The</span>
-                <span className="font-semibold uppercase leading-none tracking-[0.015em] text-[#1c1a17]">Curator</span>
-              </span>
-            </button>
-            <p className="shrink-0 pt-1 text-[10px] font-medium uppercase leading-none tabular-nums tracking-[0.28em] text-[#6f675c]">
-              {activeTab === 'feeds' ? 'Stream' : activeTab === 'saved' ? 'Saved' : activeTab === 'sources' ? 'Sources' : 'Settings'}
-            </p>
-          </div>
+              <div className="flex items-center justify-between gap-2">
+                {loadingDigest ? (
+                  // A build in progress says which one it is instead of leaving the stamp to
+                  // spin on its own: only a refresh re-reads every feed.
+                  <p role="status" className="min-w-0 truncate text-[9px] font-semibold uppercase leading-none tracking-[0.12em] text-[#1c1a17]">
+                    {editionBuildLabel}
+                  </p>
+                ) : (
+                  <div className="flex min-w-0 items-baseline gap-2">
+                    <p className="min-w-0 truncate text-[9px] font-medium uppercase leading-none tracking-[0.12em] text-[#6f675c]">
+                      {digestCuratedAt > 0 ? mastheadDateline : editionStatusLabel}
+                    </p>
+                    <p className="shrink-0 whitespace-nowrap text-[10px] leading-none tabular-nums text-[#6f675c]">
+                      {editionCountLabel}
+                      {/* A 320px phone gives the date its room back before the two stamps
+                          are squeezed: the minutes are the first thing to go. */}
+                      {editionMinutes > 0 && (
+                        <span className="max-[359px]:hidden">{` · ${editionMinutes} min`}</span>
+                      )}
+                    </p>
+                  </div>
+                )}
 
-          <div aria-hidden="true" className="mt-2.5 flex flex-col gap-[3px]">
-            <span className="h-[2px] w-full bg-[#1c1a17]/50" />
-            <span className="h-px w-full bg-[#1c1a17]/20" />
+                <div role="group" aria-label="Edition controls" className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => generateDigest({ fresh: true })}
+                    disabled={loadingDigest}
+                    aria-label={loadingDigest ? 'Refreshing the edition' : 'Refresh the edition'}
+                    title={loadingDigest ? 'Refreshing the edition' : 'Refresh the edition'}
+                    className="masthead-control"
+                  >
+                    <span className="masthead-stamp">
+                      <RefreshCw aria-hidden="true" className={`h-4 w-4 ${loadingDigest ? 'animate-spin' : ''}`} />
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('settings')}
+                    aria-label="Settings"
+                    title="Settings"
+                    className="masthead-control"
+                  >
+                    <span className="masthead-stamp">
+                      <Sliders aria-hidden="true" className="h-4 w-4" />
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
-
-          <div className="mt-2 flex items-center justify-between gap-x-3 gap-y-1">
-            <p className="min-w-0 text-[10px] font-medium uppercase leading-tight tracking-[0.24em] text-[#6f675c]">
-              {activeTab === 'feeds'
-                ? 'Chronological reading stream'
-                : activeTab === 'saved'
-                  ? 'Your re-reading queue'
-                  : activeTab === 'sources'
-                    ? 'Watched subscriptions'
-                    : 'Preferences & library'}
-            </p>
-            <nav aria-label="Masthead" className="flex shrink-0 items-center gap-2.5">
+        </>
+      ) : (
+        <header inert={backgroundInert} className="sticky top-0 z-40 w-full safe-header bg-[#f6f1e7]/95 backdrop-blur-md px-4 sm:px-6 pb-2 shrink-0">
+          <div className="mx-auto w-full max-w-3xl">
+            <nav aria-label="Masthead" className="grid grid-cols-[minmax(2.75rem,1fr)_auto_minmax(2.75rem,1fr)] items-center">
               <button
                 type="button"
                 onClick={() => setActiveTab('today')}
-                className="inline-flex min-h-9 items-center text-[10px] font-semibold uppercase tracking-[0.18em] text-[#3f3a33] transition hover:text-[#1c1a17]"
+                className="inline-flex min-h-11 min-w-11 items-center justify-start gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#3f3a33] transition hover:text-[#1c1a17]"
+                title="Return to Today"
               >
-                Today
+                <Home aria-hidden="true" className="h-4 w-4" />
+                <span>Today</span>
               </button>
+              <h1 className="flex items-baseline justify-center gap-[0.12em] whitespace-nowrap font-serif text-[clamp(1.55rem,7vw,2.25rem)] leading-none">
+                <span className="text-[0.42em] font-semibold uppercase tracking-[0.24em] text-[#8a5a24]">The</span>
+                <span className="font-semibold uppercase tracking-[0.015em] text-[#1c1a17]">Curator</span>
+              </h1>
               <button
                 type="button"
-                onClick={() => setActiveTab(prev => prev === 'settings' ? 'today' : 'settings')}
+                onClick={() => setActiveTab('settings')}
                 aria-pressed={activeTab === 'settings'}
                 aria-label="Settings"
                 title="Settings"
-                className={`-mx-2.5 inline-flex min-h-9 min-w-9 items-center justify-center transition hover:text-[#1c1a17] ${activeTab === 'settings' ? 'text-[#1c1a17]' : 'text-[#3f3a33]'}`}
+                className="masthead-control justify-self-end"
               >
-                <Sliders aria-hidden="true" className="h-4 w-4" />
+                <span className="masthead-stamp">
+                  <Sliders aria-hidden="true" className="h-4 w-4" />
+                </span>
               </button>
             </nav>
+
+            <div aria-hidden="true" className="mt-1.5 flex flex-col gap-[3px]">
+              <span className="h-[2px] w-full bg-[#1c1a17]/50" />
+              <span className="h-px w-full bg-[#1c1a17]/20" />
+            </div>
           </div>
-        </div>
         </header>
       )}
 
@@ -5345,7 +5367,7 @@ export default function App() {
             {/* One feed is a real digest, but a thin one. Say so instead of waiting for the
                 reader to notice the carousel has a single circle. */}
             {sources.length === 1 && (
-              <div className="border-t border-[#c9bc9f] pt-4">
+              <div className="paper-rule pt-4">
                 <div className="flex items-start gap-3">
                   <Rss className="w-5 h-5 text-[#1c1a17] shrink-0 mt-0.5" />
                   <div className="min-w-0">
@@ -5718,7 +5740,10 @@ export default function App() {
                     publication and time. No images, no boxes, no second column of buttons. */}
                 {(indexStories.length > 0 || setAsideStories.length > 0) && (
                   <section aria-labelledby="also-in-edition">
-                    <div aria-hidden="true" className="h-[2px] w-full bg-[#1c1a17]/30" />
+                    <div aria-hidden="true" className="flex flex-col gap-[3px]">
+                      <span className="h-[2px] w-full bg-[#1c1a17]/50" />
+                      <span className="h-px w-full bg-[#1c1a17]/20" />
+                    </div>
                     <h3 id="also-in-edition" className="mt-2 text-[10px] font-semibold uppercase tracking-[0.3em] text-[#6f675c]">
                       Also in this edition
                     </h3>
@@ -5959,13 +5984,13 @@ export default function App() {
             )}
 
             {savedDigestItems.length === 0 ? (
-              <div className="space-y-2 border-t border-[#ddd2bc] py-16 text-center">
+              <div className="space-y-2 paper-rule py-16 text-center">
                 <Bookmark className="w-8 h-8 mx-auto text-[#b9ad97] mb-2" />
                 <p className="font-serif text-lg font-semibold text-[#1c1a17]">No saved stories yet</p>
                 <p className="text-xs leading-relaxed text-[#6f675c]">Tap the bookmark icon on any digest item to save it here.</p>
               </div>
             ) : savedVisibleItems.length === 0 ? (
-              <div className="space-y-2 border-t border-[#ddd2bc] py-14 text-center">
+              <div className="space-y-2 paper-rule py-14 text-center">
                 <Search className="w-7 h-7 mx-auto text-[#b9ad97] mb-1" />
                 <p className="font-serif text-lg font-semibold text-[#1c1a17]">No saved stories match “{savedQuery.trim()}”.</p>
                 <button
@@ -6027,7 +6052,7 @@ export default function App() {
             {/* Failures get their own list: a feed that stopped answering is not a source to
                 browse, and its error would otherwise sit buried inside a folder of working ones. */}
             {failedSources.length > 0 && (
-              <section className="space-y-3 border-t border-[#c9bc9f] pt-4 w-full max-w-full">
+              <section className="w-full max-w-full space-y-3 paper-rule pt-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h3 className="text-sm font-semibold text-[#1c1a17] flex items-center gap-2">
@@ -6150,7 +6175,7 @@ export default function App() {
             )}
 
             {/* Google Search & RSS Investigation Tool */}
-            <section className="space-y-4 border-t border-[#ddd2bc] pt-5">
+            <section className="space-y-4 paper-rule pt-5">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-semibold text-[#3f3a33] flex items-center gap-2">
@@ -6633,7 +6658,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
         {/* TAB 4: SETTINGS */}
         {activeTab === 'settings' && (
-          <div className="no-sideways flex flex-col gap-4 animate-fade-in">
+          <div className="no-sideways paper-panels flex flex-col gap-4 animate-fade-in">
             <div className="flex items-start justify-between gap-3 border-b border-[#ddd2bc] pb-4">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#6f675c]">Your reading space</p>
@@ -6649,6 +6674,25 @@ Search for writers, publications, or topics. Curator checks whether each result 
               </button>
             </div>
 
+
+            <SettingsSection
+              icon={<Sliders className="w-4 h-4" />}
+              title="Today’s edition"
+              meta={`${currentDose.label} · ${itemCount} stories`}
+            >
+              <p className="text-xs leading-relaxed text-[#6f675c]">
+                Choose the size and focus of the edition Curator builds for you.
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowDigestSettings(true)}
+                aria-haspopup="dialog"
+                aria-expanded={showDigestSettings}
+                className="inline-flex min-h-11 items-center rounded-xl border border-[#c9bc9f] px-3.5 text-xs font-semibold text-[#3f3a33] transition hover:border-[#1c1a17] hover:text-[#1c1a17]"
+              >
+                Edit edition preferences
+              </button>
+            </SettingsSection>
 
             {/* Weekly Reading Activity Summary in Settings */}
             <SettingsSection
@@ -6686,7 +6730,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
             {/* Server-side request tally: plumbing, and only shown with the debug flag on */}
             {showDiagnostics && (
-            <details className="group p-5 rounded-3xl border border-[#d3c7ae] bg-[#ece4d1] space-y-4 open:border-[#a39a8c] open:bg-[#ece4d1]">
+            <details className="group space-y-4 border border-[#d3c7ae] bg-[#efe8d6] p-5 open:border-[#b9ad97]">
               <summary className="flex items-start justify-between gap-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
                 <div>
                   <h3 className="text-sm font-semibold text-[#3f3a33] flex items-center gap-2">
@@ -6747,7 +6791,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
             </details>
             )}
 
-            <details id="advanced-configuration" className="order-10 group rounded-3xl border border-[#c9bc9f] bg-[#efe8d6]">
+            <details id="advanced-configuration" className="order-10 group border border-[#d3c7ae] bg-[#efe8d6] open:border-[#b9ad97]">
               <summary className="flex cursor-pointer list-none items-center gap-2.5 px-5 py-4 [&::-webkit-details-marker]:hidden">
                 <Sparkles className="h-4 w-4 shrink-0 text-[#1c1a17]" />
                 <span className="font-serif text-[1.05rem] font-semibold text-[#1c1a17]">Advanced configuration</span>
@@ -7209,7 +7253,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
               />
             </SettingsSection>
 
-            <details className="order-last group rounded-3xl border border-[#c9bc9f] bg-[#efe8d6]">
+            <details className="order-last group border border-[#d3c7ae] bg-[#efe8d6] open:border-[#b9ad97]">
               <summary className="flex cursor-pointer list-none items-center gap-2.5 px-5 py-4 [&::-webkit-details-marker]:hidden">
                 <HardDrive className="h-4 w-4 shrink-0 text-[#1c1a17]" />
                 <span className="font-serif text-[1.05rem] font-semibold text-[#1c1a17]">Library &amp; app controls</span>
@@ -7265,7 +7309,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
               )}
 
               {/* What the browser is holding, and the largest part of it that can be dropped. */}
-              <div className="mt-5 border-t border-[#ddd2bc] pt-4 space-y-3">
+              <div className="mt-5 space-y-3 paper-rule pt-4">
                 <h4 className="text-xs font-semibold uppercase tracking-wide text-[#6f675c]">Storage</h4>
                 {storageReport && storageReport.entries.length > 0 ? (
                   <ul className="space-y-1">

@@ -10,12 +10,14 @@ interface SettingsSectionProps {
   children: ReactNode;
 }
 
-// One collapsible Settings card: the title is always visible, the detail is one click away.
+// One collapsible Settings section: the title is always visible, the detail is one click away.
+// It is a ruled block on the page rather than a card floating above it — a printed corner, a
+// single hairline around it, and the same warm stock the masthead sits on.
 export function SettingsSection({ id, icon, title, meta, children }: SettingsSectionProps) {
   return (
     <details
       id={id}
-      className="group rounded-3xl border border-[#c9bc9f] bg-[#efe8d6] scroll-mt-6 open:border-[#1c1a17]/40 open:bg-[#ece4d1]"
+      className="group scroll-mt-6 border border-[#d3c7ae] bg-[#efe8d6] open:border-[#b9ad97] open:bg-[#ece4d1]"
     >
       <summary className="flex cursor-pointer list-none items-center gap-2.5 px-5 py-4 [&::-webkit-details-marker]:hidden">
         <span className="shrink-0 text-[#1c1a17]">{icon}</span>

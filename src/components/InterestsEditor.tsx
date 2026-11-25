@@ -135,7 +135,11 @@ export function InterestsEditor({ value, suggestions, onChange }: InterestsEdito
         onChange={onChange}
       />
 
-      <div className="border-t border-[#ddd2bc]" />
+      {/* The same paired rule the masthead uses: one list ends where the next begins. */}
+      <div aria-hidden="true" className="flex flex-col gap-[3px]">
+        <span className="h-[2px] w-full bg-[#1c1a17]/50" />
+        <span className="h-px w-full bg-[#1c1a17]/20" />
+      </div>
 
       <InterestRow
         group="less"

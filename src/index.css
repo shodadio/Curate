@@ -127,6 +127,100 @@ body {
   padding-bottom: calc(10rem + env(safe-area-inset-bottom));
 }
 
+/* ---- The paper's rules ---------------------------------------------------
+   The masthead divides its name from its dateline with two rules: a heavier line with a
+   hairline under it. Every section across the paper carries the same pair, so a reader moving
+   from Today to Saved to Sources to Settings sees one rule doing the same job each time,
+   rather than a hairline in one place and a plain border in another.
+
+   `paper-rule` paints the pair on a block's top edge, in place of a `border-t`, and leaves
+   the block's own padding alone — a section keeps its `pt-4` or `pt-5` exactly as it was.
+   A standalone divider draws the same pair with two spans, the way the masthead does. */
+.paper-rule {
+  position: relative;
+  border-top: 2px solid rgba(28, 26, 23, 0.5);
+}
+
+.paper-rule::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background-color: rgba(28, 26, 23, 0.2);
+  pointer-events: none;
+}
+
+/* Settings keeps the paper's shape as well as its colour: panels, alerts and controls inside
+   it take a printed corner of two pixels in place of a card's twelve, so the page runs from
+   the masthead down without a single rounded surface. Pills, dots and avatars stay round —
+   they are marks, not surfaces.
+
+   Scoped in one place rather than restated on each of the many panels the page holds, so a
+   panel added later is squared too and none is left as the odd card out. */
+.paper-panels :where(.rounded-lg, .rounded-xl, .rounded-2xl, .rounded-3xl) {
+  border-radius: 2px;
+}
+
+/* ---- The masthead's controls ---------------------------------------------
+   Refresh and Settings are the two things the masthead can do, so they are drawn
+   the same on every screen and placed as one pair, instead of one floating at each
+   end of the wordmark. Each is a printed stamp: a hairline the colour of the rules
+   framing it, squared to two pixels like every panel on the paper. The stamp is
+   36px of ink inside a full 44px touch area, so the control is a box on the page
+   rather than a bare glyph in the margin. */
+.masthead-control {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  color: #3f3a33;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 140ms ease;
+}
+
+.masthead-stamp {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid rgba(28, 26, 23, 0.28);
+  border-radius: 2px;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.masthead-control:hover {
+  color: #1c1a17;
+}
+
+.masthead-control:hover .masthead-stamp {
+  border-color: rgba(28, 26, 23, 0.6);
+  background-color: rgba(28, 26, 23, 0.05);
+}
+
+/* Under the finger, and on the page the control stands for (Settings is marked
+   aria-pressed while its own page is open): the stamp fills a little, so the
+   mark carries the state instead of the glyph alone. */
+.masthead-control:active .masthead-stamp,
+.masthead-control[aria-pressed="true"] .masthead-stamp {
+  border-color: rgba(28, 26, 23, 0.6);
+  background-color: rgba(28, 26, 23, 0.08);
+}
+
+.masthead-control:disabled {
+  opacity: 0.45;
+}
+
+.masthead-control:focus-visible {
+  outline: 2px solid #8a5a24;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 /* ---- Reader appearance ---------------------------------------------------
    The reader is the one screen read for minutes at a time, so it carries its own
    colours: three low-glare themes, a humanist serif body by default, and a size the
