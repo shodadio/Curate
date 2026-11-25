@@ -274,27 +274,28 @@ const hasCuratorNote = (why?: string): boolean => {
   return Boolean(note) && !SUBSCRIPTION_ONLY_NOTE.test(note);
 };
 
-// A home-screen app carries no browser chrome to come back with, so a plain link can take the
-// reader off Curator and leave them with no way home. Asking for a new window hands the page to
-// the browser (or to an in-app sheet with its own Done control) and leaves Curator in place.
-function openExternal(url?: string) {
-  if (!url || url === '#') return;
-  // `noopener` in the feature string makes open() return null, which is indistinguishable
-  // from a blocked window — so the window is opened normally and its opener cut afterwards.
-  const opened = window.open(url, '_blank');
-  if (opened) {
-    try { opened.opener = null; } catch { /* cross-origin: already severed */ }
-    return;
+// Curator has no browser chrome of its own, so external links always open in a separate
+// browsing context. If the browser blocks that window, keep the reader here and explain why.
+function openExternal(url?: string): boolean {
+  if (!url || url === '#') return false;
+  try {
+    const opened = window.open(url, '_blank');
+    if (opened) {
+      try { opened.opener = null; } catch { /* cross-origin: already severed */ }
+      return true;
+    }
+  } catch {
+    // A browser policy can reject the new context; never replace Curator with the destination.
   }
-  // Only a genuinely blocked window falls back to leaving Curator in place.
-  window.location.assign(url);
+  window.setTimeout(() => window.dispatchEvent(new Event('curator:external-link-blocked')), 0);
+  return false;
 }
 
 // Modified clicks (a new tab, a new window, a download) keep the browser's own behaviour.
-function handleExternalClick(event: React.MouseEvent<HTMLAnchorElement>, url?: string) {
-  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+function handleExternalClick(event: React.MouseEvent<HTMLAnchorElement>, url?: string): boolean {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
   event.preventDefault();
-  openExternal(url);
+  return openExternal(url);
 }
 
 // Duplicate detection compares feeds by address, not by the name a reader gave them.
@@ -525,7 +526,10 @@ function renderParagraphText(paragraph: string) {
         href={token.href}
         target="_blank"
         rel="noopener noreferrer"
-        onClick={event => event.stopPropagation()}
+        onClick={event => {
+          event.stopPropagation();
+          handleExternalClick(event, token.href);
+        }}
         className="reader-inline-link break-words"
         title={`Open ${token.href}`}
       >{token.text}</a>
@@ -590,6 +594,7 @@ const SPEECH_PREFETCH_AHEAD = 2;
 // before telling the reader the device never spoke.
 const SPEECH_START_GRACE_MS = 3000;
 const SPEECH_PARAGRAPH_PAUSE_MS = 340;
+const SPEECH_NEURAL_PARAGRAPH_PAUSE_MS = 170;
 
 const SPEECH_FALLBACK_LANG = 'en-GB';
 
@@ -701,6 +706,10 @@ export default function App() {
   const [sourceVisibleCount, setSourceVisibleCount] = useState<number>(LIST_PAGE_SIZE);
   const [selectedArticle, setSelectedArticle] = useState<DigestItem | null>(null);
   const [selectedFeedSource, setSelectedFeedSource] = useState<string | null>(null);
+  // Feed routes remember where they came from. An article opened from a publisher's feed takes
+  // priority over the older Sources route, which stays available after returning to that article.
+  const [feedReturnToSources, setFeedReturnToSources] = useState(false);
+  const [feedArticleReturn, setFeedArticleReturn] = useState<DigestItem | null>(null);
   const [feedStreamArticles, setFeedStreamArticles] = useState<DigestItem[]>([]);
   const [loadingFeedStream, setLoadingFeedStream] = useState<boolean>(false);
   // Server-side request tally, read whenever the Settings tab opens
@@ -883,6 +892,9 @@ export default function App() {
     return [];
   });
   const [showWeeklyReviewModal, setShowWeeklyReviewModal] = useState<boolean>(false);
+  const overlayHistoryStackRef = React.useRef<string[]>([]);
+  const suppressOverlayPopRef = React.useRef(false);
+  const pendingWeeklyArticleRef = React.useRef<DigestItem | null>(null);
 
   useEffect(() => {
     safeSetJson('curator_weekly_history', weeklyHistory);
@@ -1265,9 +1277,18 @@ export default function App() {
     setNewSourceValidating(false);
   };
 
+  const openAddSourceModal = () => {
+    window.history.pushState({ ...(window.history.state || {}), curatorAddSource: true }, '');
+    addSourceHistoryRef.current = true;
+    setShowAddSourceModal(true);
+  };
+
   const closeAddSourceModal = () => {
     clearAddSourceForm();
     setShowAddSourceModal(false);
+    const ownsHistoryEntry = addSourceHistoryRef.current;
+    addSourceHistoryRef.current = false;
+    if (ownsHistoryEntry && window.history.state?.curatorAddSource) window.history.back();
   };
 
   // OPML Import state
@@ -1287,6 +1308,7 @@ export default function App() {
     failures?: Array<{ title: string; reason: string }>;
   } | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const addSourceHistoryRef = React.useRef(false);
   const addSourceOverlayRef = React.useRef<HTMLDivElement | null>(null);
   const importOverlayRef = React.useRef<HTMLDivElement | null>(null);
   const wizardOverlayRef = React.useRef<HTMLDivElement | null>(null);
@@ -1710,7 +1732,13 @@ export default function App() {
       setShowSetupWizard(false);
       window.setTimeout(() => {
         if (isCurrentCheck()) {
-          document.getElementById('provider-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          const advanced = document.getElementById('advanced-configuration') as HTMLDetailsElement | null;
+          const provider = document.getElementById('provider-settings') as HTMLDetailsElement | null;
+          if (advanced) advanced.open = true;
+          if (provider) {
+            provider.open = true;
+            provider.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
         }
       }, 150);
     };
@@ -2007,8 +2035,9 @@ export default function App() {
     }
   };
 
-  const handleOpenFeedStream = (sourceTitle: string, sourceId?: string) => {
+  const handleOpenFeedStream = (sourceTitle: string, sourceId?: string, returnTo?: 'sources') => {
     // The tab/source effect performs the fetch; calling it here too caused a duplicate request
+    if (returnTo === 'sources') setFeedReturnToSources(true);
     setSelectedFeedSource(sourceTitle);
     setActiveTab('feeds');
 
@@ -2196,6 +2225,9 @@ export default function App() {
           applyFeedReport(outcome.feedReport);
         }
         safeSetJson('curator_digest_history', shownHistoryAfter(shownHistory, outcome.items, Date.now()));
+        if (options?.fresh) {
+          showToast(`Edition refreshed · ${outcome.items.length} ${outcome.items.length === 1 ? 'story' : 'stories'}`);
+        }
       }
     } catch {
       if (requestId !== digestRequestRef.current) return;
@@ -2247,6 +2279,14 @@ export default function App() {
       setActiveToast(prev => (prev?.id === item.id ? null : prev));
     }, onAction ? UNDO_WINDOW_MS : NOTICE_MS);
   };
+
+  useEffect(() => {
+    const onExternalLinkBlocked = () => {
+      showToast('Your browser blocked that link in a new window. Curator stayed open; allow pop-ups to continue.');
+    };
+    window.addEventListener('curator:external-link-blocked', onExternalLinkBlocked);
+    return () => window.removeEventListener('curator:external-link-blocked', onExternalLinkBlocked);
+  }, [showToast]);
 
   const recordSemanticFeedback = (item: DigestItem, vote: 'like' | 'dislike') => {
     // The title travels as its own field, so the excerpt is the body only; the engine joins them.
@@ -2528,7 +2568,7 @@ export default function App() {
     setNewSourceUrl('');
     setNewSourceTitleError(null);
     setNewSourceUrlError(null);
-    setShowAddSourceModal(false);
+    closeAddSourceModal();
     showToast(`Feed added · ${feedItemCount} recent ${feedItemCount === 1 ? 'story' : 'stories'} found`);
   };
 
@@ -3205,6 +3245,9 @@ export default function App() {
     // The queue position is also the place to return to, whatever happens next
     storeSpeechPosition(speechArticleIdRef.current, index + 1, speechQueueRef.current.length, next ? next.paragraphIndex : -1);
     const endsParagraph = Boolean(next) && chunk.paragraphIndex >= 0 && next.paragraphIndex !== chunk.paragraphIndex;
+    const neuralSpeechActive = speechEngine !== 'device' && !speechVoiceFallbackRef.current;
+    const paragraphPauseMs = neuralSpeechActive ? SPEECH_NEURAL_PARAGRAPH_PAUSE_MS : SPEECH_PARAGRAPH_PAUSE_MS;
+    const gapMs = endsParagraph ? paragraphPauseMs : SPEECH_SENTENCE_PAUSE_MS;
 
     speechGapTimerRef.current = setTimeout(() => {
       speechGapTimerRef.current = null;
@@ -3212,7 +3255,7 @@ export default function App() {
       // Paused inside the gap: resume() picks the queue back up
       if (speechStateRef.current !== 'playing') return;
       speakSpeechChunk();
-    }, endsParagraph ? SPEECH_PARAGRAPH_PAUSE_MS : SPEECH_SENTENCE_PAUSE_MS);
+    }, gapMs);
   };
 
   // One neural sentence: Piper from the downloaded model, or Gemini through this app's server.
@@ -3844,6 +3887,7 @@ export default function App() {
   };
 
   const openArticle = (item: DigestItem) => {
+    setFeedArticleReturn(null);
     setSelectedArticle(item);
     // A new piece starts at the top, so the progress line starts empty.
     setReaderScrollProgress(0);
@@ -4003,13 +4047,14 @@ export default function App() {
     return () => registerListeningCommands(null);
   }, []);
 
-  // The reader opens from Today, Feeds or Saved and never changes the tab underneath, so the
-  // way back should name the page the reader actually came from.
+  // The reader never changes the tab underneath, so its way back names the page it came from.
   const readerBackLabel = activeTab === 'feeds'
     ? 'Back to Feeds'
     : activeTab === 'saved'
       ? 'Back to Saved'
-      : 'Back to Digest';
+      : activeTab === 'settings'
+        ? 'Back to Settings'
+        : 'Back to Digest';
 
   const backgroundInert = Boolean(selectedArticle)
     || showAddSourceModal
@@ -4017,8 +4062,80 @@ export default function App() {
     || showSetupWizard
     || showWeeklyReviewModal
     || showDigestSettings;
+  // Keep browser Back inside whichever dialog or sheet is currently on top. Add Source owns its
+  // own entry above; the rest share this stack so nested setup/import flows unwind one at a time.
+  const activeOverlayKey = showStartupApiPrompt
+    ? 'service-alert'
+    : showDigestSettings
+      ? 'edition-settings'
+      : showImportModal
+        ? 'import-opml'
+        : showSetupWizard
+          ? 'setup-wizard'
+          : showWeeklyReviewModal
+            ? 'weekly-review'
+            : showReaderAppearance
+              ? 'reader-appearance'
+              : null;
+
+  const overlayIsOpen = (key: string) => {
+    switch (key) {
+      case 'service-alert': return showStartupApiPrompt;
+      case 'edition-settings': return showDigestSettings;
+      case 'import-opml': return showImportModal;
+      case 'setup-wizard': return showSetupWizard;
+      case 'weekly-review': return showWeeklyReviewModal;
+      case 'reader-appearance': return showReaderAppearance;
+      default: return false;
+    }
+  };
+
+  useEffect(() => {
+    const stack = overlayHistoryStackRef.current;
+    if (activeOverlayKey) {
+      const activeIndex = stack.lastIndexOf(activeOverlayKey);
+      if (activeIndex >= 0 && activeIndex === stack.length - 1) return;
+      if (activeIndex >= 0) {
+        const removeCount = stack.length - activeIndex - 1;
+        stack.splice(activeIndex + 1, removeCount);
+        suppressOverlayPopRef.current = true;
+        window.history.go(-removeCount);
+        return;
+      }
+      const previous = stack[stack.length - 1];
+      if (previous && !overlayIsOpen(previous) && window.history.state?.curatorOverlay === previous) {
+        stack[stack.length - 1] = activeOverlayKey;
+        window.history.replaceState({ ...(window.history.state || {}), curatorOverlay: activeOverlayKey }, '');
+        return;
+      }
+      window.history.pushState({ ...(window.history.state || {}), curatorOverlay: activeOverlayKey }, '');
+      stack.push(activeOverlayKey);
+      return;
+    }
+    if (stack.length > 0) {
+      const removeCount = stack.length;
+      stack.length = 0;
+      suppressOverlayPopRef.current = true;
+      window.history.go(-removeCount);
+    }
+  }, [activeOverlayKey]);
+
+  const closeOverlayByHistoryKey = (key: string) => {
+    switch (key) {
+      case 'service-alert': setShowStartupApiPrompt(false); break;
+      case 'edition-settings': setShowDigestSettings(false); break;
+      case 'import-opml': setShowImportModal(false); break;
+      case 'setup-wizard': dismissSetupWizard(); break;
+      case 'weekly-review': setShowWeeklyReviewModal(false); break;
+      case 'reader-appearance': setShowReaderAppearance(false); break;
+    }
+  };
 
   const closeArticle = () => {
+    if (showReaderAppearance) {
+      setShowReaderAppearance(false);
+      return;
+    }
     if (readerHistoryDepthRef.current > 0 && window.history.state?.curatorReader) {
       // Consuming the pushed entry fires popstate, which does the actual close below —
       // one back press equals one close, even when articles were opened on top of each other.
@@ -4033,6 +4150,26 @@ export default function App() {
   // focus moves into the dialog on open and back to the trigger on close.
   React.useEffect(() => {
     const onPopState = () => {
+      if (suppressOverlayPopRef.current) {
+        suppressOverlayPopRef.current = false;
+        const pendingArticle = pendingWeeklyArticleRef.current;
+        if (pendingArticle) {
+          pendingWeeklyArticleRef.current = null;
+          openArticle(pendingArticle);
+        }
+        return;
+      }
+      if (showAddSourceModal) {
+        // Back closes the dialog entry instead of navigating away from Curator.
+        addSourceHistoryRef.current = false;
+        closeAddSourceModal();
+        return;
+      }
+      const overlayKey = overlayHistoryStackRef.current.pop();
+      if (overlayKey) {
+        closeOverlayByHistoryKey(overlayKey);
+        return;
+      }
       if (readerHistoryDepthRef.current > 0) {
         readerHistoryDepthRef.current -= 1;
         // Clearing the article also stops read-aloud via the session effect above.
@@ -4153,9 +4290,17 @@ export default function App() {
   // closes the reader and opens that feed's own chronological stream.
   const openReaderSourceFeed = () => {
     if (!selectedArticle) return;
+    setFeedArticleReturn(selectedArticle);
     scrollFeedStreamTopRef.current = true;
     handleOpenFeedStream(readerSourceTitle, readerSource?.id);
     closeArticle();
+  };
+
+  const returnToArticleFromFeed = () => {
+    if (!feedArticleReturn) return;
+    const article = feedArticleReturn;
+    setFeedArticleReturn(null);
+    openArticle(article);
   };
 
   // Landing on a feed should start at its newest entry, not at whatever the page under the
@@ -4212,6 +4357,9 @@ export default function App() {
     && new Date(digestCuratedAt).toDateString() === new Date().toDateString();
   // The settings sheet names the same edition the page is showing, so the two never disagree.
   const editionSheetTitle = todayDigest.length === 0 || editionIsToday ? 'Today\u2019s edition' : 'Your last edition';
+  const editionStatusLabel = digestCuratedAt <= 0
+    ? loadingDigest ? 'Building today\u2019s edition' : 'No edition yet'
+    : editionIsToday ? 'Today\u2019s edition' : 'Last edition';
   // The dateline belongs to the edition, not to the moment it is read: an edition left open
   // overnight must not be dated this morning.
   const mastheadDateline = new Date(digestCuratedAt > 0 ? digestCuratedAt : Date.now())
@@ -4371,6 +4519,9 @@ export default function App() {
   const readerFurthestDepth = selectedArticle
     ? Math.min(100, readingStats[selectedArticle.id]?.maxDepth || 0)
     : 0;
+  const readerHasFinished = Boolean(selectedArticle && (
+    readingStats[selectedArticle.id]?.finished || readerFurthestDepth >= READ_THROUGH_DEPTH
+  ));
   const speechPercent = speechProgress.total > 0
     ? Math.min(100, Math.round((speechProgress.index / speechProgress.total) * 100))
     : 0;
@@ -4721,6 +4872,24 @@ export default function App() {
                   <span>{readAloudActive ? 'Listening' : 'Listen'}</span>
                 </button>
               </div>
+              <p className="reader-dim mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-sans text-[0.68rem]">
+                <span className="inline-flex items-center gap-1.5">
+                  {storageFailure ? <AlertCircle aria-hidden="true" className="h-3 w-3" /> : <Check aria-hidden="true" className="h-3 w-3" />}
+                  {storageFailure
+                    ? 'Progress may not be saved on this device'
+                    : readerHasFinished
+                      ? 'Finished · progress saved on this device'
+                      : readerFurthestDepth > 0
+                        ? `${readerFurthestDepth}% read · progress saved on this device`
+                        : 'Progress saves on this device as you read'}
+                </span>
+                {savedIds.includes(selectedArticle.id) && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Bookmark aria-hidden="true" className="h-3 w-3 fill-current" />
+                    Saved for later
+                  </span>
+                )}
+              </p>
             </div>
 
             {!articleVideoWithPoster && selectedArticle.bannerImage && (
@@ -4736,7 +4905,11 @@ export default function App() {
             )}
 
             {articleVideoWithPoster && (
-              <ReaderVideo video={articleVideoWithPoster} title={selectedArticle.title} />
+              <ReaderVideo
+                video={articleVideoWithPoster}
+                title={selectedArticle.title}
+                onExternalClick={handleExternalClick}
+              />
             )}
 
             {hasCuratorNote(selectedArticle.why) && (
@@ -4987,7 +5160,7 @@ export default function App() {
 
             <div className="mt-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
               <p className="text-[10px] font-medium uppercase leading-none tracking-[0.24em] text-[#6f675c]">
-                {mastheadDateline}
+                {editionStatusLabel}{digestCuratedAt > 0 ? ` · ${mastheadDateline}` : ''}
               </p>
               <p className="text-[11px] leading-none tabular-nums text-[#6f675c]">
                 {editionCountLabel}
@@ -5834,7 +6007,7 @@ export default function App() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <button
-                  onClick={() => setShowAddSourceModal(true)}
+                  onClick={openAddSourceModal}
                   className="px-3 py-1.5 text-xs rounded-xl bg-[#1c1a17] text-[#f6f1e7] font-semibold hover:bg-[#3a352d] transition flex items-center gap-1.5"
                 >
                   <Plus className="w-3.5 h-3.5" />
@@ -5926,7 +6099,7 @@ export default function App() {
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                           <div className="min-w-0 flex-1">
                             <SourceFeedLink
-                              onOpen={() => handleOpenFeedStream(src.title, src.id)}
+                              onOpen={() => handleOpenFeedStream(src.title, src.id, 'sources')}
                               title={src.title}
                               feedUrl={src.feedUrl}
                               address={formatFeedUrlForDisplay(src.feedUrl)}
@@ -6087,6 +6260,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                               href={webUrlHref(item.siteUrl)}
                               target="_blank"
                               rel="noopener noreferrer"
+                              onClick={event => handleExternalClick(event, item.siteUrl)}
                               className="text-xs text-[#6f675c] hover:text-[#1c1a17] transition inline-flex items-center gap-1 mt-0.5 break-all"
                             >
                               <span>{item.siteUrl}</span>
@@ -6159,6 +6333,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                                 href={webUrlHref(item.feedUrl)}
                                 target="_blank"
                                 rel="noopener noreferrer"
+                                onClick={event => handleExternalClick(event, item.feedUrl)}
                                 title={`${item.feedUrl} (opens in a new window)`}
                                 className="text-[#6f675c] underline-offset-2 transition hover:text-[#1c1a17] hover:underline"
                               >
@@ -6187,6 +6362,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                             href={webUrlHref(link.uri)}
                             target="_blank"
                             rel="noopener noreferrer"
+                            onClick={event => handleExternalClick(event, link.uri)}
                             className="text-[#6f675c] hover:text-[#1c1a17] underline truncate max-w-[240px]"
                           >
                             {link.title || link.uri}
@@ -6244,7 +6420,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                       <div key={src.id} className="border-b border-[#ddd2bc] py-3">
                         <div className="flex items-start justify-between gap-2 sm:gap-3">
                           <SourceFeedLink
-                            onOpen={() => handleOpenFeedStream(src.title, src.id)}
+                            onOpen={() => handleOpenFeedStream(src.title, src.id, 'sources')}
                             title={src.title}
                             feedUrl={src.feedUrl}
                             address={formatFeedUrlForDisplay(src.feedUrl)}
@@ -6457,10 +6633,10 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
         {/* TAB 4: SETTINGS */}
         {activeTab === 'settings' && (
-          <div className="no-sideways space-y-4 animate-fade-in">
+          <div className="no-sideways flex flex-col gap-4 animate-fade-in">
             <div className="flex items-start justify-between gap-3 border-b border-[#ddd2bc] pb-4">
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#6f675c]">Preferences & library</p>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#6f675c]">Your reading space</p>
                 <h2 className="mt-1 font-serif text-[1.6rem] font-semibold leading-tight text-[#1c1a17]">Settings</h2>
               </div>
               <button
@@ -6571,6 +6747,14 @@ Search for writers, publications, or topics. Curator checks whether each result 
             </details>
             )}
 
+            <details id="advanced-configuration" className="order-10 group rounded-3xl border border-[#c9bc9f] bg-[#efe8d6]">
+              <summary className="flex cursor-pointer list-none items-center gap-2.5 px-5 py-4 [&::-webkit-details-marker]:hidden">
+                <Sparkles className="h-4 w-4 shrink-0 text-[#1c1a17]" />
+                <span className="font-serif text-[1.05rem] font-semibold text-[#1c1a17]">Advanced configuration</span>
+                <span className="ml-auto min-w-0 truncate text-xs text-[#6f675c]">AI, models, embeddings &amp; reading aloud</span>
+                <ChevronDown className="h-4 w-4 shrink-0 text-[#6f675c] transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="space-y-4 px-5 pb-5">
             <ReadAloudSettings
               engine={speechEngine}
               onEngineChange={setSpeechEngine}
@@ -6905,7 +7089,10 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 )}
               </div>
             </SettingsSection>
+              </div>
+            </details>
 
+            <p className="px-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-[#6f675c]">Everyday reading</p>
             {/* Browser-local semantic reading profile */}
             <SettingsSection
               icon={<Sliders className="w-4 h-4" />}
@@ -7022,6 +7209,14 @@ Search for writers, publications, or topics. Curator checks whether each result 
               />
             </SettingsSection>
 
+            <details className="order-last group rounded-3xl border border-[#c9bc9f] bg-[#efe8d6]">
+              <summary className="flex cursor-pointer list-none items-center gap-2.5 px-5 py-4 [&::-webkit-details-marker]:hidden">
+                <HardDrive className="h-4 w-4 shrink-0 text-[#1c1a17]" />
+                <span className="font-serif text-[1.05rem] font-semibold text-[#1c1a17]">Library &amp; app controls</span>
+                <span className="ml-auto min-w-0 truncate text-xs text-[#6f675c]">Backups, storage &amp; reset</span>
+                <ChevronDown className="h-4 w-4 shrink-0 text-[#6f675c] transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="space-y-4 px-5 pb-5">
             {/* The library, in and out, and what the browser holds of it. Storage used to be a second
                 section beside this one, both reading the same size, so the two were indistinguishable.
                 Export sits beside the way back in: a copy nobody can restore is not a backup. */}
@@ -7156,7 +7351,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
             </SettingsSection>
 
             {/* The embedded build identity and a manual comparison path to GitHub main. */}
-            <BuildIdentity />
+            <BuildIdentity onExternalClick={handleExternalClick} />
+              </div>
+            </details>
 
           </div>
         )}
@@ -7261,6 +7458,26 @@ Search for writers, publications, or topics. Curator checks whether each result 
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
+                {feedArticleReturn ? (
+                  <button
+                    type="button"
+                    onClick={returnToArticleFromFeed}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-xl bg-[#1c1a17] text-[#f6f1e7] hover:bg-[#3a352d] transition"
+                  >
+                    Back to article
+                  </button>
+                ) : feedReturnToSources ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFeedReturnToSources(false);
+                      setActiveTab('sources');
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium rounded-xl bg-[#ece4d1] border border-[#ddd2bc] text-[#3f3a33] hover:text-[#1c1a17] transition"
+                  >
+                    Back to Sources
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => handleRefreshAllFeeds()}
@@ -7433,7 +7650,13 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   setActiveTab('settings');
                   setShowSetupWizard(false);
                   window.setTimeout(() => {
-                    document.getElementById('provider-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    const advanced = document.getElementById('advanced-configuration') as HTMLDetailsElement | null;
+                    const provider = document.getElementById('provider-settings') as HTMLDetailsElement | null;
+                    if (advanced) advanced.open = true;
+                    if (provider) {
+                      provider.open = true;
+                      provider.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
                   }, 150);
                 }}
                 className="flex-1 px-4 py-2.5 rounded-xl bg-[#1c1a17] text-[#f6f1e7] text-xs font-semibold hover:bg-[#3a352d] transition"
@@ -8010,7 +8233,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
         readingItems={weeklyHistory}
         onOpenArticle={(id) => {
           const item = digest.find(d => d.id === id) || savedArticles.find(s => s.id === id) || feedStreamArticles.find(f => f.id === id);
-          if (item) setSelectedArticle(item);
+          if (item) pendingWeeklyArticleRef.current = item;
         }}
         onOpenSettings={() => {
           setActiveTab('settings');

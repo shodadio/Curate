@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type MouseEvent } from 'react';
 import { ExternalLink, Play } from 'lucide-react';
 import { videoWatchUrl, type VideoEmbed } from '../../lib/videoEmbed';
 
@@ -6,13 +6,14 @@ interface ReaderVideoProps {
   video: VideoEmbed;
   /** The piece's headline, for the frame's accessible name. */
   title: string;
+  onExternalClick: (event: MouseEvent<HTMLAnchorElement>, url?: string) => boolean;
 }
 
 // A video the piece carries, shown inside the reader rather than behind a trip to the publisher.
 // A video file plays in the page's own player; a YouTube or Vimeo piece is held behind a still
 // until the reader asks for it, because loading the frame contacts the video host — and a reader
 // who never presses play should not be announced to Google or Vimeo before they choose to be.
-export function ReaderVideo({ video, title }: ReaderVideoProps) {
+export function ReaderVideo({ video, title, onExternalClick }: ReaderVideoProps) {
   const [playing, setPlaying] = useState(false);
   const [failed, setFailed] = useState(false);
   const watchUrl = videoWatchUrl(video);
@@ -24,6 +25,7 @@ export function ReaderVideo({ video, title }: ReaderVideoProps) {
           href={watchUrl}
           target="_blank"
           rel="noopener noreferrer"
+          onClick={event => onExternalClick(event, watchUrl)}
           className="reader-video-fallback"
           title="Open the video in a new window"
         >
@@ -89,6 +91,7 @@ export function ReaderVideo({ video, title }: ReaderVideoProps) {
         href={watchUrl}
         target="_blank"
         rel="noopener noreferrer"
+        onClick={event => onExternalClick(event, watchUrl)}
         className="reader-video-open font-sans"
         title="Open the video in a new window"
       >

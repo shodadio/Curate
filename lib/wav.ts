@@ -73,11 +73,12 @@ export function speechAudioBlob(base64: string, mimeType: string): Blob {
 // A neural voice opens every sentence with a breath and closes it with a beat of near-silence of
 // its own. Left in place the closing beat is what the reader hears as a long pause after the
 // full stop, and the opening breath as a hesitation before the first word, so each clip is cut
-// back to the sound itself. Guards sit either side of the voice: a word ending on a fricative
-// decays for a few tens of milliseconds, and one beginning on a plosive builds up before its
-// peak, so cutting exactly on the loudest sample clips the word instead of the silence.
+// back to the sound itself. Keep a short tail for natural word endings, but halve it to shorten
+// the pause. Guards sit either side of the voice: a word ending on a fricative decays for a few
+// tens of milliseconds, and one beginning on a plosive builds up before its peak, so cutting
+// exactly on the loudest sample clips the word instead of the silence.
 const TRIM_WINDOW_MS = 5;
-const TRIM_TAIL_MS = 60;
+const TRIM_TAIL_MS = 30;
 const TRIM_HEAD_MS = 25;
 // About 0.6% of full scale: below this a sample is the room, not the voice.
 const TRIM_PEAK = 200;

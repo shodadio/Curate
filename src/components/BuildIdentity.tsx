@@ -1,4 +1,5 @@
 import { formatBuildStamp } from '../../lib/buildStamp';
+import type { MouseEvent } from 'react';
 
 const GITHUB_REPO_URL = 'https://github.com/shodadio/Curate';
 
@@ -21,7 +22,11 @@ function formattedBuildTime(value: string): string {
 
 // This stamp identifies the bundled build. A full commit can be compared with GitHub main;
 // source snapshot ids identify builds without Git history and are not commit SHAs.
-export function BuildIdentity() {
+export function BuildIdentity({
+  onExternalClick,
+}: {
+  onExternalClick: (event: MouseEvent<HTMLAnchorElement>, url?: string) => boolean;
+}) {
   const info = __BUILD_INFO__;
   const title = info.commit
     ? `${info.repo}@${info.commit}`
@@ -52,6 +57,7 @@ export function BuildIdentity() {
         href={compareUrl}
         target="_blank"
         rel="noreferrer"
+        onClick={event => onExternalClick(event, compareUrl)}
         className="text-center text-[0.7rem] text-[#6f675c] underline underline-offset-2 hover:text-[#1c1a17]"
       >
         {info.commit ? 'Compare this commit with GitHub main' : 'View GitHub main'}

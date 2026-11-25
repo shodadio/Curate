@@ -88,11 +88,11 @@ const firstSoundMs = (wav: Uint8Array) => {
   return Infinity;
 };
 
-test('the silence a voice ends a sentence with is cut, keeping the word before it', () => {
+test('half of the silence a voice ends a sentence with is cut, keeping a short natural tail', () => {
   const trimmed = trimSilenceWav(spokenClip(400, 800));
-  // 400 ms of speech plus a short tail, not the 800 ms the voice left behind
-  assert.ok(wavSeconds(trimmed) > 0.44, `kept ${wavSeconds(trimmed)}s, too short to hold the word`);
-  assert.ok(wavSeconds(trimmed) < 0.5, `kept ${wavSeconds(trimmed)}s, the silence survived`);
+  // 400 ms of speech plus a 30 ms tail, not the 800 ms the voice left behind
+  assert.ok(wavSeconds(trimmed) > 0.42, `kept ${wavSeconds(trimmed)}s, too short to hold the word`);
+  assert.ok(wavSeconds(trimmed) < 0.45, `kept ${wavSeconds(trimmed)}s, too much silence survived`);
   assert.equal(ascii(trimmed, 0, 4), 'RIFF');
   const view = new DataView(trimmed.buffer, trimmed.byteOffset, trimmed.byteLength);
   assert.equal(view.getUint32(4, true), trimmed.byteLength - 8, 'RIFF size follows the shorter clip');
@@ -128,7 +128,7 @@ test('a refused sentence says why it was refused', () => {
 
   // A host with no speech route answers with a page, not a JSON error
   assert.match(speechFailureMessage(404, null), /no speech endpoint/);
-  assert.match(speechFailureMessage(502, null), /could not reach Google/);
+  assert.match(speechFailureMessage(502, null), /unusable server error \(502\)/);
   assert.match(speechFailureMessage(429, null), /limiting this key/);
   assert.match(speechFailureMessage(200, { ok: true }), /answered with no audio/);
 });

@@ -47,7 +47,7 @@ export function speechFailureMessage(status: number, body: unknown): string {
   if (status === 404) return 'This server has no speech endpoint — the build serving it is older than the voice.';
   if (status === 401 || status === 403) return `Google refused the key (${status}). Check it has the speech model enabled.`;
   if (status === 429) return 'Google is limiting this key right now (429). Wait a moment and carry on.';
-  if (status >= 500) return `The server could not reach Google (${status}).`;
+  if (status >= 500) return `The speech service returned an unusable server error (${status}).`;
   if (status >= 200 && status < 300) return 'The server answered with no audio — the voice may be unavailable just now.';
   return `The server answered ${status} without any audio.`;
 }
