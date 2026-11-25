@@ -5192,11 +5192,12 @@ export default function App() {
 
           {/* The folio is the one part of the masthead that pins, so the edition can be
               rebuilt and Settings opened from anywhere in the page rather than only at its
-              top. The paper comes up behind it as the stories pass under. */}
+              top. While pinned it carries the wordmark's paired rules instead of a plain
+              border, so a scrolled front page still reads as one sheet of paper. */}
           <div
             inert={backgroundInert}
-            className={`sticky top-0 z-30 w-full border-b transition-colors ${
-              folioPinned ? 'border-[#1c1a17]/20 bg-[#f6f1e7]' : 'border-transparent'
+            className={`sticky top-0 z-30 w-full transition-colors ${
+              folioPinned ? 'bg-[#f6f1e7]' : 'bg-transparent'
             }`}
           >
             <div
@@ -5216,14 +5217,26 @@ export default function App() {
                     <p className="min-w-0 truncate text-[9px] font-medium uppercase leading-none tracking-[0.12em] text-[#6f675c]">
                       {digestCuratedAt > 0 ? mastheadDateline : editionStatusLabel}
                     </p>
-                    <p className="shrink-0 whitespace-nowrap text-[10px] leading-none tabular-nums text-[#6f675c]">
+                    {/* The count is where the edition's size is described, so it is also where
+                        it is changed: tapping it opens the edition sheet, the one editor for
+                        dose and serendipity. The padding is cancelled by its margin, so the
+                        tap area grows past the small print without moving the dateline. */}
+                    <button
+                      type="button"
+                      onClick={() => setShowDigestSettings(true)}
+                      aria-haspopup="dialog"
+                      aria-expanded={showDigestSettings}
+                      title="Change the edition's size"
+                      className="-mx-1 -my-3 inline-flex shrink-0 items-baseline whitespace-nowrap px-1 py-3 text-[10px] leading-none tabular-nums text-[#6f675c] transition hover:text-[#1c1a17]"
+                    >
                       {editionCountLabel}
                       {/* A 320px phone gives the date its room back before the two stamps
                           are squeezed: the minutes are the first thing to go. */}
                       {editionMinutes > 0 && (
                         <span className="max-[359px]:hidden">{` · ${editionMinutes} min`}</span>
                       )}
-                    </p>
+                      <ChevronDown aria-hidden="true" className="ml-0.5 h-3 w-3 shrink-0" />
+                    </button>
                   </div>
                 )}
 
@@ -5253,6 +5266,16 @@ export default function App() {
                   </button>
                 </div>
               </div>
+
+              {/* Pinned, the strip closes with the wordmark's paired rules — the same two
+                  lines, at the same inset — so the front page reads as one sheet whether the
+                  nameplate is on screen or has scrolled away. Unpinned it draws nothing. */}
+              {folioPinned && (
+                <div aria-hidden="true" className="mt-1.5 flex flex-col gap-[3px]">
+                  <span className="h-[2px] w-full bg-[#1c1a17]/50" />
+                  <span className="h-px w-full bg-[#1c1a17]/20" />
+                </div>
+              )}
             </div>
           </div>
         </>
