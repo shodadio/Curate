@@ -3,23 +3,6 @@ import assert from 'node:assert/strict';
 
 import { formatBytes, measureStorage, pruneArticleBodies, pruneReadingStats } from '../lib/storageHealth.ts';
 
-test('a freed library keeps the edition on screen as well as its newest saves', () => {
-  const items = [
-    { id: 'newest', publishedAt: '2026-11-24', fullText: 'x'.repeat(40) },
-    { id: 'edition', publishedAt: '2026-11-01', fullText: 'y'.repeat(40) },
-    { id: 'stale', publishedAt: '2026-10-01', fullText: 'z'.repeat(40) },
-  ];
-  const result = pruneArticleBodies(items, 1, ['edition']);
-
-  assert.deepEqual(result.items.map(item => [item.id, Boolean(item.fullText)]), [
-    ['newest', true],
-    ['edition', true],
-    ['stale', false],
-  ]);
-  assert.equal(result.prunedCount, 1, 'only the piece outside the edition loses its body');
-  assert.equal(result.freedBytes, 40);
-});
-
 test('the report ranks what is stored by size and ignores other apps', () => {
   const report = measureStorage({
     curator_sources: 'a'.repeat(100),

@@ -130,20 +130,14 @@ export interface PruneResult<T> {
 }
 
 interface BodyCarrier {
-  id?: string;
   fullText?: string;
   publishedAt?: string;
 }
 
 // The bodies of saved pieces are the largest thing the app stores, and they are also the only
-// part that can be fetched again. Keeping the sounds-never-freed rule simple: the newest few,
-// and anything the edition on screen still holds, keep their bodies for offline reading; the
-// rest keep their headline, summary and link.
-export function pruneArticleBodies<T extends BodyCarrier>(
-  items: T[],
-  keepNewest: number = 5,
-  keepIds: Iterable<string> = [],
-): PruneResult<T> {
+// part that can be fetched again. Keeping the sounds-never-freed rule simple: the newest few
+// keep their bodies for offline reading, the rest keep their headline, summary and link.
+export function pruneArticleBodies<T extends BodyCarrier>(items: T[], keepNewest: number = 5): PruneResult<T> {
   if (!Array.isArray(items) || items.length === 0) {
     return { items: Array.isArray(items) ? items : [], prunedCount: 0, freedBytes: 0 };
   }
@@ -159,11 +153,10 @@ export function pruneArticleBodies<T extends BodyCarrier>(
       .slice(0, Math.max(0, keepNewest))
       .map(entry => entry.index),
   );
-  const inEdition = new Set(keepIds);
   let prunedCount = 0;
   let freedBytes = 0;
   const next = items.map((item, index) => {
-    if (keep.has(index) || inEdition.has(item?.id || '') || !item?.fullText) return item;
+    if (keep.has(index) || !item?.fullText) return item;
     prunedCount += 1;
     freedBytes += bytesOf(item.fullText);
     const { fullText: _dropped, ...rest } = item;

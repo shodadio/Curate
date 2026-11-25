@@ -105,6 +105,7 @@ import {
   takePrefetchedSpeechAudio,
   trimSpeechSilence,
 } from './lib/speechAudio';
+import { ARTICLE_BODY_BATCH, readArticleBodies } from './lib/articleBodies';
 import { registerListeningCommands, setListeningPiece, type ListeningCommands } from './lib/mediaSession';
 import { ReadAloudSettings } from './components/ReadAloudSettings';
 import { articleLooksIncomplete, articleNeedsBodyRefresh, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isImageBlock, isMediaCreditParagraph, isPlayerChrome, isStrayCommentLink, isTableBlock, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
@@ -931,7 +932,7 @@ export default function App() {
   // fetched again, so freeing space starts there and keeps the newest few, plus whatever the
   // edition on screen still holds.
   const freeStorageSpace = () => {
-    const result = pruneArticleBodies(savedArticles, 5, digest.map(item => item.id));
+    const result = pruneArticleBodies(savedArticles, 5);
     if (result.prunedCount === 0) {
       showToast('Nothing to free: only your newest saves still hold a full article.');
       return;
@@ -1496,63 +1497,34 @@ export default function App() {
     safeSetJson('curator_saved_articles', savedArticles.map(({ fullText, ...rest }) => rest));
   }, [savedArticles]);
 
-  // The edition on screen is also the offline copy: a launch with no signal should read the
-  // pieces it lists, not five of them. So the ones the feeds only began are fetched once per
-  // edition and kept with it — the server reads those pages through the cache the digest already
-  // filled, which makes this a batch of cache hits in practice rather than a crawl.
-  const latestDigestRef = React.useRef<DigestItem[]>([]);
-  const editionBodiesRef = React.useRef(0);
+  // The edition on screen is also the offline copy, so a piece whose feed only began is read
+  // once per edition and kept with it. The server answers those pages from the cache the digest
+  // already filled, which makes this a batch of cache hits rather than a crawl. It hangs off the
+  // build stamp rather than the list, so a body that arrives cannot start it again.
+  const digestBuiltAt = digestCuratedAt;
   useEffect(() => {
-    latestDigestRef.current = digest;
-  }, [digest]);
-  useEffect(() => {
-    if (digestCuratedAt <= 0) return;
-    const items = latestDigestRef.current;
-    if (items.length === 0 || editionBodiesRef.current === digestCuratedAt) return;
-    const missing = items.filter(item => item.url && (item.teaser || articleLooksIncomplete(item)));
-    editionBodiesRef.current = digestCuratedAt;
+    if (digestBuiltAt <= 0) return;
+    const edition = JSON.parse(safeGetItem('curator_digest_cache') || 'null');
+    if (!Array.isArray(edition?.items) || Number(edition.curatedAt) !== digestBuiltAt) return;
+    const missing = (edition.items as DigestItem[]).filter(item => item.url && (item.teaser || articleLooksIncomplete(item)));
     if (missing.length === 0) return;
 
-    let cancelled = false;
     const controller = new AbortController();
     void (async () => {
-      for (let start = 0; start < missing.length; start += 8) {
-        const batch = missing.slice(start, start + 8);
-        let articles: unknown[] = [];
-        try {
-          const response = await fetch('/api/article-texts', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items: batch.map(({ id, url }) => ({ id, url })) }),
-            signal: controller.signal,
-          });
-          if (!response.ok) break;
-          const data = await response.json().catch(() => ({}));
-          articles = Array.isArray(data?.articles) ? data.articles : [];
-        } catch {
-          return;
-        }
-        if (cancelled) return;
-        const accepted = new Map<string, string>();
-        for (const entry of articles as Array<{ id?: unknown; text?: unknown }>) {
-          const id = typeof entry?.id === 'string' ? entry.id : '';
-          const text = typeof entry?.text === 'string' ? entry.text : '';
-          // A paywall or a dead page leaves the stored excerpt the better read
-          if (id && text.length >= 200) accepted.set(id, text);
-        }
-        if (accepted.size === 0) continue;
+      for (let start = 0; start < missing.length; start += ARTICLE_BODY_BATCH) {
+        const answer = await readArticleBodies(missing.slice(start, start + ARTICLE_BODY_BATCH), controller.signal)
+          .catch(() => null);
+        // Offline: the next launch asks again
+        if (!answer) return;
+        if (answer.accepted.size === 0) continue;
         setDigest(prev => prev.map(item => {
-          const text = accepted.get(item.id);
+          const text = answer.accepted.get(item.id);
           return text ? { ...item, fullText: text, teaser: false, articleUnavailable: false } : item;
         }));
       }
     })();
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [digestCuratedAt]);
+    return () => controller.abort();
+  }, [digestBuiltAt]);
 
   // The cache follows every body that arrives, not only the build that made the edition, so a
   // reload with no connection finds the same pieces the reader had.
@@ -3821,33 +3793,15 @@ export default function App() {
       ? `Stopped — citations added to ${upgraded} saved ${upgraded === 1 ? 'piece' : 'pieces'}`
       : 'Stopped adding citations');
     try {
-      // Eight at a time: enough to keep the server's four extractors busy, small enough that the
-      // bar moves every few seconds on a long queue.
-      for (let start = 0; start < queue.length; start += 8) {
+      for (let start = 0; start < queue.length; start += ARTICLE_BODY_BATCH) {
         if (controller.signal.aborted) break;
-        const batch = queue.slice(start, start + 8);
-        const response = await fetch('/api/article-texts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items: batch.map(({ id, url }) => ({ id, url })) }),
-          signal: controller.signal,
-        });
-        if (!response.ok) {
+        const batch = queue.slice(start, start + ARTICLE_BODY_BATCH);
+        const answer = await readArticleBodies(batch, controller.signal);
+        if (!answer) {
           completed = false;
           break;
         }
-        const data = await response.json().catch(() => ({}));
-        const accepted = new Map<string, string>();
-        const attempted = new Set<string>();
-        for (const entry of Array.isArray(data?.articles) ? data.articles : []) {
-          const id = typeof entry?.id === 'string' ? entry.id : '';
-          if (!id) continue;
-          attempted.add(id);
-          const text = typeof entry?.text === 'string' ? entry.text : '';
-          // Short text means the extractor found the page's chrome or a paywall, so the stored
-          // body stays the better read.
-          if (text.length >= 200) accepted.set(id, text);
-        }
+        const { accepted, attempted } = answer;
         upgraded += accepted.size;
         if (attempted.size > 0) {
           const refreshedAt = Date.now();
