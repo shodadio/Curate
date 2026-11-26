@@ -1,3 +1,5 @@
+import { retryTransientStatus } from '../lib/serviceStatus';
+
 import React, { useState, useEffect } from 'react';
 import { 
   Bookmark, Rss, RefreshCw, Check, CheckCheck, Plus, Trash2, 
@@ -1831,6 +1833,9 @@ export default function App() {
       }
     };
 
+    const fetchStatusJson = (url: string) =>
+      retryTransientStatus(() => fetchJson(url, { cache: 'no-store' }));
+
     const flagIssue = (message: string) => {
       if (!isCurrentCheck()) return;
       setStartupApiStatus('issue');
@@ -1875,17 +1880,17 @@ export default function App() {
     };
 
     try {
-      const health = await fetchJson('/api/health', { cache: 'no-store' });
+      const health = await fetchStatusJson('/api/health');
       if (!health.response.ok || health.data?.ok !== true) {
         throw new Error(`Curator server returned HTTP ${health.response.status}.`);
       }
 
-      const usage = await fetchJson('/api/usage', { cache: 'no-store' });
+      const usage = await fetchStatusJson('/api/usage');
       if (!usage.response.ok || !Number.isFinite(Number(usage.data?.today?.apiCalls))) {
         throw new Error('Curator server activity tracking did not return a valid status.');
       }
 
-      const semanticStatus = await fetchJson('/api/semantic-status', { cache: 'no-store' });
+      const semanticStatus = await fetchStatusJson('/api/semantic-status');
       if (!semanticStatus.response.ok) {
         throw new Error(`Service status returned HTTP ${semanticStatus.response.status}.`);
       }
