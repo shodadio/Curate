@@ -1277,12 +1277,14 @@ export default function App() {
   const [newSourceSuggesting, setNewSourceSuggesting] = useState(false);
   const addSourceValidationAbortRef = React.useRef<AbortController | null>(null);
   const addSourceSuggestAbortRef = React.useRef<AbortController | null>(null);
+  const addSourcePrefillUrlRef = React.useRef<string | null>(null);
 
   const clearAddSourceForm = () => {
     addSourceValidationAbortRef.current?.abort();
     addSourceValidationAbortRef.current = null;
     addSourceSuggestAbortRef.current?.abort();
     addSourceSuggestAbortRef.current = null;
+    addSourcePrefillUrlRef.current = null;
     setNewSourceTitle('');
     setNewSourceUrl('');
     setNewSourceTitleError(null);
@@ -1347,8 +1349,15 @@ export default function App() {
         return;
       }
     }
-    // A discovery prefill already carries its folder; keep it until the address changes.
-    if (newSourceSuggestion && newSourceSuggestionReason?.startsWith('From search:')) return;
+    // A discovery prefill already carries its folder; keep it while the address matches
+    // the prefill. Once the address changes, the prefill is stale: drop it so the
+    // debounced lookup below can answer for what is actually typed.
+    if (newSourceSuggestion && newSourceSuggestionReason?.startsWith('From search:')) {
+      if (trimmedUrl === (addSourcePrefillUrlRef.current ?? '').trim()) return;
+      addSourcePrefillUrlRef.current = null;
+      setNewSourceSuggestion(null);
+      setNewSourceSuggestionReason(null);
+    }
     const timer = window.setTimeout(async () => {
       addSourceSuggestAbortRef.current?.abort();
       const controller = new AbortController();
@@ -2923,6 +2932,7 @@ export default function App() {
     setNewSourceValidating(false);
     setNewSourceSuggesting(false);
     const discoveredFolder = (item.folder || '').trim();
+    addSourcePrefillUrlRef.current = item.feedUrl;
     if (discoveredFolder && discoveredFolder.toLowerCase() !== 'general') {
       setNewSourceSuggestion(discoveredFolder.slice(0, 40));
       setNewSourceSuggestionReason(`From search: ${item.title}`);
@@ -7909,7 +7919,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   <p className="text-xs text-[#6f675c] mt-1" role="status">Suggesting a folder…</p>
                 )}
                 {newSourceSuggestion && newSourceSuggestion.toLowerCase() !== newSourceFolder.trim().toLowerCase() && (
-                  <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-[#e9e1cf] border border-[#ddd2bc] px-3 py-2">
+                  <div role="status" className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-[#e9e1cf] border border-[#ddd2bc] px-3 py-2">
                     <span className="text-xs text-[#3f3a33]">
                       Suggested folder: <span className="font-semibold text-[#1c1a17]">{newSourceSuggestion}</span>
                       {newSourceSuggestionReason && (
