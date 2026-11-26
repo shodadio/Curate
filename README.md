@@ -411,7 +411,7 @@ Reads one sentence aloud for the Gemini voice in **Settings → Read aloud**. Th
 ```
 `text` is trimmed and capped at 1200 characters, and `voice` must be one of the 30 prebuilt speech voices.
 
-**Response:** `{ "ok": true, "mimeType": "audio/wav", "audio": "<base64>" }`, where `audio` is a complete WAV file on current models. Empty text, an unknown voice, or a request with no key anywhere answers `400`; Google refusing or returning no audio answers `502`, both as `{ "ok": false, "error": "…" }`. Capped at 240 requests a minute per connection.
+**Response:** `{ "ok": true, "mimeType": "audio/wav", "audio": "<base64>" }`, where `audio` is a complete WAV file on current models. Empty text, an unknown voice, or a request with no key anywhere answers `400`; Google refusing with its own status (a bad key, no access, quota) forwards that status; an upstream server error or a reply with no audio answers `502`, both as `{ "ok": false, "error": "…" }`. Capped at 240 requests a minute per connection.
 
 ---
 

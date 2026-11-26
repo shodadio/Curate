@@ -27,9 +27,13 @@ export const GEMINI_TTS_DEFAULT_VOICE = GEMINI_TTS_VOICES[0].name;
 const googleMessage = (value: unknown): string => {
   if (typeof value !== 'string') return '';
   const text = value.trim();
-  if (!text.startsWith('{')) return text;
+  if (!text) return '';
+  // Older servers forwarded the SDK's whole error, sometimes led by its status
+  // ('503 {"error":…}'). The JSON envelope is what carries the sentence.
+  const jsonStart = text.indexOf('{');
+  if (jsonStart < 0) return text;
   try {
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(text.slice(jsonStart));
     return String(parsed?.error?.message || parsed?.message || '').trim();
   } catch {
     return text;
