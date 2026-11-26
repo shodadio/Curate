@@ -5285,37 +5285,29 @@ export default function App() {
       ) : (
         <header inert={backgroundInert} className="sticky top-0 z-40 w-full safe-header bg-[#f6f1e7]/95 backdrop-blur-md px-4 sm:px-6 pb-2 shrink-0">
           <div className="mx-auto w-full max-w-3xl">
-            <nav aria-label="Masthead" className="grid grid-cols-[minmax(2.75rem,1fr)_auto_minmax(2.75rem,1fr)] items-center">
-              <button
-                type="button"
-                onClick={() => setActiveTab('today')}
-                className="inline-flex min-h-11 min-w-11 items-center justify-start gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#3f3a33] transition hover:text-[#1c1a17]"
-                title="Return to Today"
-              >
-                <Home aria-hidden="true" className="h-4 w-4" />
-                <span>Today</span>
-              </button>
-              <h1 className="flex items-baseline justify-center gap-[0.12em] whitespace-nowrap font-serif text-[clamp(1.55rem,7vw,2.25rem)] leading-none">
-                <span className="text-[0.42em] font-semibold uppercase tracking-[0.24em] text-[#8a5a24]">The</span>
-                <span className="font-semibold uppercase tracking-[0.015em] text-[#1c1a17]">Curator</span>
-              </h1>
+            <h1 className="flex items-baseline justify-center gap-[0.12em] whitespace-nowrap font-serif text-[clamp(1.55rem,7vw,2.25rem)] leading-none">
+              <span className="text-[0.42em] font-semibold uppercase tracking-[0.24em] text-[#8a5a24]">The</span>
+              <span className="font-semibold uppercase tracking-[0.015em] text-[#1c1a17]">Curator</span>
+            </h1>
+
+            <div aria-hidden="true" className="mt-1.5 flex flex-col gap-[3px]">
+              <span className="h-[2px] w-full bg-[#1c1a17]/50" />
+              <span className="h-px w-full bg-[#1c1a17]/20" />
+            </div>
+
+            <div className="flex justify-end">
               <button
                 type="button"
                 onClick={() => setActiveTab('settings')}
                 aria-pressed={activeTab === 'settings'}
                 aria-label="Settings"
                 title="Settings"
-                className="masthead-control justify-self-end"
+                className="masthead-control"
               >
                 <span className="masthead-stamp">
                   <Sliders aria-hidden="true" className="h-4 w-4" />
                 </span>
               </button>
-            </nav>
-
-            <div aria-hidden="true" className="mt-1.5 flex flex-col gap-[3px]">
-              <span className="h-[2px] w-full bg-[#1c1a17]/50" />
-              <span className="h-px w-full bg-[#1c1a17]/20" />
             </div>
           </div>
         </header>
@@ -7442,7 +7434,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
         {/* TAB 5: FEEDS (Traditional Reading Stream) */}
         {activeTab === 'feeds' && (
-          <div className="space-y-6 animate-fade-in w-full max-w-full">
+          <div className="-mt-6 space-y-6 animate-fade-in w-full max-w-full">
             {/* Top Circular Source Stories Carousel */}
             <div className="overflow-x-auto no-scrollbar py-2 -mx-4 px-4 sm:-mx-6 sm:px-6">
               <div className="flex items-center gap-4 min-w-max">
