@@ -153,7 +153,7 @@ export function takePrefetchedSpeechAudio(key: string): Promise<Blob> | null {
 }
 
 export function playSpeechAudio(blob: Blob, rate: number, handlers: PlayHandlers): void {
-  let slot = preparedAudioByBlob.get(blob);
+  let slot: SpeechAudioSlot | null = preparedAudioByBlob.get(blob) ?? null;
   const wasPrepared = Boolean(slot && slot.state === 'prepared');
   if (!wasPrepared) slot = idleSpeechAudioSlot();
   if (!slot) {
