@@ -130,7 +130,7 @@ export interface RefreshRowUpdate {
 // the sources list into a write.
 export function refreshAllSourceUpdate(
   row: RefreshRowResult | undefined,
-  current: { consecutiveFailures?: number; pausedReason?: string },
+  current: { consecutiveFailures?: number; paused?: boolean; pausedReason?: string },
   now: number,
   threshold: number = RETIRE_AFTER_FAILURES,
 ): RefreshRowUpdate | null {
@@ -141,6 +141,8 @@ export function refreshAllSourceUpdate(
       status: 'active',
       failingReason: undefined,
       consecutiveFailures: 0,
+      paused: false,
+      pausedReason: undefined,
     };
   }
   const previous = Number.isFinite(current.consecutiveFailures) ? Number(current.consecutiveFailures) : 0;

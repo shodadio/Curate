@@ -3008,7 +3008,7 @@ export default function App() {
       setSources(prev => prev.map(s => {
         if (s.id !== source.id) return s;
         return outcome.fetched
-          ? { ...s, lastSyncedAt: Date.now(), status: 'active' as const, failingReason: undefined, consecutiveFailures: 0 }
+          ? { ...s, lastSyncedAt: Date.now(), status: 'active' as const, failingReason: undefined, consecutiveFailures: 0, paused: false, pausedReason: undefined }
           : { ...s, status: 'failing' as const, failingReason: outcome.failingReason };
       }));
 
@@ -3051,7 +3051,7 @@ export default function App() {
     setRefreshingAllFeeds(true);
     try {
       const { status, data } = await postFeedStream(
-        buildRefreshAllRequest(selectedFeedSource || 'all', activeSources(sources)),
+        buildRefreshAllRequest(selectedFeedSource || 'all', sources),
       );
       const outcome = readRefreshAllOutcome<DigestItem>(status, data);
       if (outcome.kind === 'error') {

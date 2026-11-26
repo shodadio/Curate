@@ -24,13 +24,15 @@ test('the stream asks for one feed or for all of them', () => {
 });
 
 test('a manual refresh takes the whole library and forces past the server cache', () => {
-  assert.deepEqual(buildSingleFeedRequest(feed, [feed]), {
+  const pausedFeed = { id: 'src_2', title: 'Paused publication', paused: true };
+  const library = [feed, pausedFeed];
+  assert.deepEqual(buildSingleFeedRequest(feed, library), {
     sourceId: 'src_1',
     sourceTitle: 'Publication',
-    sources: [feed],
+    sources: library,
     force: true,
   });
-  assert.deepEqual(buildRefreshAllRequest('all', [feed]), { sourceTitle: 'all', sources: [feed], refreshAll: true });
+  assert.deepEqual(buildRefreshAllRequest('all', library), { sourceTitle: 'all', sources: library, refreshAll: true });
 });
 
 test('the stream posts to its route and survives a body that is not JSON', async () => {
@@ -87,9 +89,20 @@ test('a refused refresh names the server error rather than succeeding empty', ()
   assert.equal(ok.kind, 'ok');
 });
 
-test('an answering feed is cleared of its failure, and a silent run says nothing', () => {
-  const update = refreshAllSourceUpdate({ id: 'src_1', ok: true }, { consecutiveFailures: 2 }, 9000);
-  assert.deepEqual(update, { lastSyncedAt: 9000, status: 'active', failingReason: undefined, consecutiveFailures: 0 });
+test('an answering feed is cleared of failures and pause state, and a silent run says nothing', () => {
+  const update = refreshAllSourceUpdate(
+    { id: 'src_1', ok: true },
+    { consecutiveFailures: 2, paused: true, pausedReason: 'Repeated failures' },
+    9000,
+  );
+  assert.deepEqual(update, {
+    lastSyncedAt: 9000,
+    status: 'active',
+    failingReason: undefined,
+    consecutiveFailures: 0,
+    paused: false,
+    pausedReason: undefined,
+  });
   assert.equal(refreshAllSourceUpdate(undefined, {}, 9000), null);
 });
 
