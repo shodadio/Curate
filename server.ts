@@ -2342,6 +2342,47 @@ CURATION RULES:
     }
   });
 
+  // Folder suggestion for the manual add-source flow. It reuses the same directory signals
+  // as source discovery: a known publication host wins, otherwise the title and host tokens
+  // are scored against directory topics, titles and folders. The client prefers an exact
+  // library host match first (OPML imports included), so this stays directory-only.
+  app.post('/api/suggest-folder', rateLimit('suggest-folder', 60), async (req, res) => {
+    const title = String(req.body?.title || '').slice(0, 200).trim();
+    const feedUrl = String(req.body?.feedUrl || '').slice(0, 2000).trim();
+    if (!feedUrl && !title) {
+      res.status(400).json({ error: 'A feed URL or title is required' });
+      return;
+    }
+    const hostOf = (value: string): string => {
+      try {
+        return new URL(value).hostname.replace(/^www\./, '').toLowerCase();
+      } catch {
+        return '';
+      }
+    };
+    const host = hostOf(feedUrl);
+    if (host) {
+      const known = discoveryDirectory.find(entry => hostOf(entry.siteUrl) === host);
+      if (known) {
+        res.json({ folder: known.folder, reason: 'known-publication', summary: known.summary });
+        return;
+      }
+    }
+    const hostWords = host ? host.split(/[^a-z0-9]+/).filter(token => token.length >= 2 && token !== 'com' && token !== 'org' && token !== 'net') : [];
+    const tokens = discoveryQueryTokens(`${title} ${hostWords.join(' ')}`);
+    if (tokens.length > 0) {
+      const ranked = discoveryDirectory
+        .map(entry => ({ entry, score: scoreDiscoveryEntry(entry, tokens) }))
+        .filter(row => row.score > 0)
+        .sort((a, b) => b.score - a.score || a.entry.folder.localeCompare(b.entry.folder));
+      if (ranked.length > 0) {
+        res.json({ folder: ranked[0].entry.folder, reason: 'topic-match', summary: ranked[0].entry.summary });
+        return;
+      }
+    }
+    res.json({ folder: 'General', reason: 'default' });
+  });
+
   // A piece saved before the cleaner kept inline links has only the link's words left in its
   // stored text, so the reader can ask for the article once more and replace that copy. The
   // extractor and its 24-hour cache are the ones curation already uses, so a story fetched for

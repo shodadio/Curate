@@ -1272,11 +1272,17 @@ export default function App() {
   const [newSourceFolder, setNewSourceFolder] = useState<string>('General');
   const [newSourceFolderCustom, setNewSourceFolderCustom] = useState(false);
   const [newSourceValidating, setNewSourceValidating] = useState(false);
+  const [newSourceSuggestion, setNewSourceSuggestion] = useState<string | null>(null);
+  const [newSourceSuggestionReason, setNewSourceSuggestionReason] = useState<string | null>(null);
+  const [newSourceSuggesting, setNewSourceSuggesting] = useState(false);
   const addSourceValidationAbortRef = React.useRef<AbortController | null>(null);
+  const addSourceSuggestAbortRef = React.useRef<AbortController | null>(null);
 
   const clearAddSourceForm = () => {
     addSourceValidationAbortRef.current?.abort();
     addSourceValidationAbortRef.current = null;
+    addSourceSuggestAbortRef.current?.abort();
+    addSourceSuggestAbortRef.current = null;
     setNewSourceTitle('');
     setNewSourceUrl('');
     setNewSourceTitleError(null);
@@ -1284,6 +1290,9 @@ export default function App() {
     setNewSourceFolder('General');
     setNewSourceFolderCustom(false);
     setNewSourceValidating(false);
+    setNewSourceSuggestion(null);
+    setNewSourceSuggestionReason(null);
+    setNewSourceSuggesting(false);
   };
 
   const openAddSourceModal = () => {
@@ -1299,6 +1308,87 @@ export default function App() {
     addSourceHistoryRef.current = false;
     if (ownsHistoryEntry && window.history.state?.curatorAddSource) window.history.back();
   };
+
+  // Suggested folder for the manual add-source flow. Library host matches (OPML imports
+  // included) win instantly; otherwise the directory-backed /api/suggest-folder answers
+  // from the same signals discovery uses. The suggestion never auto-applies: one tap
+  // accepts it, the folder control stays the manual fine-tune.
+  useEffect(() => {
+    if (!showAddSourceModal) return;
+    const trimmedUrl = newSourceUrl.trim();
+    const trimmedTitle = newSourceTitle.trim();
+    if (!trimmedUrl && !trimmedTitle) {
+      addSourceSuggestAbortRef.current?.abort();
+      setNewSourceSuggesting(false);
+      return;
+    }
+    let host = '';
+    try {
+      host = new URL(trimmedUrl).hostname.replace(/^www\./, '').toLowerCase();
+    } catch {
+      host = '';
+    }
+    if (host) {
+      const libraryMatch = sources.find(src => {
+        try {
+          return new URL(src.feedUrl).hostname.replace(/^www\./, '').toLowerCase() === host;
+        } catch {
+          return false;
+        }
+      });
+      const libraryFolder = (!libraryMatch?.folder || libraryMatch.folder.trim().toLowerCase() === 'uncategorized')
+        ? 'General'
+        : libraryMatch.folder.trim();
+      if (libraryMatch && libraryFolder.toLowerCase() !== 'general') {
+        addSourceSuggestAbortRef.current?.abort();
+        setNewSourceSuggesting(false);
+        setNewSourceSuggestion(libraryFolder.slice(0, 40));
+        setNewSourceSuggestionReason(`Matches ${libraryMatch.title} already in your library`);
+        return;
+      }
+    }
+    // A discovery prefill already carries its folder; keep it until the address changes.
+    if (newSourceSuggestion && newSourceSuggestionReason?.startsWith('From search:')) return;
+    const timer = window.setTimeout(async () => {
+      addSourceSuggestAbortRef.current?.abort();
+      const controller = new AbortController();
+      addSourceSuggestAbortRef.current = controller;
+      setNewSourceSuggesting(true);
+      try {
+        const res = await fetch('/api/suggest-folder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: trimmedTitle.slice(0, 200), feedUrl: trimmedUrl }),
+          signal: controller.signal,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (controller.signal.aborted) return;
+        const folder = typeof data?.folder === 'string' ? data.folder.trim() : '';
+        if (!folder || folder.toLowerCase() === 'general') {
+          setNewSourceSuggestion(null);
+          setNewSourceSuggestionReason(null);
+          return;
+        }
+        setNewSourceSuggestion(folder.slice(0, 40));
+        setNewSourceSuggestionReason(
+          data?.reason === 'known-publication'
+            ? 'Known publication in Curator\u2019s directory'
+            : 'Based on the title and directory topics'
+        );
+      } catch {
+        if (!controller.signal.aborted) {
+          setNewSourceSuggestion(null);
+          setNewSourceSuggestionReason(null);
+        }
+      } finally {
+        if (addSourceSuggestAbortRef.current === controller) {
+          addSourceSuggestAbortRef.current = null;
+          setNewSourceSuggesting(false);
+        }
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [showAddSourceModal, newSourceTitle, newSourceUrl]);
 
   // OPML Import state
   const [importText, setImportText] = useState<string>('');
@@ -2821,21 +2911,28 @@ export default function App() {
       showToast('That feed is already in your sources');
       return;
     }
-
-    const newSrc: SourceItem = {
-      id: 'src_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
-      title: item.title,
-      feedUrl: item.feedUrl,
-      folder: item.folder || 'Discovered',
-      categories: [item.folder || 'Discovered'],
-      status: 'active'
-    };
-    setSources(prev => [newSrc, ...prev]);
-    showToast(
-      item.rssStatus === 'generatable'
-        ? 'Generated RSS and added the feed'
-        : `Feed added to ${newSrc.folder}`
-    );
+    // Discovery hands its folder to the add-source flow as a suggestion: one tap accepts
+    // it, the folder control stays the manual fine-tune before anything is added.
+    addSourceSuggestAbortRef.current?.abort();
+    setNewSourceTitle(item.title);
+    setNewSourceUrl(item.feedUrl);
+    setNewSourceTitleError(null);
+    setNewSourceUrlError(null);
+    setNewSourceFolder('General');
+    setNewSourceFolderCustom(false);
+    setNewSourceValidating(false);
+    setNewSourceSuggesting(false);
+    const discoveredFolder = (item.folder || '').trim();
+    if (discoveredFolder && discoveredFolder.toLowerCase() !== 'general') {
+      setNewSourceSuggestion(discoveredFolder.slice(0, 40));
+      setNewSourceSuggestionReason(`From search: ${item.title}`);
+    } else {
+      setNewSourceSuggestion(null);
+      setNewSourceSuggestionReason(null);
+    }
+    window.history.pushState({ ...(window.history.state || {}), curatorAddSource: true }, '');
+    addSourceHistoryRef.current = true;
+    setShowAddSourceModal(true);
   };
 
   const handleExportOPML = () => {
@@ -7807,6 +7904,43 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 />
                 {newSourceUrlError && (
                   <p role="alert" className="text-xs text-[#1c1a17] mt-1">{newSourceUrlError}</p>
+                )}
+                {newSourceSuggesting && !newSourceSuggestion && (
+                  <p className="text-xs text-[#6f675c] mt-1" role="status">Suggesting a folder…</p>
+                )}
+                {newSourceSuggestion && newSourceSuggestion.toLowerCase() !== newSourceFolder.trim().toLowerCase() && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-[#e9e1cf] border border-[#ddd2bc] px-3 py-2">
+                    <span className="text-xs text-[#3f3a33]">
+                      Suggested folder: <span className="font-semibold text-[#1c1a17]">{newSourceSuggestion}</span>
+                      {newSourceSuggestionReason && (
+                        <span className="text-[#6f675c]"> · {newSourceSuggestionReason}</span>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const match = sourceFolders.find(folder => folder.toLowerCase() === newSourceSuggestion.toLowerCase());
+                        if (match) {
+                          setNewSourceFolderCustom(false);
+                          setNewSourceFolder(match);
+                        } else {
+                          setNewSourceFolderCustom(true);
+                          setNewSourceFolder(newSourceSuggestion);
+                        }
+                      }}
+                      className="px-3 py-1.5 text-xs font-semibold rounded-xl bg-[#1c1a17] text-[#f6f1e7] hover:bg-[#3a352d] transition"
+                    >
+                      Use {newSourceSuggestion}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setNewSourceSuggestion(null); setNewSourceSuggestionReason(null); }}
+                      aria-label="Dismiss folder suggestion"
+                      className="text-xs text-[#6f675c] hover:text-[#1c1a17] transition"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
                 )}
               </div>
               <div>
