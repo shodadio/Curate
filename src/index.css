@@ -152,6 +152,33 @@ body {
   pointer-events: none;
 }
 
+/* The same pair under a page's heading: Saved, Sources, Feeds and Settings each open with a
+   title row, and the rule beneath it is the masthead's, facing the same way — the heavier
+   line first, the hairline under it. The hairline sits just outside the border, in the space
+   the page already keeps below the heading, so the two rules stay 3px apart there too. */
+.paper-rule-bottom {
+  position: relative;
+  border-bottom: 2px solid rgba(28, 26, 23, 0.5);
+}
+
+.paper-rule-bottom::after {
+  content: '';
+  position: absolute;
+  bottom: -5px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background-color: rgba(28, 26, 23, 0.2);
+  pointer-events: none;
+}
+
+/* The first story of a stream opens directly under the page's paired rule, so its own hairline
+   would draw a third line a few pixels below the pair and read as a stray rule. The story
+   after it, and every one after that, keeps the line that divides them. */
+.paper-stream > :first-child {
+  border-top-width: 0;
+}
+
 /* Settings keeps the paper's shape as well as its colour: panels, alerts and controls inside
    it take a printed corner of two pixels in place of a card's twelve, so the page runs from
    the masthead down without a single rounded surface. Pills, dots and avatars stay round —
@@ -277,6 +304,14 @@ body {
   --reader-accent: #8a5b2b;
   --reader-negative: #9a4430;
   color-scheme: light;
+}
+
+/* The reader is the same paper, so it takes the same printed corner: the appearance panel,
+   the listening bar and the buttons set on the article drop the app's twelve-pixel card for
+   two pixels. Only the shape is set here — every colour is the reader's own — so the rule
+   holds in all three themes. Pills stay round: they are marks, not surfaces. */
+.reader-surface :where(.rounded-lg, .rounded-xl, .rounded-2xl, .rounded-3xl) {
+  border-radius: 2px;
 }
 
 .reader-surface ::selection {
@@ -448,7 +483,7 @@ body {
   width: 100%;
   aspect-ratio: 16 / 9;
   object-fit: cover;
-  border-radius: 0.35rem;
+  border-radius: 2px;
   background-color: var(--reader-track);
 }
 
@@ -458,7 +493,7 @@ body {
   display: block;
   width: 100%;
   height: auto;
-  border-radius: 0.35rem;
+  border-radius: 2px;
   background-color: var(--reader-track);
 }
 
@@ -513,7 +548,7 @@ body {
   width: 100%;
   aspect-ratio: 16 / 9;
   border: 0;
-  border-radius: 0.35rem;
+  border-radius: 2px;
   background-color: var(--reader-track);
 }
 
@@ -538,7 +573,7 @@ body {
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border: 0;
-  border-radius: 0.35rem;
+  border-radius: 2px;
   background-color: var(--reader-track);
   box-shadow: inset 0 0 0 1px var(--reader-line);
   color: var(--reader-ink);
@@ -587,7 +622,7 @@ body {
   align-items: center;
   gap: 0.5rem;
   min-height: 2.75rem;
-  border-radius: 0.35rem;
+  border-radius: 2px;
   border: 1px solid var(--reader-line);
   padding-inline: 0.9rem;
   font-size: 0.85rem;
@@ -661,7 +696,7 @@ body {
 
 .reader-listen-card {
   overflow: hidden;
-  border-radius: 1.1rem;
+  border-radius: 2px;
   border: 1px solid var(--reader-line);
   background-color: var(--reader-panel);
   backdrop-filter: blur(18px);

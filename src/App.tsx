@@ -4889,8 +4889,11 @@ export default function App() {
                 {selectedArticle.publishedAt && (
                   <span>{decodeEntities(selectedArticle.publishedAt)}</span>
                 )}
-                <span>{decodeEntities(selectedArticle.readTime || '')}</span>
-                <span aria-hidden="true">·</span>
+                {selectedArticle.readTime && (
+                  <span>{decodeEntities(selectedArticle.readTime)}</span>
+                )}
+                {/* The voice is its own mark rather than a continuation of the byline: a
+                    separator before it began the second line with a stray dot on a phone. */}
                 <button
                   type="button"
                   onClick={() => handleListenTap(selectedArticle)}
@@ -4902,7 +4905,7 @@ export default function App() {
                       : `Listen — read aloud with ${speechVoiceLabel}`
                   }
                 >
-                  <Headphones className="w-3.5 h-3.5" />
+                  <Headphones className="h-3.5 w-3.5" />
                   <span>{readAloudActive ? 'Listening' : 'Listen'}</span>
                 </button>
               </div>
@@ -5936,7 +5939,7 @@ export default function App() {
         {/* TAB 2: SAVED */}
         {activeTab === 'saved' && (
           <div className="space-y-6 animate-fade-in">
-            <div className="border-b border-[#ddd2bc] pb-4 flex items-start justify-between gap-3">
+            <div className="paper-rule-bottom pb-4 flex items-start justify-between gap-3">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#6f675c]">Re-reading queue</p>
                 <h2 className="mt-1 font-serif text-[1.6rem] font-semibold leading-tight text-[#1c1a17]">Saved</h2>
@@ -5977,7 +5980,7 @@ export default function App() {
                   onChange={e => setSavedQuery(e.target.value)}
                   placeholder="Search your saved reading"
                   aria-label="Search saved stories by title, writer, publication, folder or summary"
-                  className="w-full rounded-xl bg-[#f6f1e7] border border-[#ddd2bc] pl-10 pr-3 py-3 text-sm text-[#1c1a17] placeholder:text-[#a39a8c] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8a5a24]/50 focus:border-[#8a5a24]"
+                  className="w-full rounded-xl bg-[#f6f1e7] border border-[#ddd2bc] pl-10 pr-3 py-3 text-sm text-[#1c1a17] placeholder:text-[#837b6d] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8a5a24]/50 focus:border-[#8a5a24]"
                 />
               </div>
             )}
@@ -6025,7 +6028,7 @@ export default function App() {
                 </button>
               </div>
             ) : (
-              <div className="space-y-8">
+              <div className="space-y-8 paper-stream">
                 {savedVisibleItems.map((item) => renderStoryEntry(item, true))}
                 {savedVisibleItems.length > 0 && (
                   <footer className="pt-2">
@@ -6045,7 +6048,7 @@ export default function App() {
             so opening one of them never mounts this page underneath. */}
         {activeTab === 'sources' && (
           <div className="space-y-8 animate-fade-in">
-            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#ddd2bc] pb-4">
+            <div className="flex flex-wrap items-center justify-between gap-4 pb-4">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#6f675c]">Subscriptions</p>
                 <h2 className="mt-1 font-serif text-[1.6rem] font-semibold leading-tight text-[#1c1a17]">Sources</h2>
@@ -6053,6 +6056,10 @@ export default function App() {
                   {sources.length} {sources.length === 1 ? 'source' : 'sources'} · {Object.keys(sourcesByFolder).length} {Object.keys(sourcesByFolder).length === 1 ? 'folder' : 'folders'}
                 </p>
               </div>
+              {/* The rule closes the heading, and the actions follow it: Saved and Settings
+                  rule off their heading alone, so all four pages break at the same height
+                  rather than the pair falling below a row of buttons on two of them. */}
+              <div aria-hidden="true" className="paper-rule w-full" />
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={openAddSourceModal}
@@ -6075,7 +6082,7 @@ export default function App() {
             {/* Failures get their own list: a feed that stopped answering is not a source to
                 browse, and its error would otherwise sit buried inside a folder of working ones. */}
             {failedSources.length > 0 && (
-              <section className="w-full max-w-full space-y-3 paper-rule pt-4">
+              <section className="w-full max-w-full space-y-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h3 className="text-sm font-semibold text-[#1c1a17] flex items-center gap-2">
@@ -6198,7 +6205,10 @@ export default function App() {
             )}
 
             {/* Google Search & RSS Investigation Tool */}
-            <section className="space-y-4 paper-rule pt-5">
+            {/* The heading above already carries the pair, so the first block under it takes
+                no rule of its own; this section takes the pair only when the failed list
+                separates it from that heading. */}
+            <section className={`space-y-4 pt-5 ${failedSources.length > 0 ? 'paper-rule' : ''}`}>
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-semibold text-[#3f3a33] flex items-center gap-2">
@@ -6682,7 +6692,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
         {/* TAB 4: SETTINGS */}
         {activeTab === 'settings' && (
           <div className="no-sideways paper-panels flex flex-col gap-4 animate-fade-in">
-            <div className="flex items-start justify-between gap-3 border-b border-[#ddd2bc] pb-4">
+            <div className="flex items-start justify-between gap-3 paper-rule-bottom pb-4">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#6f675c]">Your reading space</p>
                 <h2 className="mt-1 font-serif text-[1.6rem] font-semibold leading-tight text-[#1c1a17]">Settings</h2>
@@ -6815,11 +6825,13 @@ Search for writers, publications, or topics. Curator checks whether each result 
             )}
 
             <details id="advanced-configuration" className="order-10 group border border-[#d3c7ae] bg-[#efe8d6] open:border-[#b9ad97]">
-              <summary className="flex cursor-pointer list-none items-center gap-2.5 px-5 py-4 [&::-webkit-details-marker]:hidden">
-                <Sparkles className="h-4 w-4 shrink-0 text-[#1c1a17]" />
-                <span className="font-serif text-[1.05rem] font-semibold text-[#1c1a17]">Advanced configuration</span>
-                <span className="ml-auto min-w-0 truncate text-xs text-[#6f675c]">AI, models, embeddings &amp; reading aloud</span>
-                <ChevronDown className="h-4 w-4 shrink-0 text-[#6f675c] transition-transform group-open:rotate-180" />
+              <summary className="flex cursor-pointer list-none items-start gap-2.5 px-5 py-4 [&::-webkit-details-marker]:hidden">
+                <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-[#1c1a17]" />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-serif text-[1.05rem] font-semibold leading-tight text-[#1c1a17] [overflow-wrap:break-word]">Advanced configuration</span>
+                  <span className="mt-1 block text-xs leading-snug text-[#6f675c] [overflow-wrap:break-word]">AI, models, embeddings &amp; reading aloud</span>
+                </span>
+                <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-[#6f675c] transition-transform group-open:rotate-180" />
               </summary>
               <div className="space-y-4 px-5 pb-5">
             <ReadAloudSettings
@@ -7277,11 +7289,13 @@ Search for writers, publications, or topics. Curator checks whether each result 
             </SettingsSection>
 
             <details className="order-last group border border-[#d3c7ae] bg-[#efe8d6] open:border-[#b9ad97]">
-              <summary className="flex cursor-pointer list-none items-center gap-2.5 px-5 py-4 [&::-webkit-details-marker]:hidden">
-                <HardDrive className="h-4 w-4 shrink-0 text-[#1c1a17]" />
-                <span className="font-serif text-[1.05rem] font-semibold text-[#1c1a17]">Library &amp; app controls</span>
-                <span className="ml-auto min-w-0 truncate text-xs text-[#6f675c]">Backups, storage &amp; reset</span>
-                <ChevronDown className="h-4 w-4 shrink-0 text-[#6f675c] transition-transform group-open:rotate-180" />
+              <summary className="flex cursor-pointer list-none items-start gap-2.5 px-5 py-4 [&::-webkit-details-marker]:hidden">
+                <HardDrive className="mt-0.5 h-4 w-4 shrink-0 text-[#1c1a17]" />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-serif text-[1.05rem] font-semibold leading-tight text-[#1c1a17] [overflow-wrap:break-word]">Library &amp; app controls</span>
+                  <span className="mt-1 block text-xs leading-snug text-[#6f675c] [overflow-wrap:break-word]">Backups, storage &amp; reset</span>
+                </span>
+                <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-[#6f675c] transition-transform group-open:rotate-180" />
               </summary>
               <div className="space-y-4 px-5 pb-5">
             {/* The library, in and out, and what the browser holds of it. Storage used to be a second
@@ -7509,7 +7523,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
             </div>
 
             {/* Stream Header */}
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#ddd2bc] pb-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-4">
               <div className="min-w-0">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#6f675c]">
                   {selectedFeedSource && selectedFeedSource !== 'all' ? 'Feed stream' : 'Chronological stream'}
@@ -7524,6 +7538,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 </p>
               </div>
 
+              {/* The rule closes the heading, and the actions follow it, as on the three
+                  other pages: the pair no longer falls below the button row here. */}
+              <div aria-hidden="true" className="paper-rule w-full" />
               <div className="flex flex-wrap items-center gap-2">
                 {feedArticleReturn ? (
                   <button
@@ -7609,7 +7626,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 </button>
               </div>
             ) : (
-              <div key={`stream-${feedStreamRenderKey}`} className="space-y-8">
+              <div key={`stream-${feedStreamRenderKey}`} className="space-y-8 paper-stream">
                 {feedStreamArticles.slice(0, feedVisibleCount).map((item) => renderStoryEntry(item, false))}
                 {feedStreamArticles.length > feedVisibleCount && (
                   <button
