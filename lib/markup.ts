@@ -109,6 +109,16 @@ export const cleanHtml = (str: string): string => {
     .trim();
 };
 
+const comparableWords = (text: string): string =>
+  cleanHtml(text).normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu)?.join(' ') || '';
+
+// The lead can show both a feed standfirst and the article's opening paragraph. Some feeds
+// publish the same prose in both fields, so keep the second copy off the front page.
+export const distinctLeadOpening = (summary: string, opening: string): string => {
+  const summaryWords = comparableWords(summary);
+  return summaryWords && summaryWords === comparableWords(opening) ? '' : opening;
+};
+
 // Site chrome: display-settings widgets in the publisher's page reach feeds as a run of very
 // short paragraphs (Ars Technica's "Story text / Size / Small Standard Large / Width * /
 // Standard Wide / Links / Standard Orange"), which then read as the opening of the article.

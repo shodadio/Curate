@@ -109,7 +109,7 @@ import {
 import { ARTICLE_BODY_BATCH, readArticleBodies } from './lib/articleBodies';
 import { registerListeningCommands, setListeningPiece, type ListeningCommands } from './lib/mediaSession';
 import { ReadAloudSettings } from './components/ReadAloudSettings';
-import { articleLooksIncomplete, articleNeedsBodyRefresh, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isImageBlock, isMediaCreditParagraph, isPlayerChrome, isStrayCommentLink, isTableBlock, joinContinuedParagraphs, linkLabelsOnly, repairSplitDigits, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
+import { articleLooksIncomplete, articleNeedsBodyRefresh, articleNeedsLinkRefresh, decodeEntities, dropBylineFurniture, dropEndingFurniture, dropRepeatedShortParagraphs, isImageBlock, isMediaCreditParagraph, isPlayerChrome, isStrayCommentLink, isTableBlock, joinContinuedParagraphs, linkLabelsOnly, distinctLeadOpening, repairSplitDigits, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, splitDenseParagraph, trimSummaryFurniture } from '../lib/markup';
 
 // One-click provider addresses: the popular OpenAI-compatible services, so a working setup
 // starts with a name and a key rather than a copied URL and a guessed model ID.
@@ -4621,7 +4621,9 @@ export default function App() {
   const leadStatus = leadActions.isReadThrough ? 'Read through' : leadActions.isClicked ? leadActions.openedLabel : '';
   const leadByline = leadStory ? bylineLineFor(leadStory) : { lead: '', readTime: '' };
   const leadSaved = Boolean(leadStory && savedIds.includes(leadStory.id));
-  const leadOpening = openingParagraph(leadStory?.fullText || '');
+  const leadOpening = leadStory
+    ? distinctLeadOpening(leadStory.summary || '', openingParagraph(leadStory.fullText || ''))
+    : '';
 
   const restoreAllMutedCards = () => {
     const restoredIds = mutedDigestItems.map(item => item.id);

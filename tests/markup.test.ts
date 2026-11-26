@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { articleLooksIncomplete, articleNeedsBodyRefresh, articleNeedsLinkRefresh, articleNeedsMediaRefresh, cleanHtml, decodeEntities, htmlToReadableText, isImageBlock, isTableBlock, repairSplitDigits, splitDenseParagraph, splitSentences, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, trimSummaryFurniture } from '../lib/markup.ts';
+import { articleLooksIncomplete, articleNeedsBodyRefresh, articleNeedsLinkRefresh, articleNeedsMediaRefresh, cleanHtml, decodeEntities, distinctLeadOpening, htmlToReadableText, isImageBlock, isTableBlock, repairSplitDigits, splitDenseParagraph, splitSentences, stripMarkdownBlocks, stripMarkdownEmphasis, stripMarkdownSyntax, trimSummaryFurniture } from '../lib/markup.ts';
 
 test('only a piece saved before links were kept is refreshed', () => {
   assert.equal(articleNeedsLinkRefresh({ url: 'https://example.com/story' }), true);
@@ -957,4 +957,11 @@ test('a double-escaped article is clean in both the card summary and the reader 
   assert.equal(hasTag(body), false, `reader body still shows markup: ${body}`);
   assert.equal(body.split('\n\n').length, 2, 'the two source paragraphs must survive');
   assert.match(body, /service workers\.$/);
+});
+
+test('the lead opening is omitted when it repeats the standfirst', () => {
+  const standfirst = 'The eval bar answers the wrong question. What do you actually want to know?…';
+  const opening = 'The eval bar answers the wrong question! What do you actually want to know?';
+  assert.equal(distinctLeadOpening(standfirst, opening), '');
+  assert.equal(distinctLeadOpening(standfirst, 'A new opening paragraph adds different information.'), 'A new opening paragraph adds different information.');
 });
