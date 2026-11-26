@@ -3736,7 +3736,7 @@ export default function App() {
             <Bookmark className={`h-3.5 w-3.5 ${isSaved ? 'fill-[#1c1a17]' : ''}`} />
             {isSaved ? 'Saved' : 'Save'}
           </button>
-          <div className="sm:ml-auto">
+          <div className="ml-auto">
             <FeedbackActions
               isMore={actions.isVotedMore}
               isLess={actions.isVotedLess}
@@ -5557,7 +5557,7 @@ export default function App() {
                         <Bookmark className={`h-3.5 w-3.5 ${leadSaved ? 'fill-[#1c1a17]' : ''}`} />
                         {leadSaved ? 'Saved' : 'Save'}
                       </button>
-                      <div className="sm:ml-auto">
+                      <div className="ml-auto">
                         <FeedbackActions
                           isMore={leadActions.isVotedMore}
                           isLess={leadActions.isVotedLess}
@@ -5643,7 +5643,7 @@ export default function App() {
                               <Bookmark className={`h-3 w-3 ${isSaved ? 'fill-[#1c1a17]' : ''}`} />
                               {isSaved ? 'Saved' : 'Save'}
                             </button>
-                            <div className="sm:ml-auto">
+                            <div className="ml-auto">
                               <FeedbackActions
                                 isMore={actions.isVotedMore}
                                 isLess={actions.isVotedLess}
@@ -5720,7 +5720,7 @@ export default function App() {
                                 <Bookmark className={`h-3 w-3 ${isSaved ? 'fill-[#1c1a17]' : ''}`} />
                                 {isSaved ? 'Saved' : 'Save'}
                               </button>
-                              <div className="sm:ml-auto">
+                              <div className="ml-auto">
                                 <FeedbackActions
                                   isMore={actions.isVotedMore}
                                   isLess={actions.isVotedLess}
