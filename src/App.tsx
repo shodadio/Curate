@@ -276,7 +276,7 @@ const hasCuratorNote = (why?: string): boolean => {
 
 // Curator has no browser chrome of its own, so external links always open in a separate
 // browsing context. If the browser blocks that window, keep the reader here and explain why.
-function openExternal(url?: string): boolean {
+function openExternal(url?: string | null): boolean {
   if (!url || url === '#') return false;
   try {
     const opened = window.open(url, '_blank');
@@ -292,7 +292,7 @@ function openExternal(url?: string): boolean {
 }
 
 // Modified clicks (a new tab, a new window, a download) keep the browser's own behaviour.
-function handleExternalClick(event: React.MouseEvent<HTMLAnchorElement>, url?: string): boolean {
+function handleExternalClick(event: React.MouseEvent<HTMLAnchorElement>, url?: string | null): boolean {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
   event.preventDefault();
   return openExternal(url);
