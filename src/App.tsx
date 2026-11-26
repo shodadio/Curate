@@ -6696,6 +6696,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#6f675c]">Your reading space</p>
                 <h2 className="mt-1 font-serif text-[1.6rem] font-semibold leading-tight text-[#1c1a17]">Settings</h2>
+                <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-[#6f675c]">Preferences &amp; library</p>
               </div>
               <button
                 type="button"
