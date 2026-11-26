@@ -6391,7 +6391,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                                 href={webUrlHref(item.feedUrl)}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                onClick={event => handleExternalClick(event, item.feedUrl)}
+                                onClick={event => handleExternalClick(event, item.feedUrl ?? undefined)}
                                 title={`${item.feedUrl} (opens in a new window)`}
                                 className="text-[#6f675c] underline-offset-2 transition hover:text-[#1c1a17] hover:underline"
                               >
