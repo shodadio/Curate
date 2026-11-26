@@ -83,6 +83,7 @@ import {
   SPEECH_RATE_DEFAULT,
   SPEECH_RATE_MAX,
   SPEECH_RATE_MIN,
+  carrySpeechFallback,
   forgetSpeechPosition,
   readSpeechPositions,
   rememberSpeechPosition,
@@ -3214,6 +3215,9 @@ export default function App() {
     const finishedArticle = speechArticleItemRef.current;
     // Read before the stop, which ends the run
     const carriesOn = speechQueueRunRef.current;
+    // Whether the run had already stepped aside to the device voice, so the next piece does
+    // not retry the voice that just refused
+    const fellBack = speechVoiceFallbackRef.current;
     stopSpeech();
     setSpeechPanelOpen(false);
     if (!finishedId) return;
@@ -3243,7 +3247,7 @@ export default function App() {
     }
     if (carriesOn) {
       // The reader's next unread piece follows, so a commute can listen through the edition
-      void queueNextListeningPiece(finishedId, speechRunTokenRef.current);
+      void queueNextListeningPiece(finishedId, speechRunTokenRef.current, fellBack);
       return;
     }
     showToast('Finished listening · Read through recorded');
@@ -3389,7 +3393,7 @@ export default function App() {
     speakNeuralChunk();
   };
 
-  const startSpeech = (article: DigestItem, startIndex?: number) => {
+  const startSpeech = (article: DigestItem, startIndex?: number, keepFallback = false) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       showToast('Speech audio is not supported in this browser.');
       return;
@@ -3414,9 +3418,12 @@ export default function App() {
     speechArticleItemRef.current = article;
     speechStartedRef.current = false;
     storeSpeechPosition(article.id, first, queue.length, queue[first].paragraphIndex);
-    // Starting a reading must never quietly pull down a 60 MB voice mid-sentence
-    speechVoiceFallbackRef.current = speechEngine === 'piper' && piperDownloadState.status !== 'ready';
-    if (speechVoiceFallbackRef.current) {
+    // Starting a reading must never quietly pull down a 60 MB voice mid-sentence, and a piece
+    // following a refused one stays on the device voice instead of retrying the voice that
+    // just refused.
+    const piperNotReady = speechEngine === 'piper' && piperDownloadState.status !== 'ready';
+    speechVoiceFallbackRef.current = carrySpeechFallback(keepFallback, speechEngine, piperDownloadState.status === 'ready');
+    if (piperNotReady) {
       showToast('Download that voice in Settings → Read aloud first — using your device voice meanwhile.');
     }
     if (speechEngine !== 'device' && !speechVoiceFallbackRef.current) primeSpeechAudio();
@@ -3963,7 +3970,7 @@ export default function App() {
   // A piece that runs to its end hands over to the next unread piece in the edition, so a
   // commute can listen through the digest. Stopping, closing the reader or starting another
   // reading changes the token, and the handover is dropped.
-  const queueNextListeningPiece = async (finishedId: string, token: number) => {
+  const queueNextListeningPiece = async (finishedId: string, token: number, keepFallback = false) => {
     const order = nextUnreadPieces(digest.map(item => item.id), finishedId, id => Boolean(readingStats[id]?.finished));
     if (order.length === 0) {
       // A piece outside the edition has nothing to follow it, and an edition read through has
@@ -3981,7 +3988,7 @@ export default function App() {
       if (speechRunTokenRef.current !== token) return;
       if (!ready) continue;
       openArticle(ready);
-      startSpeech(ready);
+      startSpeech(ready, undefined, keepFallback);
       showToast(`Listening on: ${ready.title}`);
       return;
     }

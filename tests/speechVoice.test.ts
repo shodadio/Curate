@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { base64ToBytes, bytesToBase64, pcm16ToWavBytes, silentWavDataUri, speechAudioBlob, trimSilenceWav } from '../lib/wav.ts';
 import { PIPER_DEFAULT_VOICE_ID, PIPER_VOICES, findPiperVoice, piperDownloadMb } from '../lib/piperVoices.ts';
-import { piperStatusLabel, resolveGeminiSpeechKey } from '../lib/readAloud.ts';
+import { carrySpeechFallback, piperStatusLabel, resolveGeminiSpeechKey } from '../lib/readAloud.ts';
 import { GEMINI_TTS_API_VERSION, describeGeminiTtsError, geminiTtsRequest } from '../lib/geminiTtsRequest.ts';
 import { speechFailureMessage } from '../src/lib/geminiTts.ts';
 
@@ -199,6 +199,17 @@ test('a Gemini refusal keeps its status and loses its JSON envelope', () => {
   // A transport failure never reached a status, but still says something
   assert.deepEqual(describeGeminiTtsError(new Error('Connection error.')), { status: 0, message: 'Connection error.' });
   assert.deepEqual(describeGeminiTtsError(null), { status: 0, message: 'Gemini could not speak that passage.' });
+});
+
+test('a piece that follows a refused one stays on the device voice for the rest of the run', () => {
+  // A refusal earlier in the run carries over, whatever the chosen voice was
+  assert.equal(carrySpeechFallback(true, 'gemini', true), true);
+  assert.equal(carrySpeechFallback(true, 'piper', true), true);
+  // A fresh start retries the chosen voice; only a missing download steps aside
+  assert.equal(carrySpeechFallback(false, 'gemini', true), false);
+  assert.equal(carrySpeechFallback(false, 'device', true), false);
+  assert.equal(carrySpeechFallback(false, 'piper', false), true);
+  assert.equal(carrySpeechFallback(false, 'piper', true), false);
 });
 
 test('Gemini 3.8 TTS uses v1beta and its single-speaker voice request shape', () => {

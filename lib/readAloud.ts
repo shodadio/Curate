@@ -60,6 +60,15 @@ export function resolveGeminiSpeechKey(input: {
   return { key: '', source: input.serverKeyAvailable ? 'server' : 'none' };
 }
 
+// Whether the next piece starts on the device voice: the run already stepped aside from the
+// chosen voice (it refused an earlier piece, and retrying a dead key at every article is the
+// stutter that kept breaking the run), or the downloaded voice was never fetched. A fresh tap
+// on Listen always retries the chosen voice, so a key fixed mid-run comes back on the next
+// piece the reader starts themselves.
+export function carrySpeechFallback(keepFallback: boolean, engine: SpeechEngine, piperReady: boolean): boolean {
+  return keepFallback || (engine === 'piper' && !piperReady);
+}
+
 function validSpeechPosition(value: unknown): SpeechPosition | null {
   if (!value || typeof value !== 'object') return null;
   const entry = value as Partial<SpeechPosition>;
