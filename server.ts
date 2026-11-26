@@ -39,7 +39,7 @@ import { legacyStoryIdFor, storyIdFor } from './lib/storyId';
 import { findVideoEmbed, videoEmbedFromUrl, type VideoEmbed } from './lib/videoEmbed';
 import { apifyCandidatesFromDataset, apifySearchInput, apifySearchUrl } from './lib/apifySearch';
 import { normalizeModelCatalog } from './lib/modelCatalog';
-import { GEMINI_TTS_API_VERSION, geminiTtsRequest } from './lib/geminiTtsRequest';
+import { GEMINI_TTS_API_VERSION, describeGeminiTtsError, geminiTtsRequest } from './lib/geminiTtsRequest';
 
 dotenv.config();
 
@@ -1204,9 +1204,14 @@ async function startServer() {
         audio: inline.data,
       });
     } catch (err: any) {
-      return res.status(502).json({
+      // Google's real refusal used to be buried in a JSON blob behind a blanket 502,
+      // which is what the reader saw as an unusable server error. Forward the statuses
+      // a key holder can act on (bad key, no access, quota) with Google's own sentence.
+      const upstream = describeGeminiTtsError(err);
+      const status = [400, 401, 403, 404, 429].includes(upstream.status) ? upstream.status : 502;
+      return res.status(status).json({
         ok: false,
-        error: err?.message || 'Gemini could not speak that passage.',
+        error: upstream.message,
       });
     }
   });
