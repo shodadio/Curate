@@ -43,10 +43,16 @@ export function ProviderTestButton({
         body: JSON.stringify({ kind, provider, apiKey, baseUrl, model }),
       });
       const data = await res.json().catch(() => ({}));
+      // A 405 is the host turning away a POST, not a provider rejecting the key: a deployment
+      // that serves only the app's pages has no Curator server behind them, so say what has to
+      // change instead of sending the reader off to re-check a key that is fine.
+      const hostServesNoApi = res.status === 405 && !data?.error;
       if (!res.ok || !data?.ok) {
         setStatus({
           state: 'failed',
-          message: String(data?.error || `Test failed (HTTP ${res.status}).`),
+          message: hostServesNoApi
+            ? 'This host serves Curator’s pages but not its API (HTTP 405). Run Curator’s server, or point this host at it, to test a provider here.'
+            : String(data?.error || `Test failed (HTTP ${res.status}).`),
         });
         return;
       }

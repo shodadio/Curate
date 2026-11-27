@@ -1857,6 +1857,11 @@ export default function App() {
           body: JSON.stringify({ kind, provider, apiKey, baseUrl, model }),
         }, 20000);
         if (!response.ok || !data?.ok) {
+          // 405 comes from the host, not the provider: the API is not deployed at this
+          // address, so no key would make this test pass.
+          if (response.status === 405 && !data?.error) {
+            return `${label}: this host serves Curator’s pages but not its API (HTTP 405).`;
+          }
           return `${label}: ${String(data?.error || `Test failed (HTTP ${response.status}).`).slice(0, 240)}`;
         }
         return null;
