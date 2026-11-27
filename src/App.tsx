@@ -298,9 +298,15 @@ function handleExternalClick(event: React.MouseEvent<HTMLAnchorElement>, url?: s
 }
 
 // Duplicate detection compares feeds by address, not by the name a reader gave them. Two
-// addresses that differ only in scheme are one feed: the same publication answers on either.
+// addresses that differ only in scheme or a leading www. are one feed: the same publication
+// answers on either.
 const normalizeFeedUrl = (url?: string): string =>
-  (url || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  (url || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/\/+$/, '');
 
 const normalizeCategoryLabels = (raw: unknown, fallback?: string): string[] => {
   const labels = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
