@@ -1,12 +1,9 @@
-// The two neural voices hand back audio in different containers, and the catalogue decides
-// what can legally be downloaded. Both are pure, so both are checked here.
+// Speech audio helpers and the downloaded-voice catalogue are pure, so both are checked here.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { base64ToBytes, bytesToBase64, pcm16ToWavBytes, silentWavDataUri, speechAudioBlob, trimSilenceWav } from '../lib/wav.ts';
 import { PIPER_DEFAULT_VOICE_ID, PIPER_VOICES, findPiperVoice, piperDownloadMb } from '../lib/piperVoices.ts';
-import { carrySpeechFallback, piperStatusLabel, resolveGeminiSpeechKey } from '../lib/readAloud.ts';
-import { GEMINI_TTS_API_VERSION, describeGeminiTtsError, geminiTtsRequest } from '../lib/geminiTtsRequest.ts';
-import { speechFailureMessage } from '../src/lib/geminiTts.ts';
+import { carrySpeechFallback, piperStatusLabel } from '../lib/readAloud.ts';
 
 const ascii = (bytes: Uint8Array, offset: number, length: number) =>
   String.fromCharCode(...bytes.subarray(offset, offset + length));
@@ -26,7 +23,7 @@ test('raw speech PCM is wrapped in a playable WAV header', () => {
   assert.deepEqual([...wav.subarray(44)], [1, 2, 3, 4]);
 });
 
-test('a Gemini reply that is already WAV is played as it arrived', () => {
+test('a WAV reply is played as it arrived', () => {
   const wav = pcm16ToWavBytes(new Uint8Array(8), 24000, 1);
   const blob = speechAudioBlob(bytesToBase64(wav), 'audio/wav');
   assert.equal(blob.type, 'audio/wav');
@@ -34,7 +31,7 @@ test('a Gemini reply that is already WAV is played as it arrived', () => {
 });
 
 test('a WAV that arrives labelled as PCM is still played as it arrived', () => {
-  // Gemini 3.8 sends WAV where 3.1 sent headerless PCM, and the mime type has lagged behind
+  // A WAV that arrives labelled as PCM must not be wrapped a second time
   const wav = pcm16ToWavBytes(new Uint8Array(8), 24000, 1);
   const blob = speechAudioBlob(bytesToBase64(wav), 'audio/L16;codec=pcm;rate=24000');
   assert.equal(blob.type, 'audio/wav');
@@ -48,7 +45,7 @@ test('a compressed clip is passed through rather than wrapped', () => {
   assert.equal(blob.size, mp3.byteLength);
 });
 
-test('headerless Gemini PCM is converted rather than played as noise', () => {
+test('headerless PCM is converted rather than played as noise', () => {
   const blob = speechAudioBlob(bytesToBase64(new Uint8Array(6)), 'audio/L16;codec=pcm;rate=24000');
   assert.equal(blob.type, 'audio/wav');
   assert.equal(blob.size, 50);
@@ -117,28 +114,6 @@ test('a clip with no silence to spare is played untouched', () => {
   assert.equal(trimSilenceWav(noise), noise);
 });
 
-test('a refused sentence says why it was refused', () => {
-  // Google's refusal arrives as a JSON blob inside the error field
-  const blob = JSON.stringify({ error: { code: 400, message: 'API key not valid. Please pass a valid API key.' } });
-  assert.equal(
-    speechFailureMessage(502, { error: blob }),
-    'API key not valid. Please pass a valid API key.',
-  );
-  assert.equal(speechFailureMessage(502, { error: 'Quota exceeded for this key.' }), 'Quota exceeded for this key.');
-
-  // An older server forwarded the SDK's whole error with its status up front
-  assert.equal(
-    speechFailureMessage(502, { error: `503 ${blob}` }),
-    'API key not valid. Please pass a valid API key.',
-  );
-
-  // A host with no speech route answers with a page, not a JSON error
-  assert.match(speechFailureMessage(404, null), /no speech endpoint/);
-  assert.match(speechFailureMessage(502, null), /unusable server error \(502\)/);
-  assert.match(speechFailureMessage(429, null), /limiting this key/);
-  assert.match(speechFailureMessage(200, { ok: true }), /answered with no audio/);
-});
-
 test('every offered Piper voice may be downloaded and used commercially', () => {
   const ids = PIPER_VOICES.map(voice => voice.id);
   assert.equal(new Set(ids).size, ids.length, 'voice ids are unique');
@@ -163,63 +138,12 @@ test('a downloaded voice says what it is doing, and what to do next', () => {
   assert.equal(piperStatusLabel({ status: 'error', progress: 0 }, cori), 'The download did not finish.');
 });
 
-test('reading aloud prefers its own Gemini key, then the digest’s, then the server’s', () => {
-  const base = { readAloudKey: '', digestKey: '', digestProvider: 'deterministic', serverKeyAvailable: false };
-
-  // A key typed for reading aloud wins even when another provider writes the digest
-  assert.deepEqual(
-    resolveGeminiSpeechKey({ ...base, readAloudKey: ' speech-key ', digestKey: 'digest-key', digestProvider: 'openai-compatible', serverKeyAvailable: true }),
-    { key: 'speech-key', source: 'read-aloud' },
-  );
-  // With none of its own, the digest's Gemini key is reused rather than asking for a second one
-  assert.deepEqual(
-    resolveGeminiSpeechKey({ ...base, digestKey: 'digest-key', digestProvider: 'gemini' }),
-    { key: 'digest-key', source: 'digest' },
-  );
-  // A Gemini key saved for an OpenAI-compatible digest is not silently sent to Gemini
-  assert.deepEqual(
-    resolveGeminiSpeechKey({ ...base, readAloudKey: '   ', digestKey: 'digest-key', digestProvider: 'openai-compatible' }),
-    { key: '', source: 'none' },
-  );
-  // Nothing typed anywhere: the server's own key speaks, or there is none to speak with
-  assert.deepEqual(resolveGeminiSpeechKey({ ...base, serverKeyAvailable: true }), { key: '', source: 'server' });
-  assert.deepEqual(resolveGeminiSpeechKey(base), { key: '', source: 'none' });
-});
-
-test('a Gemini refusal keeps its status and loses its JSON envelope', () => {
-  // What the SDK throws for a bad key: status on the error, Google's body as the message
-  const invalidKey = { status: 400, message: JSON.stringify({ error: { code: 400, message: 'API key not valid. Please pass a valid API key.' } }) };
-  assert.deepEqual(describeGeminiTtsError(invalidKey), {
-    status: 400,
-    message: 'API key not valid. Please pass a valid API key.',
-  });
-  // Some SDK builds lead the message with the status
-  const overloaded = { status: 503, message: `503 ${JSON.stringify({ error: { code: 503, message: 'The model is overloaded.' } })}` };
-  assert.deepEqual(describeGeminiTtsError(overloaded), { status: 503, message: 'The model is overloaded.' });
-  // A transport failure never reached a status, but still says something
-  assert.deepEqual(describeGeminiTtsError(new Error('Connection error.')), { status: 0, message: 'Connection error.' });
-  assert.deepEqual(describeGeminiTtsError(null), { status: 0, message: 'Gemini could not speak that passage.' });
-});
-
 test('a piece that follows a refused one stays on the device voice for the rest of the run', () => {
   // A refusal earlier in the run carries over, whatever the chosen voice was
-  assert.equal(carrySpeechFallback(true, 'gemini', true), true);
   assert.equal(carrySpeechFallback(true, 'piper', true), true);
   // A fresh start retries the chosen voice; only a missing download steps aside
-  assert.equal(carrySpeechFallback(false, 'gemini', true), false);
   assert.equal(carrySpeechFallback(false, 'device', true), false);
   assert.equal(carrySpeechFallback(false, 'piper', false), true);
   assert.equal(carrySpeechFallback(false, 'piper', true), false);
 });
 
-test('Gemini 3.8 TTS uses v1beta and its single-speaker voice request shape', () => {
-  assert.equal(GEMINI_TTS_API_VERSION, 'v1beta');
-  assert.deepEqual(geminiTtsRequest('Read this sentence.', 'Kore', 'gemini-3.8-flash-lite-tts'), {
-    model: 'gemini-3.8-flash-lite-tts',
-    contents: [{ role: 'user', parts: [{ text: 'Read this sentence.' }] }],
-    config: {
-      responseModalities: ['AUDIO'],
-      speechConfig: { voiceConfig: { voice: 'Kore' } },
-    },
-  });
-});

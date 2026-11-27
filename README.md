@@ -41,7 +41,6 @@
   - [`POST /api/parse-opml`](#post-apiparse-opml)
   - [`POST /api/test-provider`](#post-apitest-provider)
   - [`POST /api/list-models`](#post-apilist-models)
-  - [`POST /api/tts`](#post-apitts)
   - [`GET /api/generated-feed`](#get-apigenerated-feed)
   - [`GET /api/favicon`](#get-apifavicon)
   - [`GET /api/version`](#get-apiversion)
@@ -119,10 +118,9 @@ Modern digital reading is burdened by infinite feeds, engagement algorithms, and
 ### 8. Distraction-Free Reader & Read Aloud
 - **Typographic Discipline**: Two self-hosted variable families, both served from the app — *Inter* (roman 47 KB + italic 51 KB woff2, `font-display: optional`) for the interface and metadata, and *Literata* (roman 108 KB + italic 111 KB woff2, optical-size axis, `font-display: swap`, roman preloaded) for article bodies, the edition's headlines and the wordmark. No Google Fonts requests, so no text depends on a third party's uptime.
 - **Colour Discipline**: The edition is paper (ink `#1c1a17` on `#f6f1e7`), so Today reads in black and white. One amber accent (`#8a5a24`) marks only the editor's flag — pieces outside the reader's bubble — plus focus rings; every other state (saved, read, synced, failed, unread) is weight, a mark, or a word. No gradients, no image scrims, no state colours.
-- **Read Aloud, with three voices**: **Settings → Read aloud** offers the device's own voice, a neural voice downloaded once, or Gemini, each with a *Hear this voice* preview. The queue, the progress bar, the paragraph highlight and the tap-to-listen control are the same for all three, and a voice that cannot speak a passage passes the rest of the article to the device voice instead of stopping the reading.
+- **Read Aloud, with two voices**: **Settings → Read aloud** offers the device's own voice or a neural voice downloaded once, each with a *Hear this voice* preview. The queue, the progress bar, the paragraph highlight and the tap-to-listen control are the same for both, and a voice that cannot speak a passage passes the rest of the article to the device voice instead of stopping the reading.
   - **The device voice** is instant, free and always available. It speaks a sentence at a time through the browser's own `window.speechSynthesis`, so an article is never cut off by the engine's long-utterance limit (Chrome stops at roughly fifteen seconds, iOS stalls on very long strings), and every paragraph break gets a natural beat. It defaults to **Jamie (Premium)** at a calm 0.95× rate when the browser exposes that voice; otherwise it leaves voice selection to the device's Spoken Content settings. Automatic mode prefers voices explicitly named Enhanced, Premium, Neural or Natural. Its quality is whatever the operating system installed, which is the robotic part on Windows and many Android phones.
   - **The downloaded voice** is a Piper model kept on the device: about 60 MB of voice plus roughly 12 MB of speech engine the browser stores afterwards, fetched once from **Settings → Read aloud**. Once it has downloaded, reading aloud needs no connection at all. Two voices are offered — **Cori** (British English, public domain) and **Alba** (Scottish English, CC BY 4.0) — because the wider Piper catalogue includes non-commercial voices this licence cannot ship. The first download is slower on mobile data, and a low-memory phone may take a second or two per sentence or give up; either way the device voice covers the passage.
-  - **Gemini** sounds the best and is the only one that costs money: about a penny a minute of listening. It reads each sentence through Curator's own server, so the key never goes from the browser to Google directly, and every sentence needs a connection. The key can be pasted in **Settings → Read aloud** for reading alone, reused from **Connect an AI service** when that is set to Gemini, or left to the server's own `GEMINI_API_KEY`.
   - Live progress bar with paragraph and sentence position, the spoken paragraph highlighted, and tap-any-paragraph to listen from that point.
   - A headphones control in the reader's sticky header, so listening can start from wherever the reader has scrolled to: it speaks from the paragraph on screen rather than the headline, then pauses and resumes from the same place.
   - Feed debris — URLs, footnote marks, bracket asides, "Read more" furniture, abbreviations and currency — is normalised out of the text before it reaches the voice, whichever voice is speaking.
@@ -160,7 +158,7 @@ Curator is built as a unified full-stack web application with Vite middlewares r
 │  - Top Header Navigation with Refresh & Settings Controls       │
 │  - Bottom Dock Navigation (Today, Feeds, Saved, Sources)        │
 │  - Signal Tuning with Undo Fallbacks                            │
-│  - Sentence-Queued Read Aloud (device, Piper, Gemini)           │
+│  - Sentence-Queued Read Aloud (device, Piper)                   │
 │  - LocalStorage State Manager (Bookmarks, Stats, Signal Weights)│
 └────────────────────────────────┬────────────────────────────────┘
                                  │ HTTP / JSON
@@ -395,23 +393,6 @@ Fills the model picker in **Connect an AI service** with what the service actual
 `kind` is `chat` or `embedding`, and defaults to chat.
 
 **Response:** `{ "ok": true, "models": ["gpt-4o-mini"], "modelOptions": [{ "id": "gpt-4o-mini", "name": "GPT-4o mini" }], "source": "provider" }`. `source` reads `openrouter` when the list came through OpenRouter, and an option may carry its price per million tokens when the service reports one. A provider other than OpenAI-compatible, or a missing key or URL, answers `400`; a service with no suitable models answers `422`; a failed request answers `502`, all as `{ "ok": false, "error": "…" }`.
-
----
-
-### `POST /api/tts`
-Reads one sentence aloud for the Gemini voice in **Settings → Read aloud**. The reader sends a sentence at a time, so a refused request costs a sentence rather than an article, and the client can hand the rest of the reading to the device voice. A key typed for reading aloud, or the digest's Gemini key, is used when there is one; an empty `apiKey` asks the server to fall back to `GEMINI_API_KEY`. The model is `gemini-3.8-flash-lite-tts`, or whatever `GEMINI_TTS_MODEL` names.
-
-**Request Body:**
-```json
-{
-  "text": "The national tally of measles cases now stands at 14.",
-  "voice": "Kore",
-  "apiKey": ""
-}
-```
-`text` is trimmed and capped at 1200 characters, and `voice` must be one of the 30 prebuilt speech voices.
-
-**Response:** `{ "ok": true, "mimeType": "audio/wav", "audio": "<base64>" }`, where `audio` is a complete WAV file on current models. Empty text, an unknown voice, or a request with no key anywhere answers `400`; Google refusing with its own status (a bad key, no access, quota) forwards that status; an upstream server error or a reply with no audio answers `502`, both as `{ "ok": false, "error": "…" }`. Capped at 240 requests a minute per connection.
 
 ---
 

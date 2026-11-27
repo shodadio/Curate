@@ -2,8 +2,8 @@
 // say about a downloaded voice. Kept apart from the screen so the wording can be tested.
 import type { PiperVoice } from './piperVoices';
 
-// The device's own voice, a voice downloaded once and kept on the device, or Gemini.
-export type SpeechEngine = 'device' | 'piper' | 'gemini';
+// The device's own voice, or a voice downloaded once and kept on the device.
+export type SpeechEngine = 'device' | 'piper';
 
 export type PiperDownloadStatus = 'idle' | 'checking' | 'downloading' | 'ready' | 'unsupported' | 'error';
 
@@ -37,28 +37,6 @@ export type SpeechPositions = Record<string, SpeechPosition>;
 
 export const SPEECH_ENGINE_STORAGE_KEY = 'curator_speech_engine';
 export const SPEECH_PIPER_VOICE_STORAGE_KEY = 'curator_speech_piper_voice';
-export const SPEECH_GEMINI_VOICE_STORAGE_KEY = 'curator_speech_gemini_voice';
-export const SPEECH_GEMINI_KEY_STORAGE_KEY = 'curator_speech_gemini_key';
-
-export type GeminiSpeechKeySource = 'read-aloud' | 'digest' | 'server' | 'none';
-
-// Reading aloud may be given its own Gemini key, so a digest written by another provider does
-// not leave the Gemini voice without one. The reader's own key wins, then the digest's Gemini
-// key, then the server's. The browser sends a key; an empty one asks the server to use its own.
-export function resolveGeminiSpeechKey(input: {
-  readAloudKey: string;
-  digestKey: string;
-  digestProvider: string;
-  serverKeyAvailable: boolean;
-}): { key: string; source: GeminiSpeechKeySource } {
-  const own = input.readAloudKey.trim();
-  if (own) return { key: own, source: 'read-aloud' };
-
-  const digest = input.digestKey.trim();
-  if (digest && input.digestProvider === 'gemini') return { key: digest, source: 'digest' };
-
-  return { key: '', source: input.serverKeyAvailable ? 'server' : 'none' };
-}
 
 // Whether the next piece starts on the device voice: the run already stepped aside from the
 // chosen voice (it refused an earlier piece, and retrying a dead key at every article is the

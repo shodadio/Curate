@@ -78,8 +78,6 @@ import {
 import { PIPER_DEFAULT_VOICE_ID, findPiperVoice } from '../lib/piperVoices';
 import {
   SPEECH_ENGINE_STORAGE_KEY,
-  SPEECH_GEMINI_KEY_STORAGE_KEY,
-  SPEECH_GEMINI_VOICE_STORAGE_KEY,
   SPEECH_PIPER_VOICE_STORAGE_KEY,
   SPEECH_POSITION_STORAGE_KEY,
   SPEECH_RATE_DEFAULT,
@@ -90,13 +88,11 @@ import {
   readSpeechPositions,
   rememberSpeechPosition,
   nextUnreadPieces,
-  resolveGeminiSpeechKey,
   resumeSpeechIndex,
   type PiperDownloadState,
   type SpeechEngine,
   type SpeechPositions,
 } from '../lib/readAloud';
-import { GEMINI_TTS_DEFAULT_VOICE, synthesizeGeminiSpeech } from './lib/geminiTts';
 import { downloadPiperVoice, piperSupported, removePiperVoice, storedPiperVoices, synthesizePiper } from './lib/piper';
 import {
   pauseSpeechAudio,
@@ -1479,23 +1475,15 @@ export default function App() {
       : SPEECH_RATE_DEFAULT;
   });
 
-  // Three voices are offered: the device's own, a Piper voice downloaded once and kept on the
-  // device, and Gemini over the network. The device voice is always the floor, so a chosen
-  // engine that fails takes nothing away from the reading.
+  // Two voices are offered: the device's own and a Piper voice downloaded once and kept on the
+  // device. The device voice is always the floor, so a chosen engine that fails takes nothing
+  // away from the reading.
   const [speechEngine, setSpeechEngine] = useState<SpeechEngine>(() => {
     const saved = safeGetItem(SPEECH_ENGINE_STORAGE_KEY);
-    return saved === 'piper' || saved === 'gemini' ? saved : 'device';
+    return saved === 'piper' ? saved : 'device';
   });
   const [piperVoiceId, setPiperVoiceId] = useState<string>(
     () => safeGetItem(SPEECH_PIPER_VOICE_STORAGE_KEY) || PIPER_DEFAULT_VOICE_ID
-  );
-  const [geminiVoice, setGeminiVoice] = useState<string>(
-    () => safeGetItem(SPEECH_GEMINI_VOICE_STORAGE_KEY) || GEMINI_TTS_DEFAULT_VOICE
-  );
-  // Reading aloud can carry its own Gemini key, so a digest written by another provider still
-  // has a Gemini voice to speak with
-  const [geminiTtsKey, setGeminiTtsKey] = useState<string>(
-    () => safeGetItem(SPEECH_GEMINI_KEY_STORAGE_KEY) || ''
   );
   const [piperDownloadState, setPiperDownloadState] = useState<PiperDownloadState>({ status: 'idle', progress: 0 });
 
@@ -1510,9 +1498,7 @@ export default function App() {
   useEffect(() => {
     safeSetItem(SPEECH_ENGINE_STORAGE_KEY, speechEngine);
     safeSetItem(SPEECH_PIPER_VOICE_STORAGE_KEY, piperVoiceId);
-    safeSetItem(SPEECH_GEMINI_VOICE_STORAGE_KEY, geminiVoice);
-    safeSetItem(SPEECH_GEMINI_KEY_STORAGE_KEY, geminiTtsKey);
-  }, [speechEngine, piperVoiceId, geminiVoice, geminiTtsKey]);
+  }, [speechEngine, piperVoiceId]);
 
   // A downloaded voice lives in this origin's private storage, so whether it is there is asked
   // of the browser rather than remembered here.
@@ -1574,18 +1560,10 @@ export default function App() {
   // What the listening bar, the tooltips and Settings name as the voice in use
   const speechVoiceLabel = React.useMemo(() => {
     if (speechEngine === 'piper') return `${findPiperVoice(piperVoiceId).label} (downloaded)`;
-    if (speechEngine === 'gemini') return `Gemini ${geminiVoice}`;
     return activeSpeechVoice ? activeSpeechVoice.name : 'your device voice';
-  }, [speechEngine, piperVoiceId, geminiVoice, activeSpeechVoice]);
+  }, [speechEngine, piperVoiceId, activeSpeechVoice]);
 
   const piperVoiceChoice = findPiperVoice(piperVoiceId);
-  // A key entered for reading aloud wins, then the digest's Gemini key, then the server's
-  const geminiSpeechKey = resolveGeminiSpeechKey({
-    readAloudKey: geminiTtsKey,
-    digestKey: customApiKey,
-    digestProvider: aiProvider,
-    serverKeyAvailable: serverGeminiAvailable,
-  });
 
   // One entry per voice, English first, by name
   const speechVoiceOptions = React.useMemo(
@@ -3386,22 +3364,16 @@ export default function App() {
     }, gapMs);
   };
 
-  // One neural sentence: Piper from the downloaded model, or Gemini through this app's server.
-  // Either way the clip loses the silence its voice ends a sentence with, which is what had the
-  // reading pausing at every full stop for longer than the punctuation asks for.
+  // One neural sentence from the downloaded Piper model. The clip loses the silence its voice
+  // ends a sentence with, which is what had the reading pausing at every full stop for longer
+  // than the punctuation asks for.
   const renderSpeechChunk = async (text: string): Promise<Blob> => {
-    const blob = speechEngine === 'piper'
-      ? await synthesizePiper(piperVoiceId, text)
-      : await synthesizeGeminiSpeech({
-        text,
-        voice: geminiVoice,
-        apiKey: geminiSpeechKey.key,
-      });
+    const blob = await synthesizePiper(piperVoiceId, text);
     return trimSpeechSilence(blob);
   };
 
   const speechChunkKey = (text: string) =>
-    `${speechEngine}|${speechEngine === 'piper' ? piperVoiceId : geminiVoice}|${text}`;
+    `${speechEngine}|${piperVoiceId}|${text}`;
 
   // A neural voice that fails halfway must not silence the article: the rest of the reading
   // continues in the device voice, from the sentence it had reached.
@@ -3410,7 +3382,7 @@ export default function App() {
     stopSpeechAudio();
     speechVoiceFallbackRef.current = true;
     const detail = reason instanceof Error && reason.message ? ` (${reason.message})` : '';
-    const which = speechEngine === 'piper' ? 'The downloaded voice' : 'Gemini';
+    const which = 'The downloaded voice';
     showToast(`${which} could not speak that passage${detail} — carrying on with ${speechVoiceLabel}.`);
     speakDeviceChunk();
   };
@@ -6963,11 +6935,6 @@ Search for writers, publications, or topics. Curator checks whether each result 
               piperState={piperDownloadState}
               onPiperDownload={handleDownloadPiperVoice}
               onPiperRemove={handleRemovePiperVoice}
-              geminiVoice={geminiVoice}
-              onGeminiVoiceChange={setGeminiVoice}
-              geminiKey={geminiTtsKey}
-              onGeminiKeyChange={setGeminiTtsKey}
-              geminiKeySource={geminiSpeechKey.source}
               onPreview={handlePreviewSpeech}
             />
 

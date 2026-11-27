@@ -1,6 +1,5 @@
-// Audio is the one place the two neural voices disagree: Piper returns a WAV, and Gemini
-// returns a WAV on current models but headerless 24 kHz PCM on older ones. Wrapping both
-// here means the player never has to know which engine produced a sentence.
+// The downloaded voice sends its audio back as raw PCM bytes. Wrapping them in a WAV header
+// here means the player never has to know how a sentence was produced.
 
 export function pcm16ToWavBytes(pcm: Uint8Array, sampleRate = 24000, channels = 1): Uint8Array {
   const header = new Uint8Array(44);

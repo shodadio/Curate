@@ -1,9 +1,8 @@
 // Read aloud, in Settings: which voice speaks, and how fast. The reading itself belongs to the
-// reader; this panel only reports the choice and asks for the two things a better voice needs —
-// a download, or a key.
+// reader; this panel only reports the choice and asks for the one thing a better voice needs —
+// a download.
 import { Volume2 } from 'lucide-react';
 import { SettingsSection } from './SettingsSection';
-import { GEMINI_TTS_VOICES } from '../lib/geminiTts';
 import {
   PIPER_RUNTIME_DOWNLOAD_MB,
   PIPER_VOICES,
@@ -14,7 +13,6 @@ import {
   SPEECH_RATE_MAX,
   SPEECH_RATE_MIN,
   piperStatusLabel,
-  type GeminiSpeechKeySource,
   type PiperDownloadState,
   type SpeechEngine,
 } from '../../lib/readAloud';
@@ -31,24 +29,11 @@ const ENGINE_OPTIONS: Array<{ id: SpeechEngine; label: string; note: string }> =
     label: 'Downloaded',
     note: 'A neural voice kept on this device. One download, then no connection needed.',
   },
-  {
-    id: 'gemini',
-    label: 'Gemini',
-    note: 'The best voice here, but each sentence comes from Google over the network and costs a little.',
-  },
 ];
 
 const FIELD_CLASS =
   'w-full bg-[#f6f1e7] border border-[#ddd2bc] rounded-xl px-3 py-2 text-xs text-[#3f3a33] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8a5a24]/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#f6f1e7] focus:border-[#8a5a24]';
 const SELECT_CLASS = `${FIELD_CLASS} cursor-pointer`;
-
-// Which key is actually speaking, said in the reader's terms rather than the app's
-const GEMINI_KEY_NOTE: Record<GeminiSpeechKeySource, string> = {
-  'read-aloud': 'Using this key. It is used only for reading aloud and stays in this browser.',
-  digest: 'Using the Gemini key from Connect an AI service.',
-  server: 'Using the server’s Gemini key.',
-  none: 'No Gemini key yet — add one here, or the device voice reads instead.',
-};
 
 export interface ReadAloudSettingsProps {
   engine: SpeechEngine;
@@ -65,11 +50,6 @@ export interface ReadAloudSettingsProps {
   piperState: PiperDownloadState;
   onPiperDownload: () => void;
   onPiperRemove: () => void;
-  geminiVoice: string;
-  onGeminiVoiceChange: (voice: string) => void;
-  geminiKey: string;
-  onGeminiKeyChange: (key: string) => void;
-  geminiKeySource: GeminiSpeechKeySource;
   onPreview: () => void;
 }
 
@@ -88,11 +68,6 @@ export function ReadAloudSettings({
   piperState,
   onPiperDownload,
   onPiperRemove,
-  geminiVoice,
-  onGeminiVoiceChange,
-  geminiKey,
-  onGeminiKeyChange,
-  geminiKeySource,
   onPreview,
 }: ReadAloudSettingsProps) {
   const piperVoice = findPiperVoice(piperVoiceId);
@@ -204,56 +179,6 @@ export function ReadAloudSettings({
               </button>
             )}
           </div>
-        </div>
-      )}
-
-      {engine === 'gemini' && (
-        <div className="space-y-2 rounded-xl border border-[#ddd2bc] bg-[#f6f1e7] px-3 py-2">
-          <div>
-            <label className="block text-xs font-medium text-[#3f3a33] mb-1.5">Gemini voice</label>
-            <select value={geminiVoice} onChange={event => onGeminiVoiceChange(event.target.value)} className={SELECT_CLASS}>
-              {GEMINI_TTS_VOICES.map(voice => (
-                <option key={voice.name} value={voice.name}>
-                  {voice.name} — {voice.character}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-[#3f3a33] mb-1.5">Gemini API key</label>
-            <div className="flex gap-2">
-              <input
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                value={geminiKey}
-                onChange={event => onGeminiKeyChange(event.target.value)}
-                placeholder="Paste a Gemini API key"
-                aria-label="Gemini API key for reading aloud"
-                className={FIELD_CLASS}
-              />
-              {geminiKey && (
-                <button
-                  type="button"
-                  onClick={() => onGeminiKeyChange('')}
-                  className="px-3 py-1.5 shrink-0 text-xs font-medium rounded-xl bg-transparent border border-[#c9bc9f] text-[#3f3a33] hover:border-[#1c1a17] hover:text-[#1c1a17] transition"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-            <p
-              className={`text-xs leading-relaxed mt-1 ${geminiKeySource === 'none' ? 'text-[#1c1a17] font-medium' : 'text-[#6f675c]'}`}
-            >
-              {GEMINI_KEY_NOTE[geminiKeySource]}
-            </p>
-          </div>
-
-          <p className="text-xs text-[#6f675c] leading-relaxed">
-            Google’s speech model reads each sentence through Curator’s own server: about a penny a minute of listening,
-            and every sentence needs a connection. Nothing is downloaded to this device.
-          </p>
         </div>
       )}
 
