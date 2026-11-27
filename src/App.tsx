@@ -297,8 +297,10 @@ function handleExternalClick(event: React.MouseEvent<HTMLAnchorElement>, url?: s
   return openExternal(url);
 }
 
-// Duplicate detection compares feeds by address, not by the name a reader gave them.
-const normalizeFeedUrl = (url?: string): string => (url || '').trim().toLowerCase().replace(/\/+$/, '');
+// Duplicate detection compares feeds by address, not by the name a reader gave them. Two
+// addresses that differ only in scheme are one feed: the same publication answers on either.
+const normalizeFeedUrl = (url?: string): string =>
+  (url || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/+$/, '');
 
 const normalizeCategoryLabels = (raw: unknown, fallback?: string): string[] => {
   const labels = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
@@ -2902,8 +2904,8 @@ export default function App() {
 
   const handleAddDiscoveredSource = (item: DiscoveredSource) => {
     if (!item.feedUrl) return;
-    const normalizedFeedUrl = item.feedUrl.trim().toLowerCase();
-    const alreadyExists = sources.some(s => s.feedUrl.trim().toLowerCase() === normalizedFeedUrl);
+    const normalizedFeedUrl = normalizeFeedUrl(item.feedUrl);
+    const alreadyExists = sources.some(s => normalizeFeedUrl(s.feedUrl) === normalizedFeedUrl);
     if (alreadyExists) {
       showToast('That feed is already in your sources');
       return;
