@@ -36,6 +36,7 @@ import { articleLooksIncomplete, cleanHtml, htmlToReadableText, trimSummaryFurni
 import { parseArticleAuthor, parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
 import { buildReadableDigest } from './lib/digestAvailability';
 import { legacyStoryIdFor, storyIdFor } from './lib/storyId';
+import { deduplicateFeedArticles } from './lib/feedDeduplication';
 import { findVideoEmbed, videoEmbedFromUrl, type VideoEmbed } from './lib/videoEmbed';
 import { apifyCandidatesFromDataset, apifySearchInput, apifySearchUrl } from './lib/apifySearch';
 import { normalizeModelCatalog } from './lib/modelCatalog';
@@ -1321,7 +1322,7 @@ async function startServer() {
           link = cleanHtml(guidMatch[1]).trim();
         }
       }
-      if (!link && baseUrl) link = baseUrl;
+      const itemHasLink = Boolean(link);
       // The item's address is rendered as a link, so it has to be a web address: a feed that
       // hands over "javascript:…" is not followable, and a path without a leading slash
       // ("2026/05/post.html") is relative to the feed, not to this app.
@@ -1329,6 +1330,10 @@ async function startServer() {
         try { link = new URL(link, baseUrl || undefined).toString(); } catch { link = ''; }
       }
       if (link && !/^https?:\/\//i.test(link)) link = '';
+      // Keep the feed address only as a fallback destination, never as the identity of every
+      // linkless item in the feed. Those stories are identified by their own titles below.
+      const storyLink = link;
+      if (!itemHasLink && !link && baseUrl) link = baseUrl;
 
       const dateMatch = block.match(/<(?:pubDate|published|updated|dc:date)[^>]*>([\s\S]*?)<\/(?:pubDate|published|updated|dc:date)>/i);
       const rawDate = dateMatch ? cleanHtml(dateMatch[1]) : '';
@@ -1419,7 +1424,7 @@ async function startServer() {
 
       // Every story gets an id of its own. The first scheme hashed only the opening of the
       // link, so all of a publication's articles shared one id.
-      const id = storyIdFor(link, title);
+      const id = storyIdFor(storyLink, title);
 
       items.push({
         id,
@@ -2541,6 +2546,10 @@ CURATION RULES:
       if (visibleTitles) {
         articles = articles.filter(article => visibleTitles!.has(String(article?.source || '').toLowerCase()));
       }
+
+      // The same post can arrive through a publication's custom domain and its Substack alias,
+      // or appear more than once in one feed. Keep its first occurrence in the merged stream.
+      articles = deduplicateFeedArticles(articles);
 
       // Feeds arrive in parallel, so the merged list would otherwise be grouped by source
       // rather than the newest-first order the stream promises.
