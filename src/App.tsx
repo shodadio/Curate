@@ -2602,6 +2602,11 @@ export default function App() {
       setNewSourceUrlError('A feed URL is required — it is where Curator fetches new stories.');
       return;
     }
+    // A feed already in the library would show every story twice, under two names.
+    if (sources.some(source => normalizeFeedUrl(source.feedUrl) === normalizeFeedUrl(trimmedUrl))) {
+      setNewSourceUrlError('That feed is already in your sources.');
+      return;
+    }
     if (!/^https?:\/\/(localhost(:\d+)?|127\.0\.0\.1(:\d+)?|\S+\.\S+)/i.test(trimmedUrl)) {
       setNewSourceUrlError(`"${trimmedUrl}" does not look like a valid feed URL. Start with http:// or https:// and include a domain, e.g. https://example.com/feed.xml.`);
       return;
