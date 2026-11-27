@@ -7721,7 +7721,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 </button>
               </div>
             ) : (
-              <div key={`stream-${feedStreamRenderKey}`} className="space-y-8 paper-stream">
+              <div key={`stream-${feedStreamRenderKey}`} className="-mt-4 space-y-8 paper-stream">
                 {feedStreamArticles.slice(0, feedVisibleCount).map((item) => renderStoryEntry(item, false))}
                 {feedStreamArticles.length > feedVisibleCount && (
                   <button
