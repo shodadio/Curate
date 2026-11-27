@@ -1,7 +1,7 @@
 // Speech audio helpers and the downloaded-voice catalogue are pure, so both are checked here.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { base64ToBytes, bytesToBase64, pcm16ToWavBytes, silentWavDataUri, speechAudioBlob, trimSilenceWav } from '../lib/wav.ts';
+import { pcm16ToWavBytes, silentWavDataUri, trimSilenceWav } from '../lib/wav.ts';
 import { PIPER_DEFAULT_VOICE_ID, PIPER_VOICES, findPiperVoice, piperDownloadMb } from '../lib/piperVoices.ts';
 import { carrySpeechFallback, piperStatusLabel } from '../lib/readAloud.ts';
 
@@ -23,39 +23,11 @@ test('raw speech PCM is wrapped in a playable WAV header', () => {
   assert.deepEqual([...wav.subarray(44)], [1, 2, 3, 4]);
 });
 
-test('a WAV reply is played as it arrived', () => {
-  const wav = pcm16ToWavBytes(new Uint8Array(8), 24000, 1);
-  const blob = speechAudioBlob(bytesToBase64(wav), 'audio/wav');
-  assert.equal(blob.type, 'audio/wav');
-  assert.equal(blob.size, wav.byteLength);
-});
-
-test('a WAV that arrives labelled as PCM is still played as it arrived', () => {
-  // A WAV that arrives labelled as PCM must not be wrapped a second time
-  const wav = pcm16ToWavBytes(new Uint8Array(8), 24000, 1);
-  const blob = speechAudioBlob(bytesToBase64(wav), 'audio/L16;codec=pcm;rate=24000');
-  assert.equal(blob.type, 'audio/wav');
-  assert.equal(blob.size, wav.byteLength, 'a second header would make the clip unplayable');
-});
-
-test('a compressed clip is passed through rather than wrapped', () => {
-  const mp3 = new Uint8Array([0x49, 0x44, 0x33, 0x04]);
-  const blob = speechAudioBlob(bytesToBase64(mp3), 'audio/mpeg');
-  assert.equal(blob.type, 'audio/mpeg');
-  assert.equal(blob.size, mp3.byteLength);
-});
-
-test('headerless PCM is converted rather than played as noise', () => {
-  const blob = speechAudioBlob(bytesToBase64(new Uint8Array(6)), 'audio/L16;codec=pcm;rate=24000');
-  assert.equal(blob.type, 'audio/wav');
-  assert.equal(blob.size, 50);
-  assert.equal(base64ToBytes(bytesToBase64(new Uint8Array([9, 8]))).length, 2);
-});
-
 test('the silent clip that unlocks iOS audio is a valid WAV', () => {
   const uri = silentWavDataUri();
   assert.match(uri, /^data:audio\/wav;base64,/);
-  const bytes = base64ToBytes(uri.split(',')[1]);
+  const binary = atob(uri.split(',')[1]);
+  const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
   assert.equal(ascii(bytes, 0, 4), 'RIFF');
   assert.ok(bytes.byteLength > 44);
 });

@@ -1,5 +1,5 @@
-// The downloaded voice sends its audio back as raw PCM bytes. Wrapping them in a WAV header
-// here means the player never has to know how a sentence was produced.
+// The downloaded voice arrives as a finished WAV; the clip that unlocks iOS audio is built from
+// silence here. One WAV writer serves both, so the player never has to know which it was given.
 
 export function pcm16ToWavBytes(pcm: Uint8Array, sampleRate = 24000, channels = 1): Uint8Array {
   const header = new Uint8Array(44);
@@ -29,14 +29,7 @@ export function pcm16ToWavBytes(pcm: Uint8Array, sampleRate = 24000, channels = 
   return out;
 }
 
-export function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes;
-}
-
-export function bytesToBase64(bytes: Uint8Array): string {
+function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   // Chunked so a long article does not blow the argument limit of fromCharCode
   for (let index = 0; index < bytes.length; index += 0x8000) {
@@ -45,31 +38,7 @@ export function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-// Gemini changed what it sends: 3.1 models answered with headerless PCM, 3.8 answers with a
-// complete WAV, and the mime type has not always kept up with the bytes. So the bytes decide —
-// a RIFF/WAVE header is played as it arrived, and only audio without one is wrapped, which is
-// the difference between a voice and a clip of noise.
-const isWavBytes = (bytes: Uint8Array) =>
-  bytes.byteLength >= 12 &&
-  String.fromCharCode(...bytes.subarray(0, 4)) === 'RIFF' &&
-  String.fromCharCode(...bytes.subarray(8, 12)) === 'WAVE';
-
-// Whatever the engine sent back, the player gets something it can play.
-export function speechAudioBlob(base64: string, mimeType: string): Blob {
-  const bytes = base64ToBytes(base64);
-  if (isWavBytes(bytes)) {
-    return new Blob([bytes as unknown as BlobPart], { type: 'audio/wav' });
-  }
-  // A compressed format is its own container: wrapping it in a WAV header would ruin it
-  if (/mpeg|mp3|ogg|opus|m4a|aac/i.test(mimeType || '')) {
-    return new Blob([bytes as unknown as BlobPart], { type: mimeType });
-  }
-  const sampleRate = Number(/rate=(\d+)/i.exec(mimeType || '')?.[1]) || 24000;
-  const wav = pcm16ToWavBytes(bytes, sampleRate, 1);
-  return new Blob([wav as unknown as BlobPart], { type: 'audio/wav' });
-}
-
-// A neural voice opens every sentence with a breath and closes it with a beat of near-silence of
+// The downloaded voice opens every sentence with a breath and closes it with a beat of near-silence of
 // its own. Left in place the closing beat is what the reader hears as a long pause after the
 // full stop, and the opening breath as a hesitation before the first word, so each clip is cut
 // back to the sound itself. Keep a short tail for natural word endings, but halve it to shorten

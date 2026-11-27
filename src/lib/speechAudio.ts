@@ -101,7 +101,7 @@ function prepareSpeechAudio(blob: Blob, generation: number): Promise<void> {
   });
 }
 
-// Both neural voices return a WAV, and each one opens the sentence with a breath and closes it
+// The downloaded voice returns a WAV, and it opens the sentence with a breath and closes it
 // with a beat of silence of its own. Left in place those read as a hesitation before the first
 // word and a long pause after the full stop, so both go before the clip is queued. A clip that
 // cannot be read is played as it came.
