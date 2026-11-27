@@ -6305,8 +6305,9 @@ export default function App() {
             {/* Google Search & RSS Investigation Tool */}
             {/* The heading above already carries the pair, so the first block under it takes
                 no rule of its own; this section takes the pair only when the failed list
-                separates it from that heading. */}
-            <section className={`space-y-4 pt-5 ${failedSources.length > 0 ? 'paper-rule' : ''}`}>
+                separates it from that heading. Directly under the heading it is pulled up
+                instead, so the search sits close to the rule it belongs to. */}
+            <section className={`space-y-4 pt-5 ${failedSources.length > 0 ? 'paper-rule' : '-mt-6'}`}>
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-semibold text-[#3f3a33] flex items-center gap-2">
