@@ -6036,7 +6036,7 @@ export default function App() {
 
         {/* TAB 2: SAVED */}
         {activeTab === 'saved' && (
-          <div className="space-y-6 animate-fade-in">
+          <div className="-mt-6 sm:-mt-8 space-y-6 animate-fade-in">
             <div className="paper-rule-bottom pb-4 flex items-start justify-between gap-3">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#6f675c]">Re-reading queue</p>
@@ -6145,7 +6145,7 @@ export default function App() {
         {/* The setup wizard and the Add Source / OPML overlays are portalled at the top level,
             so opening one of them never mounts this page underneath. */}
         {activeTab === 'sources' && (
-          <div className="space-y-8 animate-fade-in">
+          <div className="-mt-6 sm:-mt-8 space-y-8 animate-fade-in">
             <div className="flex flex-wrap items-center justify-between gap-4 pb-4">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#6f675c]">Subscriptions</p>
@@ -6789,7 +6789,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
         {/* TAB 4: SETTINGS */}
         {activeTab === 'settings' && (
-          <div className="no-sideways paper-panels flex flex-col gap-4 animate-fade-in">
+          <div className="-mt-6 sm:-mt-8 no-sideways paper-panels flex flex-col gap-4 animate-fade-in">
             <div className="flex items-start justify-between gap-3 paper-rule-bottom pb-4">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#6f675c]">Your reading space</p>
@@ -7535,7 +7535,7 @@ Search for writers, publications, or topics. Curator checks whether each result 
 
         {/* TAB 5: FEEDS (Traditional Reading Stream) */}
         {activeTab === 'feeds' && (
-          <div className="-mt-6 space-y-6 animate-fade-in w-full max-w-full">
+          <div className="-mt-6 sm:-mt-8 space-y-6 animate-fade-in w-full max-w-full">
             {/* Top Circular Source Stories Carousel */}
             <div className="overflow-x-auto no-scrollbar py-2 -mx-4 px-4 sm:-mx-6 sm:px-6">
               <div className="flex items-center gap-4 min-w-max">
