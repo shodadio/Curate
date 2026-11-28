@@ -1666,20 +1666,21 @@ export default function App() {
   }, [digest, digestCuratedAt]);
 
   // The notice says the server could not be reached, so it lifts as soon as the server answers
-  // again rather than waiting for the next edition or a reload. The connection event alone is
-  // not enough: it says the network is back, not that Curator's server is.
+  // again: when the connection returns, and when the reader comes back to a tab that never lost
+  // it. Nothing is polled, so nothing is spent while all is well.
   useEffect(() => {
     if (!digestOffline) return;
-    const clearWhenServerAnswers = async () => {
-      try {
-        const response = await fetch('/api/health', { cache: 'no-store' });
-        if (response.ok) setDigestOffline(false);
-      } catch {
-        // Still unreachable: the notice stays until the next attempt or connection change.
-      }
+    const clearWhenServerAnswers = () => {
+      fetch('/api/health', { cache: 'no-store' })
+        .then(response => { if (response.ok) setDigestOffline(false); })
+        .catch(() => { /* Still unreachable: the notice waits for the next attempt. */ });
     };
     window.addEventListener('online', clearWhenServerAnswers);
-    return () => window.removeEventListener('online', clearWhenServerAnswers);
+    window.addEventListener('focus', clearWhenServerAnswers);
+    return () => {
+      window.removeEventListener('online', clearWhenServerAnswers);
+      window.removeEventListener('focus', clearWhenServerAnswers);
+    };
   }, [digestOffline]);
 
   // A byline found once is kept; a page that named nobody is asked again only after a week, so
