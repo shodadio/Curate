@@ -5,6 +5,7 @@ import {
   RETIRE_AFTER_FAILURES,
   activeSources,
   applyFeedFailures,
+  matchFailedSource,
   recordFailure,
   recordSuccess,
   resumeFeed,
@@ -44,6 +45,32 @@ test('only the feeds named in the report are counted, by address or by name', ()
   assert.equal(next[0], sources[0]);
   assert.equal(next[1].consecutiveFailures, 1);
   assert.equal(next[2], sources[2]);
+});
+
+test('a failure lands on the address it names, not on a row that shares its name', () => {
+  const sources = [
+    source('Steven Bartlett', { feedUrl: 'https://steven.substack.com/feed' }),
+    source('Steven Bartlett', { feedUrl: 'https://stevenbartlett.substack.com/feed' }),
+  ];
+  const next = applyFeedFailures(sources, [{
+    title: 'Steven Bartlett',
+    feedUrl: 'https://stevenbartlett.substack.com/feed',
+    reason: '404',
+  }]);
+  assert.equal(next[0], sources[0]);
+  assert.equal(next[1].consecutiveFailures, 1);
+});
+
+test('a name alone counts only when exactly one source wears it', () => {
+  const shared = [
+    source('Steven Bartlett', { feedUrl: 'https://steven.substack.com/feed' }),
+    source('Steven Bartlett', { feedUrl: 'https://stevenbartlett.substack.com/feed' }),
+  ];
+  assert.equal(matchFailedSource(shared, { title: 'Steven Bartlett' }), undefined);
+  assert.equal(applyFeedFailures(shared, [{ title: 'Steven Bartlett' }]), shared);
+  assert.equal(matchFailedSource(shared, { title: 'steven bartlett ' }), undefined);
+  assert.equal(matchFailedSource([shared[1]], { title: 'Steven Bartlett' }), shared[1]);
+  assert.equal(matchFailedSource(shared, { feedUrl: ' https://STEVEN.substack.com/feed ' }), shared[0]);
 });
 
 test('a quiet digest leaves the sources list untouched', () => {

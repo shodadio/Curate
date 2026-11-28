@@ -35,7 +35,7 @@ import { editionDayLabel, editionMinutes as editionMinutesFor, readEditions, rec
 import { todaysEntries } from '../lib/feedFreshness';
 import { isDegenerateDescription } from '../lib/sourceMetadata';
 import { formatBytes, measureStorage, pruneArticleBodies, pruneReadingStats, type StorageReport } from '../lib/storageHealth';
-import { activeSources, applyFeedFailures, resumeFeed } from '../lib/sourceRetirement';
+import { activeSources, applyFeedFailures, matchFailedSource, resumeFeed } from '../lib/sourceRetirement';
 import {
   REFRESH_ALL_TRANSPORT_TOAST,
   SINGLE_REFRESH_FAILED_TOAST,
@@ -2259,10 +2259,8 @@ export default function App() {
     if (failed.length === 0) return;
     setSources(prev => {
       const next = prev.map(src => {
-        const match = failed.find(entry =>
-          (entry.feedUrl && src.feedUrl && entry.feedUrl.trim().toLowerCase() === src.feedUrl.trim().toLowerCase()) ||
-          (entry.title && entry.title.trim().toLowerCase() === src.title.trim().toLowerCase())
-        );
+        // Address first, so a feed that failed is the row marked, not its namesake.
+        const match = failed.find(entry => matchFailedSource(prev, entry) === src);
         if (!match) return src;
         return { ...src, status: 'failing' as const, failingReason: (match.reason || 'This feed returned nothing.').trim() };
       });

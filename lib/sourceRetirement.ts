@@ -37,14 +37,28 @@ export interface RetirableSource {
   pausedReason?: string;
 }
 
-const sameFeed = (source: { title?: string; feedUrl?: string }, failed: { title?: string; feedUrl?: string }) => {
-  const sourceUrl = (source.feedUrl || '').trim().toLowerCase();
-  const failedUrl = (failed.feedUrl || '').trim().toLowerCase();
-  if (sourceUrl && failedUrl && sourceUrl === failedUrl) return true;
-  const sourceTitle = (source.title || '').trim().toLowerCase();
-  const failedTitle = (failed.title || '').trim().toLowerCase();
-  return Boolean(sourceTitle) && sourceTitle === failedTitle;
-};
+const feedAddress = (value?: string) => (value || '').trim().toLowerCase();
+
+// A run reports the address each feed was read from, so the address is the identity that counts.
+// A title is shared wording, not a key: two subscriptions can wear the same publication's name,
+// and one of them failing must not colour in the other. The title is a last resort for a report
+// that came without a usable address, and only when a single source wears it — otherwise the
+// failure is left unattributed rather than guessed onto an innocent row.
+export function matchFailedSource<T extends { title?: string; feedUrl?: string }>(
+  sources: T[],
+  failed: { title?: string; feedUrl?: string },
+): T | undefined {
+  if (!Array.isArray(sources) || sources.length === 0) return undefined;
+  const failedUrl = feedAddress(failed?.feedUrl);
+  if (failedUrl) {
+    const byAddress = sources.find(source => feedAddress(source.feedUrl) === failedUrl);
+    if (byAddress) return byAddress;
+  }
+  const failedTitle = (failed?.title || '').trim().toLowerCase();
+  if (!failedTitle) return undefined;
+  const byTitle = sources.filter(source => (source.title || '').trim().toLowerCase() === failedTitle);
+  return byTitle.length === 1 ? byTitle[0] : undefined;
+}
 
 // Applies one digest's failure list: each named feed counts a failure, and the source is
 // paused on the run that crosses the threshold. Returns the same array when nothing changed,
@@ -58,7 +72,8 @@ export function applyFeedFailures<T extends RetirableSource>(
   if (!Array.isArray(failed) || failed.length === 0) return sources;
   let changed = false;
   const next = sources.map(source => {
-    const match = failed.find(entry => sameFeed(source, entry));
+    // Resolution is global, not per source: one failure counts against the one row it names.
+    const match = failed.find(entry => matchFailedSource(sources, entry) === source);
     if (!match) return source;
     const outcome = recordFailure(
       { consecutiveFailures: source.consecutiveFailures ?? 0, paused: source.paused },
