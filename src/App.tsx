@@ -7,7 +7,7 @@ import {
   AlertCircle, Info, CircleCheck, TriangleAlert, X, Home, Library,
   ThumbsUp, ThumbsDown, Search, Globe, Volume2, Play, Pause, Square, Headphones,
   RotateCcw, BarChart3, ArrowRight, ChevronDown, Activity, LoaderCircle, CalendarDays,
-  HardDrive, Tags, GraduationCap, ScanLine
+  HardDrive, Tags, GraduationCap, ScanLine, Settings
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { focusableWithin, trapTabKey } from './overlayFocus';
@@ -4900,6 +4900,20 @@ export default function App() {
                 <Bookmark className={`w-4 h-4 ${savedIds.includes(selectedArticle.id) ? 'fill-current' : ''}`} />
               </button>
 
+              {/* Settings for the app itself; Aa covers how this page looks. */}
+              <button
+                type="button"
+                onClick={() => {
+                  closeArticle();
+                  setActiveTab('settings');
+                }}
+                className="reader-icon"
+                title="Settings — edition, interests and providers"
+                aria-label="Open Settings"
+              >
+                <Settings className="w-4 h-4" />
+              </button>
+
               {/* Reading appearance: theme, face and size, one tap from the article */}
               <div className="relative" ref={readerAppearanceRef}>
                 <button
@@ -4980,6 +4994,7 @@ export default function App() {
                   </div>
                 )}
               </div>
+
             </div>
           </header>
 
