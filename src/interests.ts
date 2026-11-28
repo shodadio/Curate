@@ -12,6 +12,21 @@ export interface InterestSet {
 
 export const MAX_INTERESTS = 12;
 
+// The starter vocabulary offered under "More of this": subjects a story can genuinely be about.
+// Deliberately not editorial umbrellas ("Ideas", "Research") and not folder names, because a
+// declared interest matching a category label lifts every story a feed files under it. Once
+// clicked one of these is an ordinary interest: same weight, same matching, same way to remove.
+export const COMMON_INTERESTS = [
+  'AI',
+  'Climate',
+  'Science',
+  'Health',
+  'History',
+  'Books',
+  'Philosophy',
+  'Design',
+];
+
 // One sentence for the three places folders, categories and interests meet, so the same three
 // words are never explained three different ways.
 export const TAXONOMY_NOTE = 'A folder files a source, categories say what it covers, and interests nudge what Curator picks — none of them hide stories from you.';
@@ -71,6 +86,19 @@ export function addInterest(set: InterestSet, group: InterestGroup, rawLabel: st
 export function removeInterest(set: InterestSet, group: InterestGroup, label: string): InterestSet {
   const next = set[group].filter(entry => entry.toLowerCase() !== label.toLowerCase());
   return next.length === set[group].length ? set : { ...set, [group]: next };
+}
+
+// The chips a row may offer: labels the reader has not taken on either list, each spelled once
+// and in the order the sources gave them. One pass, so a folder chip named "Books" and the
+// starter subject "Books" are the same chip.
+export function unusedLabels(set: InterestSet, labels: string[]): string[] {
+  const used = new Set([...set.more, ...set.less].map(label => label.toLowerCase()));
+  const unrepeated = new Map<string, string>();
+  labels.forEach(label => {
+    const key = label.toLowerCase();
+    if (!used.has(key) && !unrepeated.has(key)) unrepeated.set(key, label);
+  });
+  return [...unrepeated.values()];
 }
 
 // Folder names are the categories the reader already has; offering them avoids retyping.

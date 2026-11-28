@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { Plus, X } from 'lucide-react';
 import {
+  COMMON_INTERESTS,
   MAX_INTERESTS,
   addInterest,
   removeInterest,
+  unusedLabels,
   type InterestGroup,
   type InterestSet,
 } from '../interests';
@@ -46,9 +48,9 @@ function InterestRow({
     setDraft('');
   };
 
-  const unusedSuggestions = suggestions
-    .filter(label => ![...value.more, ...value.less].some(used => used.toLowerCase() === label.toLowerCase()))
-    .slice(0, 6);
+  // The reader's own folder names first — the more personal suggestion — with the starter
+  // subjects filling whatever is left, so a library with no shared folders still has chips.
+  const unused = unusedLabels(value, [...suggestions, ...COMMON_INTERESTS]).slice(0, 8);
 
   return (
     <div className="space-y-2.5">
@@ -102,11 +104,13 @@ function InterestRow({
       </div>
 
       {/* Suggestions belong to the "more" list only: offering the same folder chips under both
-          lists read as a stray chip repeated, not as a choice. */}
-      {group === 'more' && unusedSuggestions.length > 0 && (
+          lists read as a stray chip repeated, not as a choice. One row, because where a chip
+          came from does not change what clicking it does, and a chip disappears once taken.
+          Nothing is offered at the cap, where a click would do nothing. */}
+      {group === 'more' && !atCap && unused.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-xs text-[#6f675c]">From your folders:</span>
-          {unusedSuggestions.map(label => (
+          <span className="text-xs text-[#6f675c]">Try:</span>
+          {unused.map(label => (
             <button
               key={label}
               type="button"
