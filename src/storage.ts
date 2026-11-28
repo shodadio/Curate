@@ -4,6 +4,8 @@
 // reasons of its own. A throw inside a commit-phase effect unmounts the tree, so every
 // write in the app goes through here instead of calling setItem directly.
 
+import { backupFile } from '../lib/backup';
+
 export type StorageFailure = 'quota' | 'blocked';
 
 const APP_KEY_PREFIX = 'curator_';
@@ -114,20 +116,19 @@ export function readAppData(): Record<string, string> {
   return data;
 }
 
-/** Downloads everything Curator has stored, so a broken page doesn't mean a lost library. */
+/**
+ * Downloads everything Curator has stored, so a broken page doesn't mean a lost library. The
+ * payload comes from the same builder the automatic backup file uses, so the two copies are
+ * the same format and either one can be restored.
+ */
 export function downloadAppData(): boolean {
   try {
-    const payload = {
-      app: 'curator',
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      data: readAppData(),
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const now = new Date();
+    const blob = new Blob([JSON.stringify(backupFile(readAppData(), now), null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `curator-data-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.download = `curator-data-${now.toISOString().slice(0, 10)}.json`;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
