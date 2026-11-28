@@ -36,6 +36,7 @@ import { articleLooksIncomplete, cleanHtml, htmlToReadableText, trimSummaryFurni
 import { parseArticleAuthor, parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
 import { buildReadableDigest } from './lib/digestAvailability';
 import { legacyStoryIdFor, storyIdFor } from './lib/storyId';
+import { deduplicateFeedArticles } from './lib/feedDeduplication';
 import { findVideoEmbed, videoEmbedFromUrl, type VideoEmbed } from './lib/videoEmbed';
 import { apifyCandidatesFromDataset, apifySearchInput, apifySearchUrl } from './lib/apifySearch';
 import { normalizeModelCatalog } from './lib/modelCatalog';
@@ -1257,6 +1258,10 @@ async function startServer() {
           link = cleanHtml(guidMatch[1]).trim();
         }
       }
+      // The feed's own address is only a fallback destination for an item that names no link.
+      // It is not the item's identity: using it for that gave every linkless story in a feed
+      // one shared id, so the copies collided in the stream and in the reader's history.
+      const storyLink = link;
       if (!link && baseUrl) link = baseUrl;
       // The item's address is rendered as a link, so it has to be a web address: a feed that
       // hands over "javascript:…" is not followable, and a path without a leading slash
@@ -1355,7 +1360,7 @@ async function startServer() {
 
       // Every story gets an id of its own. The first scheme hashed only the opening of the
       // link, so all of a publication's articles shared one id.
-      const id = storyIdFor(link, title);
+      const id = storyIdFor(storyLink, title);
 
       items.push({
         id,
@@ -2477,6 +2482,11 @@ CURATION RULES:
       if (visibleTitles) {
         articles = articles.filter(article => visibleTitles!.has(String(article?.source || '').toLowerCase()));
       }
+
+      // Every subscription lands in one list, so the same story can arrive twice: two
+      // subscriptions to one publication, a feed that lists an item more than once, or the
+      // same feed added under two addresses. One story, one entry.
+      articles = deduplicateFeedArticles(articles);
 
       // Feeds arrive in parallel, so the merged list would otherwise be grouped by source
       // rather than the newest-first order the stream promises.
