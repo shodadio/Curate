@@ -1665,6 +1665,23 @@ export default function App() {
     safeSetJson('curator_digest_cache', { curatedAt: digestCuratedAt, items: digest });
   }, [digest, digestCuratedAt]);
 
+  // The notice says the server could not be reached, so it lifts as soon as the server answers
+  // again rather than waiting for the next edition or a reload. The connection event alone is
+  // not enough: it says the network is back, not that Curator's server is.
+  useEffect(() => {
+    if (!digestOffline) return;
+    const clearWhenServerAnswers = async () => {
+      try {
+        const response = await fetch('/api/health', { cache: 'no-store' });
+        if (response.ok) setDigestOffline(false);
+      } catch {
+        // Still unreachable: the notice stays until the next attempt or connection change.
+      }
+    };
+    window.addEventListener('online', clearWhenServerAnswers);
+    return () => window.removeEventListener('online', clearWhenServerAnswers);
+  }, [digestOffline]);
+
   // A byline found once is kept; a page that named nobody is asked again only after a week, so
   // an offline launch does not leave a piece unsigned for good.
   const AUTHOR_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
