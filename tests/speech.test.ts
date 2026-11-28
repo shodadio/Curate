@@ -69,6 +69,26 @@ test('a paragraph that is only an address is not spoken at all', () => {
   assert.equal(spoken.includes('A real closing paragraph.'), true, JSON.stringify(spoken));
 });
 
+// A feed that puts the article's opening in its description hands the voice a summary the body
+// then repeats. The paragraph is the one on screen and the whole one, so the summary is what is
+// left out, and every paragraph keeps its own place.
+test('read-aloud says the opening once when the summary is that opening', () => {
+  const queue = buildSpeechQueue({
+    ...article([
+      'There are many discussions of disempowerment as a result of strong AI, and of whether humans lose control or agency. Do any of them weigh the net effect?',
+      'A second paragraph carries the rest of the argument.',
+    ].join('\n\n')),
+    summary:
+      'Here was my prompt: There are many discussions of disempowerment as a result of strong AI, and of whether humans lose control or agency. Do any of them...',
+  });
+
+  const spoken = queue.map(chunk => chunk.text).join(' ');
+  assert.equal(spoken.includes('Here was my prompt'), false, spoken);
+  assert.equal(spoken.match(/There are many discussions/g)?.length, 1, spoken);
+  assert.equal(queue.some(chunk => chunk.paragraphIndex === 0), true, spoken);
+  assert.equal(queue.some(chunk => chunk.paragraphIndex === 1), true, spoken);
+});
+
 test('read-aloud reads Markdown emphasis as plain words, like the screen', () => {
   assert.equal(
     normaliseForSpeech('Essays on **growth**, plus `inline code`.'),

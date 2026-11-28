@@ -109,14 +109,45 @@ export const cleanHtml = (str: string): string => {
     .trim();
 };
 
-const comparableWords = (text: string): string =>
-  cleanHtml(text).normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu)?.join(' ') || '';
+const comparableWords = (text: string): string[] =>
+  cleanHtml(text).normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
 
-// The lead can show both a feed standfirst and the article's opening paragraph. Some feeds
-// publish the same prose in both fields, so keep the second copy off the front page.
+// The longest run of consecutive words the two share. A feed's summary and the piece's opening
+// are the same prose read once, so a long shared run means one telling rather than two; a shared
+// idiom shows up as a short one.
+const longestSharedWordRun = (left: string[], right: string[]): number => {
+  let best = 0;
+  let previous = new Array<number>(right.length + 1).fill(0);
+  for (let i = 1; i <= left.length; i += 1) {
+    const current = new Array<number>(right.length + 1).fill(0);
+    for (let j = 1; j <= right.length; j += 1) {
+      if (left[i - 1] !== right[j - 1]) continue;
+      current[j] = previous[j - 1] + 1;
+      if (current[j] > best) best = current[j];
+    }
+    previous = current;
+  }
+  return best;
+};
+
+// Below this many words the shorter text is a slogan or a label, and any run inside it is a turn
+// of phrase rather than a passage printed twice.
+const LEAD_DUPLICATE_MIN_WORDS = 10;
+// How much of that shorter text the shared run has to cover before the two are one telling.
+const LEAD_DUPLICATE_COVERAGE = 0.8;
+
+// The lead can show both a feed standfirst and the article's opening paragraph. Many feeds put
+// the beginning of the piece itself in their description and cut it at 280 characters, so the
+// summary is the opening with a short label in front of it ("Here was my prompt:") and a stop
+// mid-sentence; comparing the two strings whole misses that. The shared run decides instead, so
+// the reader is not told the same thing twice.
 export const distinctLeadOpening = (summary: string, opening: string): string => {
   const summaryWords = comparableWords(summary);
-  return summaryWords && summaryWords === comparableWords(opening) ? '' : opening;
+  const openingWords = comparableWords(opening);
+  const shorter = Math.min(summaryWords.length, openingWords.length);
+  if (shorter < LEAD_DUPLICATE_MIN_WORDS) return opening;
+  const shared = longestSharedWordRun(summaryWords, openingWords);
+  return shared >= shorter * LEAD_DUPLICATE_COVERAGE ? '' : opening;
 };
 
 // Site chrome: display-settings widgets in the publisher's page reach feeds as a run of very

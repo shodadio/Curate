@@ -636,8 +636,15 @@ export function buildSpeechQueue(article: DigestItem): SpeechChunk[] {
       : `${article.title}. By ${article.source}.`,
     -1,
   );
-  if (article.summary) push(article.summary, -1);
-  buildArticleParagraphs(article.fullText).forEach((paragraph, index) => push(paragraph, index));
+  const paragraphs = buildArticleParagraphs(article.fullText);
+  // A feed's summary is often the opening of the piece itself, cut short mid-sentence. Speaking
+  // both starts the piece twice over, and the cut is the worse copy: the paragraph is the whole
+  // one, and it is the paragraph the page shows and highlights, so the summary is the copy that
+  // gives way.
+  const summaryRepeatsOpening = paragraphs.length > 0 &&
+    distinctLeadOpening(article.summary, paragraphs[0]) === '';
+  if (article.summary && !summaryRepeatsOpening) push(article.summary, -1);
+  paragraphs.forEach((paragraph, index) => push(paragraph, index));
 
   return chunks;
 }

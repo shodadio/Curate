@@ -965,3 +965,27 @@ test('the lead opening is omitted when it repeats the standfirst', () => {
   assert.equal(distinctLeadOpening(standfirst, opening), '');
   assert.equal(distinctLeadOpening(standfirst, 'A new opening paragraph adds different information.'), 'A new opening paragraph adds different information.');
 });
+
+// A feed that copies the article's opening into its description and cuts it at 280 characters
+// hands the lead a standfirst that is the opening paragraph with a label in front of it. Both
+// were printed, one above the other.
+test('the lead opening is omitted when the standfirst is its own opening, cut short', () => {
+  const opening =
+    'There are many discussions of “disempowerment” as a result of strong AI, and of whether humans “lose control” or agency. ' +
+    'Do any of these discussions offer specific, detailed comparisons of how strong AI also may empower humans? ' +
+    'Do they have any specific consideration, working through some examples and details, of the “net empowerment effect,” ' +
+    'namely whether the empowering functions of AI are more important than the disempowering functions?';
+  const standfirst =
+    'Here was my prompt: There are many discussions of “disempowerment” as a result of strong AI, and of whether humans “lose control” or agency. ' +
+    'Do any of these discussions offer specific, detailed comparisons of how strong AI also may empower humans? Do they have any specific...';
+  assert.equal(distinctLeadOpening(standfirst, opening), '');
+});
+
+// Policy pieces open the same way often enough that a shared phrase is not a repeat: a run of a
+// few words is left alone, so a genuinely different opening still reaches the page.
+test('the lead opening survives a short phrase it happens to share with the standfirst', () => {
+  const standfirst = 'The election result surprised everyone who had watched the polls.';
+  const opening =
+    'The election result surprised everyone, including the party that won it, according to three officials briefed on the count.';
+  assert.equal(distinctLeadOpening(standfirst, opening), opening);
+});
