@@ -1945,9 +1945,13 @@ export default function App() {
     } catch (error: any) {
       if (!isCurrentCheck()) return;
       setServerGeminiAvailable(false);
-      flagIssue(error?.name === 'AbortError'
-        ? 'Curator’s server check timed out. Check your connection, or update provider settings if the server is reachable again.'
-        : `Curator’s server or API status check failed: ${String(error?.message || 'No response from the server')}`);
+      // A server that does not answer is not something Settings can fix, and opening it would
+      // hide the edition saved in this browser — the one thing a launch with no connection can
+      // still read. Today already says which edition is on screen, so this is only reported here.
+      setStartupApiStatus('issue');
+      setStartupApiMessage(error?.name === 'AbortError'
+        ? 'Curator’s server did not answer in time. The edition saved in this browser is still readable.'
+        : 'Curator’s server could not be reached. The edition saved in this browser is still readable.');
     }
   };
 
