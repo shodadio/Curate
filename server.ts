@@ -32,6 +32,7 @@ import {
   type SemanticVoteExample,
 } from './lib/ranking';
 import { parseOpmlText } from './lib/opml';
+import { normalizeFeedUrl } from './lib/sourceDedupe';
 import { articleLooksIncomplete, cleanHtml, htmlToReadableText, trimSummaryFurniture } from './lib/markup';
 import { parseArticleAuthor, parseFeedChannelDescription, parseFeedItemAuthor, parseFeedSiteUrl, parseSitePageDescription } from './lib/sourceMetadata';
 import { buildReadableDigest } from './lib/digestAvailability';
@@ -1153,10 +1154,25 @@ async function startServer() {
     }
   });
 
-  // OPML Parser endpoint
-  app.post('/api/parse-opml', rateLimit('opml', 6), (req, res) => {
+  // What counts as a readable feed: it answered, and it carried stories. The add form and an
+  // imported file both judge an address here, so the two cannot drift apart on the meaning.
+  const IMPORT_READ_CONCURRENCY = 6;
+  const readFeedForImport = async (feedUrl: string) => {
+    const result = await fetchFeedWithStatus(feedUrl, 'New source', 'General');
+    if (result.error) return { ok: false as const, error: result.error };
+    if (result.items.length === 0) {
+      return { ok: false as const, error: 'That address answered, but it contained no readable stories' };
+    }
+    return { ok: true as const, itemCount: result.items.length, title: result.items[0]?.source || null };
+  };
+
+  // OPML import. The file is parsed, then every new feed in it is read, so an import is held to
+  // the add form's standard: only addresses that answered with stories come back as sources, and
+  // the rest come back with the reason instead of landing in the library unread. The client sends
+  // the addresses it already has, so those are counted rather than fetched again.
+  app.post('/api/parse-opml', rateLimit('opml', 6), async (req, res) => {
     try {
-      const { opmlText } = req.body;
+      const { opmlText, knownFeedUrls } = req.body;
       if (!opmlText || typeof opmlText !== 'string' || !opmlText.trim()) {
         return res.status(400).json({ error: 'No OPML content provided' });
       }
@@ -1169,19 +1185,52 @@ async function startServer() {
         });
       }
 
-      const successCount = sources.filter(s => s.status === 'active').length;
-      const failCount = sources.filter(s => s.status === 'failing').length;
+      const known = new Set(
+        (Array.isArray(knownFeedUrls) ? knownFeedUrls : [])
+          .map((value: unknown) => normalizeFeedUrl(String(value || '')))
+          .filter(Boolean),
+      );
+      // An outline the parser already refused is reported in `failures`; only addresses worth a
+      // read are fetched here.
+      const candidates = sources.filter(source =>
+        source.status !== 'failing' && !known.has(normalizeFeedUrl(source.feedUrl)));
+      const checks: Array<{ ok: boolean; error?: string } | null> = candidates.map(() => null);
+      let nextFeed = 0;
+      await Promise.all(Array.from({ length: Math.min(IMPORT_READ_CONCURRENCY, candidates.length) }, async () => {
+        while (nextFeed < candidates.length) {
+          const index = nextFeed++;
+          try {
+            checks[index] = await readFeedForImport(candidates[index].feedUrl);
+          } catch (error: any) {
+            checks[index] = { ok: false, error: error?.message || 'That address could not be read' };
+          }
+        }
+      }));
+
+      const readable: typeof sources = [];
+      const unread: Array<{ title: string; feedUrl: string; reason: string }> = [];
+      candidates.forEach((source, index) => {
+        const check = checks[index];
+        if (check?.ok) {
+          readable.push(source);
+          return;
+        }
+        unread.push({
+          title: source.title,
+          feedUrl: source.feedUrl,
+          reason: (check?.error || 'Curator could not read that address').trim(),
+        });
+      });
 
       res.json({
         success: true,
-        totalImported: sources.length,
-        successCount,
-        failCount,
+        sources: readable,
+        unread,
+        duplicates: sources.filter(source => known.has(normalizeFeedUrl(source.feedUrl))).length,
         failures,
-        sources,
       });
     } catch (err: any) {
-      res.status(500).json({ error: err.message || 'Failed to parse OPML' });
+      res.status(500).json({ error: err.message || 'Failed to import that file' });
     }
   });
 
@@ -2260,7 +2309,8 @@ CURATION RULES:
   });
 
   // Comprehensive multi-source live feed stream endpoint
-  // Adding a source now proves the URL serves a feed before the reader is told it worked.
+  // Adding a source now proves the URL serves a feed before the reader is told it worked. An
+  // imported file is held to the same proof, so a subscription that was never read cannot land.
   app.post('/api/check-feed', rateLimit('check-feed', 30), async (req, res) => {
     const feedUrl = String(req.body?.feedUrl || '').trim();
     if (!feedUrl) {
@@ -2268,16 +2318,7 @@ CURATION RULES:
       return;
     }
     try {
-      const result = await fetchFeedWithStatus(feedUrl, 'New source', 'General');
-      if (result.error) {
-        res.status(200).json({ ok: false, error: result.error });
-        return;
-      }
-      if (result.items.length === 0) {
-        res.status(200).json({ ok: false, error: 'That address answered, but it contained no readable stories' });
-        return;
-      }
-      res.json({ ok: true, itemCount: result.items.length, title: result.items[0]?.source || null });
+      res.json({ feedUrl, ...(await readFeedForImport(feedUrl)) });
     } catch (error: any) {
       res.status(200).json({ ok: false, error: error?.message || 'That address could not be read' });
     }

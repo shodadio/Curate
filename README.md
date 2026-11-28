@@ -349,14 +349,17 @@ Feeds the reader already follows are left out, by host, so a search never offers
 ---
 
 ### `POST /api/parse-opml`
-Parses an uploaded `.opml` or `.xml` file and converts it into structured `SourceItem` objects categorized by folder.
+Parses an uploaded `.opml` or `.xml` file and converts it into structured `SourceItem` objects categorized by folder. It also reads every new feed in the file, so an import is held to the same standard as adding a feed by hand: only addresses that answered with stories come back as sources, and any the reader refused are returned in `unread` with the reason instead of being added.
 
 **Request Body:**
 ```json
 {
-  "opmlText": "<?xml version=\"1.0\"?><opml version=\"2.0\">...</opml>"
+  "opmlText": "<?xml version=\"1.0\"?><opml version=\"2.0\">...</opml>",
+  "knownFeedUrls": ["https://marginalrevolution.com/feed"]
 }
 ```
+
+**Response:** `{ "success": true, "sources": [...], "unread": [{ "title": "...", "feedUrl": "...", "reason": "..." }], "duplicates": 0, "failures": [...] }`. `duplicates` counts outlines whose address the reader already had, so they are not fetched again. A file of any size is read in full, a few feeds at a time; nothing is added until all of it has been answered for.
 
 ---
 

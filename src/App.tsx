@@ -1405,9 +1405,10 @@ export default function App() {
   const [pendingImportText, setPendingImportText] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<{
     totalImported: number;
-    successCount: number;
-    failCount: number;
     duplicates?: number;
+    // Feeds in the file that Curator read and refused: reported with the reason, never added.
+    unread?: Array<{ title: string; feedUrl: string; reason: string }>;
+    // Problems in the file itself: an outline with no address, an address that is not a URL.
     failures?: Array<{ title: string; reason: string }>;
   } | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -2810,7 +2811,11 @@ export default function App() {
       const res = await fetch('/api/parse-opml', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ opmlText: rawText })
+        body: JSON.stringify({
+          opmlText: rawText,
+          // The server skips these, so an import only reads what is actually new.
+          knownFeedUrls: sources.map(source => source.feedUrl),
+        })
       });
       const responseText = await res.text();
       let data: any = null;
@@ -2830,34 +2835,28 @@ export default function App() {
         return;
       }
       if (data.success && data.sources) {
-        const known = new Set(sources.map(source => normalizeFeedUrl(source.feedUrl)));
-        const added: SourceItem[] = [];
-        let duplicates = 0;
-        for (const source of data.sources as SourceItem[]) {
-          const key = normalizeFeedUrl(source.feedUrl);
-          if (!key || known.has(key)) {
-            duplicates += 1;
-            continue;
-          }
-          known.add(key);
-          added.push({
-            ...source,
-            id: `src_${Date.now()}_${added.length}_${Math.random().toString(36).slice(2, 6)}`,
-            categories: normalizeCategoryLabels(source.categories, source.folder),
-          });
-        }
+        // The server returned only the feeds it read; whatever it refused comes back in `unread`
+        // and is reported here instead of being added.
+        const added: SourceItem[] = (data.sources as SourceItem[]).map((source, index) => ({
+          ...source,
+          id: `src_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`,
+          categories: normalizeCategoryLabels(source.categories, source.folder),
+        }));
+        const unread: Array<{ title: string; feedUrl: string; reason: string }> = Array.isArray(data.unread) ? data.unread : [];
+        const duplicates = Number(data.duplicates) || 0;
         if (added.length > 0) setSources(prev => [...added, ...prev]);
         setImportResult({
           totalImported: added.length,
-          successCount: added.filter(source => source.status !== 'failing').length,
-          failCount: added.filter(source => source.status === 'failing').length,
           duplicates,
+          unread,
           failures: data.failures || []
         });
         showToast(
           added.length === 0
-            ? `No new feeds — ${duplicates === 1 ? 'the only feed in that file is' : `all ${duplicates} feeds are`} already in your list`
-            : `Added ${added.length} ${added.length === 1 ? 'feed' : 'feeds'}${duplicates > 0 ? ` · ${duplicates} already in your list` : ''}`
+            ? unread.length > 0
+              ? `No feeds added — ${unread.length} could not be read`
+              : `No new feeds — ${duplicates === 1 ? 'the only feed in that file is' : `all ${duplicates} feeds are`} already in your list`
+            : `Added ${added.length} ${added.length === 1 ? 'feed' : 'feeds'}${duplicates > 0 ? ` · ${duplicates} already in your list` : ''}${unread.length > 0 ? ` · ${unread.length} could not be read` : ''}`
         );
       }
     } catch (e) {
@@ -8517,9 +8516,21 @@ Search for writers, publications, or topics. Curator checks whether each result 
               <div className="p-3.5 rounded-xl bg-[#ece4d1] border border-[#c9bc9f] text-[#1c1a17] text-xs space-y-2">
                 <div className="font-medium">
                   Added {importResult.totalImported} {importResult.totalImported === 1 ? 'feed' : 'feeds'}
-                  {' '}({importResult.successCount} active, {importResult.failCount} failing)
-                  {importResult.duplicates ? ` · ${importResult.duplicates} already in your list` : ''}.
+                  {importResult.duplicates ? ` · ${importResult.duplicates} already in your list` : ''}
+                  {importResult.unread && importResult.unread.length > 0 ? ` · ${importResult.unread.length} could not be read` : ''}.
                 </div>
+                {importResult.unread && importResult.unread.length > 0 && (
+                  <div className="space-y-1 border-t border-[#c9bc9f] pt-2">
+                    <div className="font-medium">Not added — Curator could not read these feeds</div>
+                    <ul className="space-y-1 text-xs text-[#1c1a17]">
+                      {importResult.unread.map((f, idx) => (
+                        <li key={idx}>
+                          {f.title}: {explainFeedFailure(f.reason).summary}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {importResult.failures && importResult.failures.length > 0 && (
                   <ul className="space-y-1 text-xs text-[#1c1a17] border-t border-[#c9bc9f] pt-2">
                     {importResult.failures.map((f, idx) => (
