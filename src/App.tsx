@@ -6,7 +6,7 @@ import {
   Download, Upload, Sliders, ExternalLink, ArrowLeft, Sparkles,
   AlertCircle, Info, CircleCheck, TriangleAlert, X, Home, Library,
   ThumbsUp, ThumbsDown, Search, Globe, Volume2, Play, Pause, Square, Headphones,
-  RotateCcw, BarChart3, ArrowRight, ChevronDown, Activity, LoaderCircle,
+  RotateCcw, BarChart3, ArrowRight, ChevronDown, Activity, LoaderCircle, CalendarDays,
   HardDrive, Tags, GraduationCap, ScanLine
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
@@ -32,6 +32,7 @@ import { readBackupFile, restorePlan } from '../lib/backup';
 import { migrateStoredMarkdown } from '../lib/markdownMigration';
 import { migrateStoryIds } from '../lib/storyIdMigration';
 import { editionDayLabel, editionMinutes as editionMinutesFor, readEditions, recordEdition, type Edition } from '../lib/editions';
+import { todaysEntries } from '../lib/feedFreshness';
 import { isDegenerateDescription } from '../lib/sourceMetadata';
 import { formatBytes, measureStorage, pruneArticleBodies, pruneReadingStats, type StorageReport } from '../lib/storageHealth';
 import { activeSources, applyFeedFailures, resumeFeed } from '../lib/sourceRetirement';
@@ -210,6 +211,8 @@ interface DigestItem {
   video?: VideoEmbed;
   avatar?: string;
   publishedAt?: string;
+  // The same moment in milliseconds, so today is decided on the reader's clock, not on the label.
+  publishedAtMs?: number;
   quote?: string;
   // The publication's own blurb, carried on the articles a feed returns
   sourceDescription?: string;
@@ -718,6 +721,9 @@ export default function App() {
   // way back, instead of leaving the reader with no active tab and no exit.
   const lastTabBeforeSettingsRef = React.useRef<'today' | 'saved' | 'sources' | 'feeds'>('today');
   const [feedVisibleCount, setFeedVisibleCount] = useState<number>(LIST_PAGE_SIZE);
+  // The Feeds stream can be narrowed to what was published since the reader's own midnight. It is
+  // a way of looking rather than a setting, so it never survives leaving the tab or the feed.
+  const [feedTodayOnly, setFeedTodayOnly] = useState(false);
   const [sourceVisibleCount, setSourceVisibleCount] = useState<number>(LIST_PAGE_SIZE);
   const [selectedArticle, setSelectedArticle] = useState<DigestItem | null>(null);
   const [selectedFeedSource, setSelectedFeedSource] = useState<string | null>(null);
@@ -1617,6 +1623,14 @@ export default function App() {
   useEffect(() => { setFeedVisibleCount(LIST_PAGE_SIZE); }, [selectedFeedSource, feedStreamRenderKey]);
   useEffect(() => { setSourceVisibleCount(LIST_PAGE_SIZE); }, [sourceSearch]);
 
+  // The Today chip is a way of looking, not a saved setting: any change of tab or feed puts every
+  // entry back, so the page never opens narrowed by a mode nobody remembers choosing.
+  useEffect(() => { setFeedTodayOnly(false); }, [activeTab, selectedFeedSource]);
+
+  // The stream the page builds: every entry, or only those dated since local midnight. The whole
+  // newest-first list is already in the page, so narrowing it costs no request.
+  const visibleFeedStreamArticles = feedTodayOnly ? todaysEntries(feedStreamArticles) : feedStreamArticles;
+
   useEffect(() => {
     // Saved articles carry their full bodies, so this is the write most likely to hit the
     // origin's quota. If it does, keep the queue by dropping the bodies rather than losing
@@ -2204,6 +2218,13 @@ export default function App() {
   const markAllSourcesAsUnread = () => {
     setReadSourceIds([]);
     showToast('Unread indicators reset');
+  };
+
+  // Narrowing the stream starts it again at one page, so switching back to every entry does not
+  // land mid-list in a scroll the reader never made.
+  const toggleTodayOnly = () => {
+    setFeedTodayOnly(previous => !previous);
+    setFeedVisibleCount(LIST_PAGE_SIZE);
   };
 
   // Every article carries its feed's own blurb and proves the feed was just read, so cache
@@ -7742,7 +7763,9 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-[#6f675c]">
                   {loadingFeedStream
                     ? 'Loading stream…'
-                    : `${feedStreamArticles.length} ${feedStreamArticles.length === 1 ? 'entry' : 'entries'} · every story, including ones older than today's edition`}
+                    : feedTodayOnly
+                      ? 'Only what was published today · newest first'
+                      : `${feedStreamArticles.length} ${feedStreamArticles.length === 1 ? 'entry' : 'entries'} · every story, including ones older than today's edition`}
                 </p>
               </div>
 
@@ -7780,6 +7803,20 @@ Search for writers, publications, or topics. Curator checks whether each result 
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${refreshingAllFeeds ? 'animate-spin' : ''}`} />
                   <span>{refreshingAllFeeds ? 'Refreshing…' : 'Refresh all'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleTodayOnly}
+                  aria-pressed={feedTodayOnly}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-xl border transition flex items-center gap-1.5 ${
+                    feedTodayOnly
+                      ? 'bg-[#1c1a17] border-[#1c1a17] text-[#f6f1e7]'
+                      : 'bg-[#ece4d1] border-[#ddd2bc] text-[#3f3a33] hover:text-[#1c1a17] hover:border-[#1c1a17]'
+                  }`}
+                  title={feedTodayOnly ? 'Show every entry' : 'Show only what was published today'}
+                >
+                  <CalendarDays className="w-3.5 h-3.5" />
+                  <span>Today</span>
                 </button>
                 {sources.some(s => !readSourceIds.includes(s.id)) ? (
                   <button
@@ -7833,24 +7870,37 @@ Search for writers, publications, or topics. Curator checks whether each result 
                   {sources.length === 0 ? 'Manage sources' : 'Return to all feeds stream'}
                 </button>
               </div>
+            ) : feedTodayOnly && visibleFeedStreamArticles.length === 0 ? (
+              <div className="py-20 text-center text-[#6f675c] space-y-2">
+                <p className="text-sm">No entries dated today.</p>
+                <button
+                  type="button"
+                  onClick={toggleTodayOnly}
+                  className="text-xs text-[#1c1a17] underline"
+                >
+                  Show every entry
+                </button>
+              </div>
             ) : (
               <div key={`stream-${feedStreamRenderKey}`} className="-mt-4 space-y-8 paper-stream">
-                {feedStreamArticles.slice(0, feedVisibleCount).map((item) => renderStoryEntry(item, false))}
-                {feedStreamArticles.length > feedVisibleCount && (
+                {visibleFeedStreamArticles.slice(0, feedVisibleCount).map((item) => renderStoryEntry(item, false))}
+                {visibleFeedStreamArticles.length > feedVisibleCount && (
                   <button
                     type="button"
                     onClick={() => setFeedVisibleCount(count => count + LIST_PAGE_SIZE)}
                     className="w-full min-h-11 rounded-xl border border-[#ddd2bc] px-3 text-xs font-medium text-[#3f3a33] transition hover:border-[#1c1a17] hover:text-[#1c1a17]"
                   >
-                    Show {Math.min(LIST_PAGE_SIZE, feedStreamArticles.length - feedVisibleCount)} more entries
-                    <span className="text-[#6f675c]"> · {feedStreamArticles.length - feedVisibleCount} left</span>
+                    Show {Math.min(LIST_PAGE_SIZE, visibleFeedStreamArticles.length - feedVisibleCount)} more entries
+                    <span className="text-[#6f675c]"> · {visibleFeedStreamArticles.length - feedVisibleCount} left</span>
                   </button>
                 )}
-                {feedStreamArticles.length > 0 && feedStreamArticles.length <= feedVisibleCount && (
+                {visibleFeedStreamArticles.length > 0 && visibleFeedStreamArticles.length <= feedVisibleCount && (
                   <footer className="pt-2">
                     <div aria-hidden="true" className="h-px w-full bg-[#1c1a17]/15" />
                     <p className="pt-3 text-center text-[10px] font-semibold uppercase tracking-[0.24em] text-[#6f675c]">
-                      End of the stream · {feedStreamArticles.length} {feedStreamArticles.length === 1 ? 'entry' : 'entries'}
+                      {feedTodayOnly
+                        ? "End of today's stream"
+                        : `End of the stream · ${visibleFeedStreamArticles.length} ${visibleFeedStreamArticles.length === 1 ? 'entry' : 'entries'}`}
                     </p>
                   </footer>
                 )}
