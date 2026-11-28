@@ -27,6 +27,7 @@ import { BuildIdentity } from './components/BuildIdentity';
 import { readVideoEmbed, type VideoEmbed } from '../lib/videoEmbed';
 import { loadInterests, saveInterests, emptyInterests, suggestionsFromFolders, TAXONOMY_NOTE, type InterestSet } from './interests';
 import { clearAppData, safeGetItem, safeSetItem, safeSetJson, subscribeToStorageFailures, downloadAppData, readAppData, type StorageFailure } from './storage';
+import { useAutoBackup } from './useAutoBackup';
 import { readBackupFile, restorePlan } from '../lib/backup';
 import { migrateStoredMarkdown } from '../lib/markdownMigration';
 import { migrateStoryIds } from '../lib/storyIdMigration';
@@ -889,6 +890,8 @@ export default function App() {
   const [storageReport, setStorageReport] = useState<StorageReport | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const restoreInputRef = React.useRef<HTMLInputElement | null>(null);
+  // An optional file on the reader's own disk, rewritten as this browser's copy changes.
+  const autoBackup = useAutoBackup();
 
   const [weeklyHistory, setWeeklyHistory] = useState<WeeklyReadingItem[]>(() => {
     const saved = safeGetItem('curator_weekly_history');
@@ -7451,6 +7454,82 @@ Search for writers, publications, or topics. Curator checks whether each result 
               {restoreError && (
                 <p role="alert" className="mt-2 text-xs leading-relaxed text-[#1c1a17]">{restoreError}</p>
               )}
+
+              {/* A copy the reader does not have to remember to make: one file they choose,
+                  rewritten in place whenever settings or the library change. */}
+              <div className="mt-5 space-y-2 paper-rule pt-4">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-[#6f675c]">Automatic backup</h4>
+                {!autoBackup.state.supported ? (
+                  <p className="text-xs leading-relaxed text-[#6f675c]">
+                    This browser can only save a copy when you press Export a copy. To keep a file on
+                    this computer up to date by itself, open Curator in Chrome or Edge.
+                  </p>
+                ) : !autoBackup.state.fileName ? (
+                  <>
+                    <p className="text-xs leading-relaxed text-[#6f675c]">
+                      Choose a file on this computer — your Documents folder, or wherever you keep
+                      backups — and Curator rewrites it as your settings and library change. It holds
+                      everything Export a copy would, including any API keys you entered, so keep it
+                      somewhere private.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void autoBackup.chooseFile()}
+                      className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-[#d3c7ae] px-3.5 text-xs font-medium text-[#3f3a33] transition hover:border-[#1c1a17] hover:text-[#1c1a17]"
+                    >
+                      Back up to a file…
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p role="status" className="text-xs leading-relaxed text-[#6f675c]">
+                      Curator keeps{' '}
+                      <span className="font-medium text-[#3f3a33] [overflow-wrap:break-word]">{autoBackup.state.fileName}</span>{' '}
+                      up to date.
+                      {autoBackup.state.saving
+                        ? ' Writing…'
+                        : autoBackup.state.lastSavedAt
+                          ? ` Last written ${new Date(autoBackup.state.lastSavedAt).toLocaleString()}.`
+                          : ' Nothing written yet.'}
+                    </p>
+                    {autoBackup.state.needsPermission && (
+                      <p className="text-xs leading-relaxed text-[#6f675c]">
+                        This browser asks for access again when Curator is reopened. Reconnect to carry
+                        on updating the file.
+                      </p>
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                      {autoBackup.state.needsPermission ? (
+                        <button
+                          type="button"
+                          onClick={() => void autoBackup.reconnect()}
+                          className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-[#d3c7ae] px-3.5 text-xs font-medium text-[#3f3a33] transition hover:border-[#1c1a17] hover:text-[#1c1a17]"
+                        >
+                          Reconnect backup file
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => void autoBackup.saveNow()}
+                          className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-[#d3c7ae] px-3.5 text-xs font-medium text-[#3f3a33] transition hover:border-[#1c1a17] hover:text-[#1c1a17]"
+                        >
+                          Back up now
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void autoBackup.stop()}
+                        className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-[#d3c7ae] px-3.5 text-xs font-medium text-[#3f3a33] transition hover:border-[#1c1a17] hover:text-[#1c1a17]"
+                      >
+                        Stop backing up
+                      </button>
+                    </div>
+                  </>
+                )}
+                {autoBackup.state.error && (
+                  <p role="alert" className="text-xs leading-relaxed text-[#1c1a17]">{autoBackup.state.error}</p>
+                )}
+              </div>
 
               {/* What the browser is holding, and the largest part of it that can be dropped. */}
               <div className="mt-5 space-y-3 paper-rule pt-4">

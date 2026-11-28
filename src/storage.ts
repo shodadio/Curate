@@ -12,6 +12,9 @@ const APP_KEY_PREFIX = 'curator_';
 // carry on reading and re-saving even when the browser refuses to persist anything.
 const memoryFallback = new Map<string, string>();
 const listeners = new Set<(failure: StorageFailure) => void>();
+// Told after every write, so the optional backup file can follow the library without the
+// settings screens having to report each change themselves.
+const changeListeners = new Set<() => void>();
 
 // Keep the last failure so a listener that subscribes after the write still hears about it
 // (the first writes happen during mount, before the banner's effect has run).
@@ -38,12 +41,21 @@ export function subscribeToStorageFailures(listener: (failure: StorageFailure) =
   };
 }
 
+/** Notifies after a write lands (or is kept for this session because storage refused it). */
+export function subscribeToAppDataChanges(listener: () => void): () => void {
+  changeListeners.add(listener);
+  return () => {
+    changeListeners.delete(listener);
+  };
+}
+
 /** Writes one key. Returns false when the browser refused to persist it. */
 export function safeSetItem(key: string, value: string): boolean {
+  let stored = false;
   try {
     localStorage.setItem(key, value);
     memoryFallback.delete(key);
-    return true;
+    stored = true;
   } catch (error) {
     memoryFallback.set(key, value);
     lastFailure = classify(error);
@@ -51,8 +63,13 @@ export function safeSetItem(key: string, value: string): boolean {
       // A listener must never be the reason a write appears to fail harder.
       try { listener(lastFailure as StorageFailure); } catch { /* ignore */ }
     });
-    return false;
   }
+  // A value kept only for this session still changed the library, so the backup follows it,
+  // and a listener that throws must never be the reason a write appears to fail.
+  changeListeners.forEach(listener => {
+    try { listener(); } catch { /* ignore */ }
+  });
+  return stored;
 }
 
 /**
@@ -121,7 +138,11 @@ export function downloadAppData(): boolean {
   }
 }
 
-/** Removes every value owned by Curator from this browser, without touching other apps. */
+/**
+ * Removes every value owned by Curator from this browser, without touching other apps.
+ * Deliberately quiet: a factory reset must not overwrite the reader's backup file with the
+ * empty library it just cleared — that file exists to survive exactly this.
+ */
 export function clearAppData(): boolean {
   let cleared = true;
   try {

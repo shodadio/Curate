@@ -1,6 +1,8 @@
 // User-declared interests: the only part of the reading profile the reader states directly.
 // Votes stay learned (semantic feedback); interests stay explicit, editable and reversible.
 
+import { safeSetItem } from './storage';
+
 export type InterestGroup = 'more' | 'less';
 
 export interface InterestSet {
@@ -47,14 +49,12 @@ export function loadInterests(): InterestSet {
 }
 
 export function saveInterests(value: InterestSet): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      more: dedupeLabels(value.more),
-      less: dedupeLabels(value.less),
-    }));
-  } catch {
-    /* private mode or full quota: interests simply stay in memory */
-  }
+  // Through the shared writer, so a refused write keeps the labels for this session and the
+  // optional backup file hears about the change.
+  safeSetItem(STORAGE_KEY, JSON.stringify({
+    more: dedupeLabels(value.more),
+    less: dedupeLabels(value.less),
+  }));
 }
 
 // Returns the same object when nothing changed, so callers can skip a state update.
