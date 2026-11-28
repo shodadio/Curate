@@ -69,6 +69,7 @@ import {
 } from '../lib/curationRequest';
 import { DEFAULT_FEEDS } from './defaultFeeds';
 import { explainFeedFailure } from '../lib/feedHealth';
+import { dedupeSources, normalizeFeedUrl } from '../lib/sourceDedupe';
 import {
   SPEECH_VOICE_AUTO,
   SPEECH_VOICE_JAMIE_DEFAULT,
@@ -276,17 +277,6 @@ const hasCuratorNote = (why?: string): boolean => {
   const note = (why || '').trim();
   return Boolean(note) && !SUBSCRIPTION_ONLY_NOTE.test(note);
 };
-
-// Duplicate detection compares feeds by address, not by the name a reader gave them. Two
-// addresses that differ only in scheme or a leading www. are one feed: the same publication
-// answers on either.
-const normalizeFeedUrl = (url?: string): string =>
-  (url || '')
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, '')
-    .replace(/^www\./, '')
-    .replace(/\/+$/, '');
 
 const normalizeCategoryLabels = (raw: unknown, fallback?: string): string[] => {
   const labels = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
@@ -798,10 +788,13 @@ export default function App() {
         // that contains nothing but retired demo feeds falls back to the starter subscriptions.
         if (parsed.length === 0) return [];
         if (kept.length === 0) return defaultSources;
-        return kept.map((source: SourceItem) => ({
+        // A publication that arrived twice — through an import, an old backup, or an address it
+        // used before — becomes one row here, so the digest reads it once and Sources shows it
+        // once.
+        return dedupeSources(kept.map((source: SourceItem) => ({
           ...source,
           categories: normalizeCategoryLabels(source.categories, source.folder),
-        }));
+        })));
       } catch (e) { /* ignore */ }
     }
     return defaultSources;
