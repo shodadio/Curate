@@ -277,30 +277,6 @@ const hasCuratorNote = (why?: string): boolean => {
   return Boolean(note) && !SUBSCRIPTION_ONLY_NOTE.test(note);
 };
 
-// Curator has no browser chrome of its own, so external links always open in a separate
-// browsing context. If the browser blocks that window, keep the reader here and explain why.
-function openExternal(url?: string | null): boolean {
-  if (!url || url === '#') return false;
-  try {
-    const opened = window.open(url, '_blank');
-    if (opened) {
-      try { opened.opener = null; } catch { /* cross-origin: already severed */ }
-      return true;
-    }
-  } catch {
-    // A browser policy can reject the new context; never replace Curator with the destination.
-  }
-  window.setTimeout(() => window.dispatchEvent(new Event('curator:external-link-blocked')), 0);
-  return false;
-}
-
-// Modified clicks (a new tab, a new window, a download) keep the browser's own behaviour.
-function handleExternalClick(event: React.MouseEvent<HTMLAnchorElement>, url?: string | null): boolean {
-  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
-  event.preventDefault();
-  return openExternal(url);
-}
-
 // Duplicate detection compares feeds by address, not by the name a reader gave them. Two
 // addresses that differ only in scheme or a leading www. are one feed: the same publication
 // answers on either.
@@ -527,7 +503,10 @@ function linkifyParagraph(paragraph: string): ParagraphToken[] {
 // Paragraph text with its links live. A body written in Markdown is read as prose: emphasis
 // and code marks come off, while a link keeps its address. The tap is kept from the paragraph
 // underneath, so following a link does not also start read-aloud from that paragraph.
-function renderParagraphText(paragraph: string) {
+function renderParagraphText(
+  paragraph: string,
+  onExternalClick: (event: React.MouseEvent<HTMLAnchorElement>, url?: string | null) => boolean,
+) {
   const tokens = linkifyParagraph(paragraph);
   if (tokens.length === 1 && !tokens[0].href) return tokens[0].text;
   return tokens.map((token, index) =>
@@ -539,7 +518,7 @@ function renderParagraphText(paragraph: string) {
         rel="noopener noreferrer"
         onClick={event => {
           event.stopPropagation();
-          handleExternalClick(event, token.href);
+          onExternalClick(event, token.href);
         }}
         className="reader-inline-link break-words"
         title={`Open ${token.href}`}
@@ -1240,6 +1219,7 @@ export default function App() {
     message: string;
     actionLabel?: string;
     onAction?: () => void;
+    actionIcon?: React.ComponentType<{ className?: string }>;
   } | null>(null);
   const toastTimeoutRef = React.useRef<any>(null);
   // Screen Wake Lock held while read-aloud is playing so the phone does not sleep mid-article
@@ -2427,13 +2407,19 @@ export default function App() {
     return () => clearTimeout(t);
   }, [pendingDeleteId, pendingReset]);
 
-  const showToast = (msg: string, actionLabel?: string, onAction?: () => void) => {
+  const showToast = (
+    msg: string,
+    actionLabel?: string,
+    onAction?: () => void,
+    actionIcon?: React.ComponentType<{ className?: string }>
+  ) => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     const item = {
       id: Math.random().toString(36).substring(2, 9),
       message: msg,
       actionLabel,
-      onAction
+      onAction,
+      actionIcon
     };
     setActiveToast(item);
     toastTimeoutRef.current = setTimeout(() => {
@@ -2441,13 +2427,31 @@ export default function App() {
     }, onAction ? UNDO_WINDOW_MS : NOTICE_MS);
   };
 
-  useEffect(() => {
-    const onExternalLinkBlocked = () => {
-      showToast('Your browser blocked that link in a new window. Curator stayed open; allow pop-ups to continue.');
-    };
-    window.addEventListener('curator:external-link-blocked', onExternalLinkBlocked);
-    return () => window.removeEventListener('curator:external-link-blocked', onExternalLinkBlocked);
-  }, [showToast]);
+  // A home-screen app carries no browser chrome to come back with, so a plain link can take the
+  // reader off Curator with no way home. A new window leaves the reading page exactly where it
+  // was. When the browser refuses that window, the reader decides whether to follow the link
+  // here rather than being sent there without a way back.
+  const openExternal = (url?: string | null): boolean => {
+    if (!url || url === '#') return false;
+    try {
+      const opened = window.open(url, '_blank');
+      if (opened) {
+        try { opened.opener = null; } catch { /* cross-origin: already severed */ }
+        return true;
+      }
+    } catch {
+      // A browser policy can reject the new context; never replace Curator with the destination.
+    }
+    showToast('This browser blocked a new window.', 'Open here', () => { window.location.assign(url); }, ExternalLink);
+    return false;
+  };
+
+  // Modified clicks (a new tab, a new window, a download) keep the browser's own behaviour.
+  const handleExternalClick = (event: React.MouseEvent<HTMLAnchorElement>, url?: string | null): boolean => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
+    event.preventDefault();
+    return openExternal(url);
+  };
 
   const recordSemanticFeedback = (item: DigestItem, vote: 'like' | 'dislike') => {
     // The title travels as its own field, so the excerpt is the body only; the engine joins them.
@@ -4769,7 +4773,9 @@ export default function App() {
               }}
               className="ml-auto shrink-0 inline-flex min-h-8 items-center justify-center gap-1 rounded-lg border border-[#f6f1e7]/40 bg-transparent px-2.5 text-[11px] font-semibold transition hover:bg-[#f6f1e7]/15 cursor-pointer"
             >
-              <RotateCcw className="w-3 h-3" />
+              {activeToast.actionIcon
+                ? <activeToast.actionIcon className="w-3 h-3" />
+                : <RotateCcw className="w-3 h-3" />}
               <span>{activeToast.actionLabel}</span>
             </button>
           )}
@@ -5176,7 +5182,7 @@ export default function App() {
                           ? 'cursor-pointer'
                           : ''
                     }`}
-                  >{renderParagraphText(paragraph)}</p>
+                  >{renderParagraphText(paragraph, handleExternalClick)}</p>
                 );
               }) : (
                 <p className="reader-dim text-base">This feed supplied no readable body text. Use “Read original” below to open the article.</p>
